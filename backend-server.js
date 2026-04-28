@@ -59,7 +59,7 @@ async function generateNews(category, day, timeSlot) {
         "x-api-key": process.env.ANTHROPIC_API_KEY
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         max_tokens: 2500,
         messages: [{
           role: "user",
