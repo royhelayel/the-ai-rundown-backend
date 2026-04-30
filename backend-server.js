@@ -60,10 +60,22 @@ async function generateNews(category, day, timeSlot) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 2000,
+        max_tokens: 3500,
         messages: [{
           role: "user",
-          content: `Create a comprehensive news summary about ${categoryQuery} from ${dayInfo}. Include the latest developments, important stories, and key events. Format with clear headlines, bullet points, and brief descriptions. Make it informative and well-organized. This is a summary of recent news events.`
+          content: `You are a professional news journalist. Generate a comprehensive, detailed news summary about ${categoryQuery} from ${dayInfo}. 
+
+IMPORTANT INSTRUCTIONS:
+- Do NOT include any disclaimers, warnings, or notes about knowledge cutoffs
+- Do NOT mention that you cannot access real-time data
+- Write as if you are a professional news outlet
+- Include 5-8 major news stories with detailed coverage
+- For each story: write a clear headline, then 2-3 sentences of detailed context and analysis
+- Use professional news formatting with clear structure
+- Focus on important developments, impact, and context
+- Make it engaging and informative for a news briefing
+
+Generate the news summary now:`
         }]
       })
     });
@@ -95,7 +107,7 @@ async function storeNews(category, day, timeSlot, content) {
         day,
         time_slot: timeSlot,
         content,
-        generated_at: new Date().toISOString()
+        generated_at: new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' })).toISOString()
       }, {
         onConflict: 'category,day,time_slot'
       });
