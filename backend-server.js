@@ -1,5 +1,4 @@
 import express from 'express';
-import cron from 'node-cron';
 import { createClient } from '@supabase/supabase-js';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -140,16 +139,8 @@ async function generateAllNewsForTimeSlot(timeSlot) {
   console.log(`✨ Completed news generation for ${timeSlot} time slot\n`);
 }
  
-// Setup cron jobs for each time slot
-TIME_SLOTS.forEach(slot => {
-  console.log(`📅 Scheduling cron job for ${slot.label} at ${slot.cronTime} (UAE timezone)`);
-  
-  cron.schedule(slot.cronTime, () => {
-    generateAllNewsForTimeSlot(slot.label);
-  }, {
-    timezone: "Asia/Dubai"
-  });
-});
+// Cloud Scheduler will trigger the /api/generate/:timeSlot endpoints
+// No local cron jobs needed on Cloud Run
  
 // Health check endpoint
 app.get('/health', (req, res) => {
