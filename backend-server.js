@@ -2,6 +2,11 @@ import express from 'express';
 import cron from 'node-cron';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
 
 dotenv.config({ override: true });
 
@@ -115,6 +120,18 @@ async function generateNews(category, day, timeSlot, retries = 3) {
     .filter(item => item.type === "text")
     .map(item => item.text)
     .join("\n");
+
+  // Track token usage for cost monitoring
+  if (data.usage) {
+    const { input_tokens, output_tokens } = data.usage;
+    const estimated_cost_usd = (input_tokens / 1_000_000) * 3 + (output_tokens / 1_000_000) * 15;
+    supabaseAdmin.from('api_usage').insert({
+      service: 'anthropic', model: 'claude-sonnet-4-6',
+      input_tokens, output_tokens, estimated_cost_usd,
+      category, time_slot: timeSlot,
+      created_at: new Date().toISOString()
+    }).catch(err => console.warn('Could not track API usage:', err.message));
+  }
 
   return summary;
 }
@@ -834,6 +851,178 @@ app.post('/api/metrics/track', async (req, res) => {
     console.error('Error:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// ==========================================
+// ADMIN DASHBOARD
+// ==========================================
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'admin', 'index.html'));
+});
+
+app.get('/admin/api/overview', async (req, res) => {
+  try {
+    const today = getTodayDate();
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const [
+      { count: totalUsers },
+      { count: newUsers },
+      { count: verifiedUsers },
+      { data: todayNews },
+      { data: usersWithPrefs },
+      { data: recentActivity },
+      { data: catMetrics }
+    ] = await Promise.all([
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).gte('created_at', sevenDaysAgo.toISOString()),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).eq('verification_status', 'verified'),
+      supabaseAdmin.from('news_summaries').select('category, time_slot, generated_at').eq('day', today),
+      supabaseAdmin.from('users').select('email_preferences').not('email_preferences', 'is', null),
+      supabaseAdmin.from('behavioral_metrics').select('user_id').gte('created_at', new Date(Date.now() - 10 * 60 * 1000).toISOString()),
+      supabaseAdmin.from('behavioral_metrics').select('category_selected').not('category_selected', 'is', null)
+    ]);
+
+    const emailSubs = { night: 0, morning: 0, noon: 0, afternoon: 0, evening: 0 };
+    usersWithPrefs?.forEach(u => {
+      Object.keys(emailSubs).forEach(slot => {
+        if (u.email_preferences?.[slot] === true) emailSubs[slot]++;
+      });
+    });
+
+    const activeUsers = new Set(recentActivity?.map(r => r.user_id)).size;
+
+    const catCounts = {};
+    catMetrics?.forEach(m => { if (m.category_selected) catCounts[m.category_selected] = (catCounts[m.category_selected] || 0) + 1; });
+    const topCategories = Object.entries(catCounts).sort((a,b) => b[1]-a[1]).slice(0, 8).map(([category, views]) => ({ category, views }));
+
+    const newsStatus = {};
+    DEFAULT_CATEGORIES.forEach(cat => {
+      newsStatus[cat] = {};
+      TIME_SLOTS.forEach(slot => {
+        const item = todayNews?.find(n => n.category === cat && n.time_slot === slot.label);
+        newsStatus[cat][slot.label] = item ? { generated: true, at: item.generated_at } : { generated: false };
+      });
+    });
+
+    res.json({
+      users:          { total: totalUsers || 0, new_7d: newUsers || 0, verified: verifiedUsers || 0 },
+      news:           { total_today: todayNews?.length || 0, expected: DEFAULT_CATEGORIES.length * TIME_SLOTS.length, status: newsStatus },
+      email_subs:     emailSubs,
+      active_users:   activeUsers,
+      top_categories: topCategories
+    });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/admin/api/news', async (req, res) => {
+  try {
+    const { day, timeSlot, category } = req.query;
+    let query = supabaseAdmin.from('news_summaries').select('*').order('generated_at', { ascending: false }).limit(200);
+    if (day)      query = query.eq('day', day);
+    if (timeSlot) query = query.eq('time_slot', timeSlot);
+    if (category) query = query.eq('category', category);
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json(data || []);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/admin/api/users', async (req, res) => {
+  try {
+    const { data: users, error } = await supabaseAdmin.from('users').select('id, email, created_at, verification_status, email_preferences').order('created_at', { ascending: false });
+    if (error) throw error;
+
+    const { data: cats } = await supabaseAdmin.from('custom_categories').select('user_id');
+    const catCount = {};
+    cats?.forEach(c => { catCount[c.user_id] = (catCount[c.user_id] || 0) + 1; });
+
+    const { data: lastActivity } = await supabaseAdmin.from('behavioral_metrics').select('user_id, created_at').order('created_at', { ascending: false });
+    const lastSeen = {};
+    lastActivity?.forEach(e => { if (!lastSeen[e.user_id]) lastSeen[e.user_id] = e.created_at; });
+
+    const result = (users || []).map(u => ({
+      ...u,
+      custom_category_count: catCount[u.id] || 0,
+      last_active: lastSeen[u.id] || null
+    }));
+
+    res.json(result);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/admin/api/behavior', async (req, res) => {
+  try {
+    const today = getTodayDate();
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const { data: allEvents } = await supabaseAdmin.from('behavioral_metrics').select('user_id, event_type, category_selected, day_selected, time_selected, created_at').order('created_at', { ascending: false });
+
+    const total_events  = allEvents?.length || 0;
+    const unique_users  = new Set(allEvents?.map(e => e.user_id)).size;
+    const events_today  = allEvents?.filter(e => e.created_at?.startsWith(today)).length || 0;
+
+    // Category counts
+    const catCounts = {};
+    allEvents?.forEach(e => { if (e.category_selected) catCounts[e.category_selected] = (catCounts[e.category_selected] || 0) + 1; });
+    const top_categories = Object.entries(catCounts).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([category, views]) => ({ category, views }));
+
+    // Events by day (last 7 days)
+    const dayBuckets = {};
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      dayBuckets[d.toISOString().split('T')[0]] = 0;
+    }
+    allEvents?.forEach(e => {
+      const day = e.created_at?.split('T')[0];
+      if (day && dayBuckets[day] !== undefined) dayBuckets[day]++;
+    });
+    const events_by_day = Object.entries(dayBuckets).map(([date, count]) => ({ date, count }));
+
+    // Enrich recent events with user email
+    const recentIds = [...new Set(allEvents?.slice(0, 50).map(e => e.user_id).filter(Boolean))];
+    const { data: userEmails } = await supabaseAdmin.from('users').select('id, email').in('id', recentIds.length ? recentIds : ['00000000-0000-0000-0000-000000000000']);
+    const emailMap = {};
+    userEmails?.forEach(u => { emailMap[u.id] = u.email; });
+
+    const recent_events = (allEvents || []).slice(0, 50).map(e => ({ ...e, user_email: emailMap[e.user_id] || null }));
+
+    res.json({ total_events, unique_users, events_today, top_categories, events_by_day, recent_events });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/admin/api/usage', async (req, res) => {
+  try {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: allUsage }     = await supabaseAdmin.from('api_usage').select('*').order('created_at', { ascending: false });
+    const { data: monthUsage }   = await supabaseAdmin.from('api_usage').select('estimated_cost_usd, input_tokens, output_tokens').gte('created_at', monthStart);
+    const { data: recentUsage }  = await supabaseAdmin.from('api_usage').select('*').gte('created_at', fourteenDaysAgo).order('created_at', { ascending: false });
+
+    const total_input_tokens  = allUsage?.reduce((s,r) => s + (r.input_tokens||0), 0) || 0;
+    const total_output_tokens = allUsage?.reduce((s,r) => s + (r.output_tokens||0), 0) || 0;
+    const cost_all_time       = allUsage?.reduce((s,r) => s + (r.estimated_cost_usd||0), 0) || 0;
+    const cost_this_month     = monthUsage?.reduce((s,r) => s + (r.estimated_cost_usd||0), 0) || 0;
+    const runs_this_month     = monthUsage?.length || 0;
+
+    // Daily cost buckets (last 14 days)
+    const dayBuckets = {};
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      dayBuckets[d.toISOString().split('T')[0]] = 0;
+    }
+    recentUsage?.forEach(r => {
+      const day = r.created_at?.split('T')[0];
+      if (day && dayBuckets[day] !== undefined) dayBuckets[day] += (r.estimated_cost_usd || 0);
+    });
+    const by_day = Object.entries(dayBuckets).map(([date, cost]) => ({ date, cost: parseFloat(cost.toFixed(6)) }));
+
+    res.json({ total_input_tokens, total_output_tokens, cost_all_time, cost_this_month, runs_this_month, by_day, recent_runs: (allUsage || []).slice(0, 100) });
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 // ==========================================

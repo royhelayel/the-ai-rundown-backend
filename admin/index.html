@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin · The AI Rundown</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f8fafc; color: #1e293b; }
+
+    /* ── Nav ── */
+    .topbar { background: #0f172a; padding: 0 2rem; display: flex; align-items: center; gap: 0; position: sticky; top: 0; z-index: 100; }
+    .brand { color: white; font-weight: 900; font-size: 1rem; padding: 1rem 1.5rem 1rem 0; white-space: nowrap; border-right: 1px solid rgba(255,255,255,0.1); margin-right: 0.5rem; }
+    .brand span { background: linear-gradient(135deg, #818cf8, #f472b6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .tabs { display: flex; flex: 1; }
+    .tab { padding: 1.1rem 1.1rem; color: rgba(255,255,255,0.5); cursor: pointer; font-size: 0.82rem; font-weight: 500; border-bottom: 2px solid transparent; transition: all 0.15s; white-space: nowrap; }
+    .tab:hover { color: rgba(255,255,255,0.85); }
+    .tab.active { color: white; border-bottom-color: #818cf8; font-weight: 700; }
+    .topbar-meta { margin-left: auto; color: rgba(255,255,255,0.35); font-size: 0.73rem; display: flex; align-items: center; gap: 0.75rem; white-space: nowrap; }
+    .refresh-btn { padding: 0.28rem 0.65rem; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; color: rgba(255,255,255,0.6); cursor: pointer; font-size: 0.72rem; }
+    .refresh-btn:hover { background: rgba(255,255,255,0.14); }
+
+    /* ── Pages ── */
+    .page { display: none; padding: 1.75rem 2rem; max-width: 1400px; margin: 0 auto; }
+    .page.active { display: block; }
+
+    /* ── Stat cards ── */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .card { background: white; border-radius: 10px; padding: 1.15rem 1.4rem; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    .card-label { font-size: 0.72rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 0.4rem; }
+    .card-value { font-size: 2rem; font-weight: 900; color: #111827; line-height: 1; }
+    .card-value.grad { background: linear-gradient(135deg, #6366f1, #ec4899); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .card-sub { font-size: 0.75rem; color: #94a3b8; margin-top: 0.35rem; }
+
+    /* ── Sections ── */
+    .section { background: white; border-radius: 10px; border: 1px solid #e2e8f0; padding: 1.4rem 1.5rem; margin-bottom: 1.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    .section-title { font-size: 0.82rem; font-weight: 800; color: #111827; margin-bottom: 1.1rem; display: flex; align-items: center; gap: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .section-title .dot { width: 7px; height: 7px; border-radius: 50%; background: linear-gradient(135deg, #6366f1, #ec4899); flex-shrink: 0; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem; }
+    @media(max-width: 960px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    /* ── Tables ── */
+    .data-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    .data-table th { background: #f8fafc; padding: 0.55rem 0.85rem; text-align: left; font-weight: 700; color: #374151; border-bottom: 1px solid #e2e8f0; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+    .data-table td { padding: 0.6rem 0.85rem; border-bottom: 1px solid #f1f5f9; color: #374151; vertical-align: middle; }
+    .data-table tr:last-child td { border-bottom: none; }
+    .data-table tr:hover td { background: #fafbfc; }
+    .table-wrap { overflow-x: auto; }
+
+    /* ── Status grid ── */
+    .status-table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+    .status-table th { background: #f8fafc; padding: 0.45rem 0.7rem; text-align: center; font-weight: 700; color: #374151; border: 1px solid #e2e8f0; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .status-table th:first-child { text-align: left; }
+    .status-table td { padding: 0.4rem 0.7rem; border: 1px solid #f1f5f9; text-align: center; }
+    .status-table td:first-child { text-align: left; font-weight: 600; color: #111827; white-space: nowrap; }
+    .s-ok  { color: #16a34a; font-size: 0.75rem; }
+    .s-mis { color: #d1d5db; font-size: 0.75rem; }
+
+    /* ── Badges ── */
+    .badge { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 999px; font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
+    .bg  { background: #dcfce7; color: #15803d; }
+    .by  { background: #fef3c7; color: #92400e; }
+    .br  { background: #fee2e2; color: #b91c1c; }
+    .bb  { background: #dbeafe; color: #1d4ed8; }
+    .bp  { background: #ede9fe; color: #6d28d9; }
+
+    /* ── Filters ── */
+    .filters { display: flex; gap: 0.65rem; margin-bottom: 1.1rem; flex-wrap: wrap; align-items: center; }
+    .filters select, .filters input[type=text], .filters input[type=date] {
+      padding: 0.4rem 0.7rem; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 0.82rem; color: #374151; background: white; outline: none; }
+    .filters select:focus, .filters input:focus { border-color: #6366f1; }
+    .filter-label { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+    .btn-apply { padding: 0.4rem 0.9rem; background: #6366f1; border: none; border-radius: 6px; color: white; cursor: pointer; font-size: 0.82rem; font-weight: 700; }
+
+    /* ── Chart ── */
+    .chart-wrap { position: relative; height: 210px; }
+
+    /* ── Sub bars ── */
+    .sub-bars { display: flex; flex-direction: column; gap: 0.6rem; }
+    .sub-row { display: flex; align-items: center; gap: 0.7rem; }
+    .sub-lbl { width: 75px; font-size: 0.8rem; color: #374151; font-weight: 600; text-align: right; flex-shrink: 0; }
+    .sub-track { flex: 1; background: #f1f5f9; border-radius: 4px; height: 7px; overflow: hidden; }
+    .sub-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #6366f1, #ec4899); transition: width 0.4s; }
+    .sub-cnt { width: 28px; font-size: 0.78rem; color: #6b7280; font-weight: 700; flex-shrink: 0; }
+
+    /* ── Misc ── */
+    .loading { text-align: center; padding: 2.5rem; color: #94a3b8; font-size: 0.88rem; }
+    .empty   { text-align: center; padding: 2rem; color: #94a3b8; font-size: 0.88rem; }
+    .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; display: block; }
+    .tbl-footer { padding: 0.6rem 0.85rem; font-size: 0.75rem; color: #9ca3af; border-top: 1px solid #f1f5f9; }
+    .alert { padding: 0.8rem 1rem; border-radius: 8px; font-size: 0.82rem; margin-bottom: 1.25rem; }
+    .alert-info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+    .alert-warn { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+
+    /* ── Modal ── */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 200; display: none; align-items: center; justify-content: center; padding: 1rem; }
+    .modal-overlay.open { display: flex; }
+    .modal { background: white; border-radius: 12px; max-width: 720px; width: 100%; max-height: 82vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+    .modal-header { padding: 1.1rem 1.4rem; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; background: white; z-index: 1; }
+    .modal-title { font-weight: 800; font-size: 0.95rem; color: #111827; }
+    .modal-close { padding: 0.2rem 0.5rem; background: none; border: none; cursor: pointer; color: #94a3b8; font-size: 1.1rem; }
+    .modal-body { padding: 1.4rem; font-size: 0.88rem; line-height: 1.75; color: #374151; white-space: pre-wrap; }
+
+    /* ── External links ── */
+    .ext-links { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    .ext-link { padding: 0.55rem 1.1rem; text-decoration: none; border-radius: 999px; font-weight: 700; font-size: 0.82rem; transition: opacity 0.15s; }
+    .ext-link:hover { opacity: 0.85; }
+    .ext-primary { background: linear-gradient(135deg, #6366f1, #ec4899); color: white; }
+    .ext-outline { background: white; border: 1.5px solid #6366f1; color: #6366f1; }
+  </style>
+</head>
+<body>
+
+<!-- ── Topbar ── -->
+<nav class="topbar">
+  <div class="brand">✦ <span>The AI Rundown</span> &nbsp;Admin</div>
+  <div class="tabs">
+    <div class="tab active" data-tab="overview" onclick="switchTab(this)">Overview</div>
+    <div class="tab" data-tab="news"     onclick="switchTab(this)">News</div>
+    <div class="tab" data-tab="users"    onclick="switchTab(this)">Users</div>
+    <div class="tab" data-tab="behavior" onclick="switchTab(this)">Behavior</div>
+    <div class="tab" data-tab="costs"    onclick="switchTab(this)">API & Costs</div>
+  </div>
+  <div class="topbar-meta">
+    <span id="last-updated">—</span>
+    <button class="refresh-btn" onclick="refreshCurrent()">↻ Refresh</button>
+  </div>
+</nav>
+
+<!-- ── OVERVIEW ── -->
+<div id="page-overview" class="page active">
+  <div class="cards">
+    <div class="card"><div class="card-label">Total Users</div><div class="card-value grad" id="s-users">—</div><div class="card-sub" id="s-users-sub"></div></div>
+    <div class="card"><div class="card-label">News Generated Today</div><div class="card-value grad" id="s-news">—</div><div class="card-sub" id="s-news-sub"></div></div>
+    <div class="card"><div class="card-label">Email Subscribers</div><div class="card-value grad" id="s-subs">—</div><div class="card-sub" id="s-subs-sub"></div></div>
+    <div class="card"><div class="card-label">Active Right Now</div><div class="card-value grad" id="s-active">—</div><div class="card-sub">last 10 minutes</div></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="section">
+      <div class="section-title"><span class="dot"></span>Today's Generation Status</div>
+      <div id="status-grid" style="overflow-x:auto;"><div class="loading">Loading…</div></div>
+    </div>
+    <div class="section">
+      <div class="section-title"><span class="dot"></span>Email Subscriptions by Time Slot</div>
+      <div id="sub-bars" class="sub-bars"><div class="loading">Loading…</div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="dot"></span>Top Categories (All Time)</div>
+    <div class="chart-wrap"><canvas id="chart-cats"></canvas></div>
+  </div>
+</div>
+
+<!-- ── NEWS ── -->
+<div id="page-news" class="page">
+  <div class="section">
+    <div class="filters">
+      <span class="filter-label">Date</span>
+      <input type="date" id="f-news-date">
+      <span class="filter-label">Slot</span>
+      <select id="f-news-slot">
+        <option value="">All</option>
+        <option>Morning</option><option>Noon</option><option>Afternoon</option><option>Evening</option><option>Night</option>
+      </select>
+      <span class="filter-label">Category</span>
+      <select id="f-news-cat">
+        <option value="">All</option>
+        <option>World News</option><option>Technology</option><option>Business</option><option>Politics</option>
+        <option>Sports</option><option>Entertainment</option><option>Science</option><option>Health</option>
+      </select>
+      <button class="btn-apply" onclick="loadNews()">Apply</button>
+    </div>
+    <div class="table-wrap" id="news-wrap"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ── USERS ── -->
+<div id="page-users" class="page">
+  <div class="section">
+    <div class="filters">
+      <span class="filter-label">Status</span>
+      <select id="f-u-status" onchange="renderUsers()">
+        <option value="">All</option>
+        <option value="verified">Verified</option>
+        <option value="pending">Pending</option>
+      </select>
+      <span class="filter-label">Email Prefs</span>
+      <select id="f-u-prefs" onchange="renderUsers()">
+        <option value="">Any</option>
+        <option value="has">Has subscriptions</option>
+        <option value="none">No subscriptions</option>
+      </select>
+      <input type="text" id="f-u-search" placeholder="Search email…" style="min-width:200px;" oninput="renderUsers()">
+    </div>
+    <div class="table-wrap" id="users-wrap"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ── BEHAVIOR ── -->
+<div id="page-behavior" class="page">
+  <div class="cards">
+    <div class="card"><div class="card-label">Total Events</div><div class="card-value grad" id="b-events">—</div></div>
+    <div class="card"><div class="card-label">Unique Users Tracked</div><div class="card-value grad" id="b-users">—</div></div>
+    <div class="card"><div class="card-label">Most Popular Category</div><div class="card-value" id="b-top" style="font-size:1rem;margin-top:0.3rem;">—</div></div>
+    <div class="card"><div class="card-label">Events Today</div><div class="card-value grad" id="b-today">—</div></div>
+  </div>
+  <div class="grid-2">
+    <div class="section">
+      <div class="section-title"><span class="dot"></span>Events — Last 7 Days</div>
+      <div class="chart-wrap"><canvas id="chart-events"></canvas></div>
+    </div>
+    <div class="section">
+      <div class="section-title"><span class="dot"></span>Category Popularity</div>
+      <div class="chart-wrap"><canvas id="chart-cat-pop"></canvas></div>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title"><span class="dot"></span>Recent Activity</div>
+    <div class="table-wrap" id="activity-wrap"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
+<!-- ── API & COSTS ── -->
+<div id="page-costs" class="page">
+  <div class="alert alert-info">
+    ℹ️ Costs are estimated from tracked token usage (claude-sonnet-4-6: $3/M input · $15/M output). Check live balance on
+    <a href="https://console.anthropic.com" target="_blank" style="font-weight:700;">Anthropic Console</a> and
+    <a href="https://resend.com/overview" target="_blank" style="font-weight:700;">Resend Dashboard</a>.
+    Usage tracking starts with the next generation run.
+  </div>
+  <div class="cards">
+    <div class="card"><div class="card-label">Est. Cost This Month</div><div class="card-value grad" id="c-month">—</div><div class="card-sub">USD</div></div>
+    <div class="card"><div class="card-label">Total Cost All Time</div><div class="card-value grad" id="c-total">—</div><div class="card-sub">USD</div></div>
+    <div class="card"><div class="card-label">Input Tokens (All Time)</div><div class="card-value grad" id="c-in">—</div><div class="card-sub" id="c-in-sub"></div></div>
+    <div class="card"><div class="card-label">Output Tokens (All Time)</div><div class="card-value grad" id="c-out">—</div><div class="card-sub" id="c-out-sub"></div></div>
+    <div class="card"><div class="card-label">Generations This Month</div><div class="card-value grad" id="c-runs">—</div></div>
+  </div>
+  <div class="section">
+    <div class="section-title"><span class="dot"></span>Daily Estimated Cost — Last 14 Days</div>
+    <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
+  </div>
+  <div class="section">
+    <div class="section-title"><span class="dot"></span>Recent Generation Runs</div>
+    <div class="table-wrap" id="usage-wrap"><div class="loading">Loading…</div></div>
+  </div>
+  <div class="section">
+    <div class="section-title"><span class="dot"></span>External Dashboards</div>
+    <div class="ext-links">
+      <a class="ext-link ext-primary" href="https://console.anthropic.com" target="_blank">Anthropic Console →</a>
+      <a class="ext-link ext-outline" href="https://resend.com/overview" target="_blank">Resend Dashboard →</a>
+      <a class="ext-link ext-outline" href="https://supabase.com/dashboard" target="_blank">Supabase →</a>
+      <a class="ext-link ext-outline" href="https://dashboard.render.com" target="_blank">Render →</a>
+      <a class="ext-link ext-outline" href="https://vercel.com/dashboard" target="_blank">Vercel →</a>
+      <a class="ext-link ext-outline" href="https://console.cloud.google.com" target="_blank">Google Cloud →</a>
+    </div>
+  </div>
+</div>
+
+<!-- ── Modal ── -->
+<div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-title"></div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<script>
+// ── State ──
+let currentTab = 'overview';
+let usersData = [];
+
+// ── Routing ──
+function switchTab(el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  el.classList.add('active');
+  currentTab = el.dataset.tab;
+  document.getElementById('page-' + currentTab).classList.add('active');
+  loadTab(currentTab);
+}
+
+function refreshCurrent() { loadTab(currentTab); }
+
+function loadTab(name) {
+  if (name === 'overview') loadOverview();
+  else if (name === 'news')     loadNews();
+  else if (name === 'users')    loadUsers();
+  else if (name === 'behavior') loadBehavior();
+  else if (name === 'costs')    loadCosts();
+}
+
+// ── Helpers ──
+async function api(path) {
+  const r = await fetch('/admin/api' + path);
+  if (!r.ok) throw new Error('API ' + r.status);
+  return r.json();
+}
+
+function stamp() {
+  document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+function fmtNum(n) {
+  if (n >= 1_000_000) return (n/1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000)     return (n/1_000).toFixed(1) + 'K';
+  return String(n ?? 0);
+}
+
+function destroyChart(id) {
+  const c = Chart.getChart(id);
+  if (c) c.destroy();
+}
+
+const CHART_OPTS = {
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { display: false } },
+  scales: { y: { beginAtZero: true, grid: { color: '#f1f5f9' } }, x: { grid: { display: false } } }
+};
+
+// ── OVERVIEW ──
+async function loadOverview() {
+  try {
+    const d = await api('/overview');
+
+    document.getElementById('s-users').textContent   = d.users.total;
+    document.getElementById('s-users-sub').textContent = `+${d.users.new_7d} this week · ${d.users.verified} verified`;
+    document.getElementById('s-news').textContent    = d.news.total_today + '/' + d.news.expected;
+    document.getElementById('s-news-sub').textContent = Math.round(d.news.total_today / d.news.expected * 100) + '% of daily target';
+    const totalSubs = Object.values(d.email_subs).reduce((a,b) => a+b, 0);
+    document.getElementById('s-subs').textContent    = totalSubs;
+    document.getElementById('s-subs-sub').textContent = 'across all time slots';
+    document.getElementById('s-active').textContent  = d.active_users;
+
+    renderStatusGrid(d.news.status);
+    renderSubBars(d.email_subs);
+
+    destroyChart('chart-cats');
+    if (d.top_categories?.length) {
+      new Chart('chart-cats', {
+        type: 'bar',
+        data: { labels: d.top_categories.map(c => c.category), datasets: [{ data: d.top_categories.map(c => c.views), backgroundColor: 'rgba(99,102,241,0.75)', borderRadius: 6, borderSkipped: false }] },
+        options: { ...CHART_OPTS }
+      });
+    }
+    stamp();
+  } catch(e) { console.error('overview', e); }
+}
+
+function renderStatusGrid(status) {
+  const slots = ['Morning','Noon','Afternoon','Evening','Night'];
+  const cats  = ['World News','Technology','Business','Politics','Sports','Entertainment','Science','Health'];
+  let h = '<table class="status-table"><thead><tr><th>Category</th>';
+  slots.forEach(s => h += `<th>${s}</th>`);
+  h += '</tr></thead><tbody>';
+  cats.forEach(cat => {
+    h += `<tr><td>${cat}</td>`;
+    slots.forEach(slot => {
+      const s = status?.[cat]?.[slot];
+      if (s?.generated) {
+        const t = s.at ? new Date(s.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '✓';
+        h += `<td><span class="s-ok">✓ ${t}</span></td>`;
+      } else {
+        h += `<td><span class="s-mis">—</span></td>`;
+      }
+    });
+    h += '</tr>';
+  });
+  h += '</tbody></table>';
+  document.getElementById('status-grid').innerHTML = h;
+}
+
+function renderSubBars(subs) {
+  const slots = [['morning','Morning'],['noon','Noon'],['afternoon','Afternoon'],['evening','Evening'],['night','Night']];
+  const max = Math.max(...Object.values(subs), 1);
+  document.getElementById('sub-bars').innerHTML = slots.map(([k, lbl]) => {
+    const n = subs[k] || 0;
+    return `<div class="sub-row">
+      <span class="sub-lbl">${lbl}</span>
+      <div class="sub-track"><div class="sub-fill" style="width:${Math.round(n/max*100)}%"></div></div>
+      <span class="sub-cnt">${n}</span>
+    </div>`;
+  }).join('');
+}
+
+// ── NEWS ──
+async function loadNews() {
+  const dateEl = document.getElementById('f-news-date');
+  if (!dateEl.value) dateEl.value = new Date().toISOString().split('T')[0];
+
+  const day  = dateEl.value;
+  const slot = document.getElementById('f-news-slot').value;
+  const cat  = document.getElementById('f-news-cat').value;
+
+  document.getElementById('news-wrap').innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    let qs = '?day=' + day;
+    if (slot) qs += '&timeSlot=' + encodeURIComponent(slot);
+    if (cat)  qs += '&category='  + encodeURIComponent(cat);
+
+    const data = await api('/news' + qs);
+    if (!data?.length) { document.getElementById('news-wrap').innerHTML = '<div class="empty">No news found for these filters.</div>'; return; }
+
+    let h = `<table class="data-table"><thead><tr>
+      <th>Category</th><th>Date</th><th>Slot</th><th>Generated</th><th>Preview</th><th></th>
+    </tr></thead><tbody>`;
+    data.forEach(n => {
+      const preview = (n.content||'').replace(/\*\*/g,'').replace(/#{1,3} /g,'').slice(0,110) + '…';
+      const gen = n.generated_at ? new Date(n.generated_at).toLocaleString() : '—';
+      h += `<tr>
+        <td><strong>${n.category}</strong></td>
+        <td style="color:#6b7280;font-size:0.8rem;">${n.day}</td>
+        <td><span class="badge bp">${n.time_slot}</span></td>
+        <td style="color:#6b7280;font-size:0.78rem;">${gen}</td>
+        <td><span class="truncate" style="font-size:0.8rem;color:#64748b;">${preview}</span></td>
+        <td><button onclick='viewNews(${JSON.stringify(JSON.stringify(n))})' style="padding:0.22rem 0.6rem;background:none;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-size:0.75rem;color:#6366f1;font-weight:700;">View</button></td>
+      </tr>`;
+    });
+    h += `</tbody></table><div class="tbl-footer">${data.length} article${data.length!==1?'s':''}</div>`;
+    document.getElementById('news-wrap').innerHTML = h;
+    stamp();
+  } catch(e) { document.getElementById('news-wrap').innerHTML = '<div class="empty">Failed to load.</div>'; }
+}
+
+function viewNews(json) {
+  const n = JSON.parse(json);
+  document.getElementById('modal-title').textContent = n.category + ' · ' + n.time_slot + ' · ' + n.day;
+  document.getElementById('modal-body').textContent  = n.content;
+  document.getElementById('modal').classList.add('open');
+}
+
+function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+// ── USERS ──
+async function loadUsers() {
+  document.getElementById('users-wrap').innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    usersData = await api('/users');
+    renderUsers();
+    stamp();
+  } catch(e) { document.getElementById('users-wrap').innerHTML = '<div class="empty">Failed to load.</div>'; }
+}
+
+function renderUsers() {
+  const status = document.getElementById('f-u-status').value;
+  const prefs  = document.getElementById('f-u-prefs').value;
+  const search = document.getElementById('f-u-search').value.toLowerCase();
+
+  let data = usersData;
+  if (status) data = data.filter(u => u.verification_status === status);
+  if (prefs === 'has')  data = data.filter(u => Object.values(u.email_preferences||{}).some(v=>v===true));
+  if (prefs === 'none') data = data.filter(u => !Object.values(u.email_preferences||{}).some(v=>v===true));
+  if (search) data = data.filter(u => u.email?.toLowerCase().includes(search));
+
+  if (!data.length) { document.getElementById('users-wrap').innerHTML = '<div class="empty">No users match.</div>'; return; }
+
+  const icons = { night:'🌙', morning:'🌅', noon:'☀️', afternoon:'🌤️', evening:'🌆' };
+
+  let h = `<table class="data-table"><thead><tr>
+    <th>Email</th><th>Joined</th><th>Status</th><th>Email Prefs</th><th>Custom Cats</th><th>Last Active</th>
+  </tr></thead><tbody>`;
+  data.forEach(u => {
+    const joined     = u.created_at   ? new Date(u.created_at).toLocaleDateString()  : '—';
+    const lastActive = u.last_active  ? new Date(u.last_active).toLocaleString()     : '—';
+    const statusBadge = u.verification_status === 'verified'
+      ? '<span class="badge bg">Verified</span>'
+      : '<span class="badge by">Pending</span>';
+    const subIcons = Object.entries(u.email_preferences||{})
+      .filter(([,v])=>v===true).map(([k])=>`<span title="${k}">${icons[k]||k}</span>`).join(' ');
+    h += `<tr>
+      <td><strong style="font-size:0.84rem;">${u.email}</strong></td>
+      <td style="color:#6b7280;font-size:0.8rem;">${joined}</td>
+      <td>${statusBadge}</td>
+      <td style="font-size:1rem;">${subIcons||'<span style="color:#d1d5db">—</span>'}</td>
+      <td><span class="badge bb">${u.custom_category_count||0}</span></td>
+      <td style="color:#6b7280;font-size:0.78rem;">${lastActive}</td>
+    </tr>`;
+  });
+  h += `</tbody></table><div class="tbl-footer">${data.length} user${data.length!==1?'s':''}</div>`;
+  document.getElementById('users-wrap').innerHTML = h;
+}
+
+// ── BEHAVIOR ──
+async function loadBehavior() {
+  document.getElementById('activity-wrap').innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const d = await api('/behavior');
+
+    document.getElementById('b-events').textContent = fmtNum(d.total_events||0);
+    document.getElementById('b-users').textContent  = d.unique_users||0;
+    document.getElementById('b-top').textContent    = d.top_categories?.[0]?.category || '—';
+    document.getElementById('b-today').textContent  = d.events_today||0;
+
+    destroyChart('chart-events');
+    if (d.events_by_day?.length) {
+      new Chart('chart-events', {
+        type: 'line',
+        data: { labels: d.events_by_day.map(e=>e.date), datasets: [{ data: d.events_by_day.map(e=>e.count), borderColor:'#6366f1', backgroundColor:'rgba(99,102,241,0.07)', fill:true, tension:0.4, pointRadius:3, pointBackgroundColor:'#6366f1' }] },
+        options: { ...CHART_OPTS }
+      });
+    }
+
+    destroyChart('chart-cat-pop');
+    if (d.top_categories?.length) {
+      const colors = ['#6366f1','#8b5cf6','#ec4899','#f59e0b','#10b981','#3b82f6','#ef4444','#14b8a6'];
+      new Chart('chart-cat-pop', {
+        type: 'doughnut',
+        data: { labels: d.top_categories.map(c=>c.category), datasets: [{ data: d.top_categories.map(c=>c.views), backgroundColor: colors, borderWidth: 2, borderColor: 'white' }] },
+        options: { responsive:true, maintainAspectRatio:false, plugins: { legend: { position:'right', labels:{ font:{size:11}, boxWidth:12 } } } }
+      });
+    }
+
+    if (!d.recent_events?.length) {
+      document.getElementById('activity-wrap').innerHTML = '<div class="empty">No activity recorded yet. Activity tracking begins once users interact with the site.</div>';
+    } else {
+      let h = `<table class="data-table"><thead><tr><th>Time</th><th>User</th><th>Event</th><th>Category</th><th>Day</th><th>Slot</th></tr></thead><tbody>`;
+      d.recent_events.forEach(e => {
+        h += `<tr>
+          <td style="color:#6b7280;font-size:0.78rem;">${e.created_at ? new Date(e.created_at).toLocaleString() : '—'}</td>
+          <td style="font-size:0.8rem;">${e.user_email || (e.user_id ? e.user_id.substring(0,8)+'…' : '—')}</td>
+          <td><span class="badge bb">${e.event_type||'—'}</span></td>
+          <td>${e.category_selected||'—'}</td>
+          <td style="font-size:0.8rem;color:#6b7280;">${e.day_selected||'—'}</td>
+          <td>${e.time_selected ? `<span class="badge bp">${e.time_selected}</span>` : '—'}</td>
+        </tr>`;
+      });
+      h += '</tbody></table>';
+      document.getElementById('activity-wrap').innerHTML = h;
+    }
+    stamp();
+  } catch(e) { document.getElementById('activity-wrap').innerHTML = '<div class="empty">Failed to load behavior data.</div>'; console.error(e); }
+}
+
+// ── COSTS ──
+async function loadCosts() {
+  document.getElementById('usage-wrap').innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const d = await api('/usage');
+
+    document.getElementById('c-month').textContent  = '$' + (d.cost_this_month||0).toFixed(4);
+    document.getElementById('c-total').textContent  = '$' + (d.cost_all_time||0).toFixed(4);
+    document.getElementById('c-in').textContent     = fmtNum(d.total_input_tokens||0);
+    document.getElementById('c-in-sub').textContent = '$' + ((d.total_input_tokens||0)/1e6*3).toFixed(4) + ' est.';
+    document.getElementById('c-out').textContent    = fmtNum(d.total_output_tokens||0);
+    document.getElementById('c-out-sub').textContent= '$' + ((d.total_output_tokens||0)/1e6*15).toFixed(4) + ' est.';
+    document.getElementById('c-runs').textContent   = d.runs_this_month||0;
+
+    destroyChart('chart-cost');
+    if (d.by_day?.length) {
+      new Chart('chart-cost', {
+        type: 'bar',
+        data: { labels: d.by_day.map(r=>r.date), datasets: [{ label:'Cost ($)', data: d.by_day.map(r=>r.cost), backgroundColor:'rgba(99,102,241,0.72)', borderRadius:5, borderSkipped:false }] },
+        options: { ...CHART_OPTS, scales: { y: { beginAtZero:true, grid:{color:'#f1f5f9'}, ticks:{callback: v=>'$'+v.toFixed(3)} }, x:{grid:{display:false}} } }
+      });
+    }
+
+    if (!d.recent_runs?.length) {
+      document.getElementById('usage-wrap').innerHTML = '<div class="empty">No usage tracked yet. Starts automatically with the next generation run.</div>';
+    } else {
+      let h = `<table class="data-table"><thead><tr><th>Time</th><th>Category</th><th>Slot</th><th>Input Tokens</th><th>Output Tokens</th><th>Est. Cost</th></tr></thead><tbody>`;
+      d.recent_runs.forEach(r => {
+        h += `<tr>
+          <td style="color:#6b7280;font-size:0.78rem;">${r.created_at ? new Date(r.created_at).toLocaleString() : '—'}</td>
+          <td>${r.category||'—'}</td>
+          <td>${r.time_slot ? `<span class="badge bp">${r.time_slot}</span>` : '—'}</td>
+          <td>${(r.input_tokens||0).toLocaleString()}</td>
+          <td>${(r.output_tokens||0).toLocaleString()}</td>
+          <td style="font-weight:700;color:#6366f1;">$${(r.estimated_cost_usd||0).toFixed(5)}</td>
+        </tr>`;
+      });
+      h += `</tbody></table><div class="tbl-footer">${d.recent_runs.length} recent runs shown</div>`;
+      document.getElementById('usage-wrap').innerHTML = h;
+    }
+    stamp();
+  } catch(e) { document.getElementById('usage-wrap').innerHTML = '<div class="empty">Failed to load usage data.</div>'; console.error(e); }
+}
+
+// ── Init ──
+window.addEventListener('load', () => {
+  loadOverview();
+  setInterval(loadOverview, 60000); // auto-refresh overview every minute
+});
+</script>
+</body>
+</html>
