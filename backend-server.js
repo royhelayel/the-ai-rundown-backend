@@ -218,15 +218,19 @@ app.post('/api/generate/:timeSlot', async (req, res) => {
       return res.status(400).json({ error: 'Invalid time slot' });
     }
 
-    await generateAllNewsForTimeSlot(slot.label);
-    
-    res.json({ 
-      status: 'success', 
-      message: `Generated all news for ${slot.label}`,
+    // Respond immediately so Cloud Scheduler doesn't timeout
+    res.json({
+      status: 'accepted',
+      message: `News generation started for ${slot.label}`,
       timestamp: new Date().toISOString()
     });
+
+    // Run generation in background
+    generateAllNewsForTimeSlot(slot.label).catch(err =>
+      console.error(`Background generation failed for ${slot.label}:`, err.message)
+    );
   } catch (error) {
-    res.status(500).json({ 
+    res.status(500).json({
       error: error.message,
       timestamp: new Date().toISOString()
     });
