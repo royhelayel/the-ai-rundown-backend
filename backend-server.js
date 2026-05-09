@@ -331,7 +331,19 @@ app.post('/api/generate/custom-category', async (req, res) => {
   }
 });
 
-// Manual trigger endpoint for testing
+// Manual trigger endpoint — supports both GET (browser) and POST (Cloud Scheduler)
+app.get('/api/generate/:timeSlot', async (req, res) => {
+  try {
+    const timeSlot = req.params.timeSlot;
+    const slot = TIME_SLOTS.find(s => s.label.toLowerCase() === timeSlot.toLowerCase());
+    if (!slot) return res.status(400).json({ error: 'Invalid time slot' });
+    res.json({ status: 'accepted', message: `News generation started for ${slot.label}`, timestamp: new Date().toISOString() });
+    generateAllNewsForTimeSlot(slot.label).catch(err => console.error(`Background generation failed for ${slot.label}:`, err.message));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/generate/:timeSlot', async (req, res) => {
   try {
     const timeSlot = req.params.timeSlot;
