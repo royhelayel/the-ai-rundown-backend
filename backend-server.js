@@ -406,7 +406,7 @@ app.post('/api/auth/send-verification', async (req, res) => {
     console.log('✓ Token generated');
 
     // === SEND EMAIL ===
-    const verificationLink = `http://localhost:3000/verify-email?token=${verificationToken}&email=${encodeURIComponent(email)}`;
+    const verificationLink = `${process.env.REACT_APP_URL}/verify-email?token=${verificationToken}&email=${encodeURIComponent(email)}`;
     
     const result = await resend.emails.send({
       from: 'noreply@resend.dev',
