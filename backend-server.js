@@ -310,42 +310,26 @@ app.get('/health', (req, res) => {
 
 // Generate news for a single custom category
 app.post('/api/generate/custom-category', async (req, res) => {
-  try {
-    const { category, day, timeSlot } = req.body;
+  const { category, day, timeSlot } = req.body;
 
-    if (!category || !day || !timeSlot) {
-      return res.status(400).json({ error: 'category, day and timeSlot are required' });
-    }
-
-    console.log(`🔧 Generating custom category: ${category} / ${day} / ${timeSlot}`);
-
-    const newsContent = await generateNews(category, day, timeSlot);
-
-    const { error } = await supabaseAdmin
-  .from('news_summaries')
-  .upsert({
-    user_id: req.body.user_id,
-    category: category,
-    day: day,
-    time_slot: timeSlot,
-    content: newsContent,
-    generated_at: new Date().toISOString()
-  }, {
-    onConflict: 'user_id,category,day,time_slot'
-  });
-
-    if (error) {
-      console.error('Failed to save custom category news:', error);
-      return res.status(500).json({ error: 'Failed to save news', details: error.message });
-    }
-
-    console.log(`✓ Custom category news saved: ${category}`);
-    res.json({ success: true, category, day, timeSlot });
-
-  } catch (error) {
-    console.error('Custom category generation error:', error);
-    res.status(500).json({ error: error.message });
+  if (!category || !day || !timeSlot) {
+    return res.status(400).json({ error: 'category, day and timeSlot are required' });
   }
+
+  // Respond immediately so the client can start polling without hitting a timeout
+  res.json({ status: 'accepted', category, day, timeSlot });
+
+  // Generate and store in background
+  (async () => {
+    try {
+      console.log(`🔧 Generating custom category: ${category} / ${day} / ${timeSlot}`);
+      const newsContent = await generateNews(category, day, timeSlot);
+      await storeNews(category, day, timeSlot, newsContent);
+      console.log(`✓ Custom category news saved: ${category}`);
+    } catch (err) {
+      console.error('Custom category generation error:', err.message);
+    }
+  })();
 });
 
 // Manual trigger endpoint — supports both GET (browser) and POST (Cloud Scheduler)
