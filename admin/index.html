@@ -406,17 +406,18 @@ async function loadNews() {
     const data = await api('/news' + qs);
     if (!data?.length) { document.getElementById('news-wrap').innerHTML = '<div class="empty">No news found for these filters.</div>'; return; }
 
+    window._newsItems = data;
     let h = `<table class="data-table"><thead><tr>
       <th>Category</th><th>Date</th><th>Slot</th><th>Generated</th><th></th>
     </tr></thead><tbody>`;
-    data.forEach(n => {
+    data.forEach((n, i) => {
       const gen = n.generated_at ? new Date(n.generated_at).toLocaleString() : '—';
       h += `<tr>
         <td><strong>${n.category}</strong></td>
         <td style="color:#6b7280;font-size:0.8rem;">${n.day}</td>
         <td><span class="badge bp">${n.time_slot}</span></td>
         <td style="color:#6b7280;font-size:0.78rem;">${gen}</td>
-        <td><button onclick='viewNews(${JSON.stringify(JSON.stringify(n))})' style="padding:0.22rem 0.6rem;background:none;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-size:0.75rem;color:#6366f1;font-weight:700;">View</button></td>
+        <td><button onclick="viewNews(${i})" style="padding:0.22rem 0.6rem;background:none;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-size:0.75rem;color:#6366f1;font-weight:700;">View</button></td>
       </tr>`;
     });
     h += `</tbody></table><div class="tbl-footer">${data.length} article${data.length!==1?'s':''}</div>`;
@@ -425,8 +426,8 @@ async function loadNews() {
   } catch(e) { document.getElementById('news-wrap').innerHTML = '<div class="empty">Failed to load.</div>'; }
 }
 
-function viewNews(json) {
-  const n = JSON.parse(json);
+function viewNews(i) {
+  const n = window._newsItems[i];
   document.getElementById('modal-title').textContent = n.category + ' · ' + n.time_slot + ' · ' + n.day;
   document.getElementById('modal-body').textContent  = n.content;
   document.getElementById('modal').classList.add('open');
