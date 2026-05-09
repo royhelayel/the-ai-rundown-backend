@@ -13,15 +13,14 @@ app.use(express.json());
 
 // Constants
 const DEFAULT_CATEGORIES = [
-  'All',
+  'World News',
   'Technology',
   'Business',
   'Politics',
   'Sports',
   'Entertainment',
   'Science',
-  'Health',
-  'World News'
+  'Health'
 ];
 
 const TIME_SLOTS = [
@@ -60,7 +59,7 @@ function getTodayDate() {
 
 // Function to generate news using Claude API (with retry on 429)
 async function generateNews(category, day, timeSlot, retries = 3) {
-  const categoryQuery = category === 'All' ? 'top news' : category;
+  const categoryQuery = (category === 'All' || category === 'World News') ? 'top news' : category;
   const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
 
   console.log(`Generating news for ${category} on ${day} at ${timeSlot}`);
