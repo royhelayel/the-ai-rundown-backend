@@ -1030,6 +1030,17 @@ app.put('/api/user/email-preferences', async (req, res) => {
   }
 });
 
+// Debug: synchronously run generateNews and return result or error
+app.post('/admin/api/debug-generate', async (req, res) => {
+  const { category, day, timeSlot } = req.body;
+  try {
+    const content = await generateNews(category || 'test', day || getTodayDate(), timeSlot || 'Evening');
+    res.json({ ok: true, contentLength: content.length, preview: content.slice(0, 300) });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
