@@ -57,6 +57,22 @@ function getTodayDate() {
   return uaeDate.toISOString().split('T')[0];
 }
 
+function formatDateForEmail(dateStr) {
+  const date = new Date(dateStr + 'T00:00:00Z');
+  return date.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+
+function markdownToEmailHtml(content) {
+  return content
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^### (.+)$/gm, '<h4 style="margin:10px 0 4px;color:#111827;font-size:13px;font-weight:800;letter-spacing:-0.01em;">$1</h4>')
+    .replace(/^## (.+)$/gm,  '<h3 style="margin:14px 0 6px;color:#111827;font-size:15px;font-weight:800;letter-spacing:-0.01em;">$1</h3>')
+    .replace(/^# (.+)$/gm,   '<h2 style="margin:16px 0 8px;color:#111827;font-size:17px;font-weight:800;letter-spacing:-0.01em;">$1</h2>')
+    .replace(/^- (.+)$/gm,   '<div style="margin:3px 0;padding-left:12px;border-left:2px solid #e5e7eb;color:#374151;font-size:14px;">$1</div>')
+    .replace(/\n\n/g, '<br><br>')
+    .replace(/\n/g, '<br>');
+}
+
 // Function to generate news using Claude API (with retry on 429)
 async function generateNews(category, day, timeSlot, retries = 3) {
   const categoryQuery = (category === 'All' || category === 'World News') ? 'top news' : category;
@@ -137,6 +153,111 @@ async function storeNews(category, day, timeSlot, content) {
   }
 }
 
+// Send digest emails to all users opted in for a given time slot
+async function sendNewsDigestEmails(timeSlot, day) {
+  try {
+    const timeSlotKey = timeSlot.toLowerCase();
+
+    // Fetch all verified users
+    const { data: users, error: usersError } = await supabaseAdmin
+      .from('users')
+      .select('id, email, email_preferences')
+      .eq('verification_status', 'verified');
+
+    if (usersError || !users?.length) return;
+
+    const optedIn = users.filter(u => u.email_preferences?.[timeSlotKey] === true);
+    if (!optedIn.length) {
+      console.log(`📭 No users opted in for ${timeSlot} digest`);
+      return;
+    }
+
+    console.log(`📧 Sending ${timeSlot} digest to ${optedIn.length} user(s)...`);
+
+    // Fetch all default category news for this slot/day
+    const { data: newsItems } = await supabaseAdmin
+      .from('news_summaries')
+      .select('category, content')
+      .eq('day', day)
+      .eq('time_slot', timeSlot)
+      .in('category', DEFAULT_CATEGORIES);
+
+    if (!newsItems?.length) {
+      console.log(`No news found for ${timeSlot} digest`);
+      return;
+    }
+
+    // Sort by default category order
+    const sorted = DEFAULT_CATEGORIES.map(cat => newsItems.find(n => n.category === cat)).filter(Boolean);
+
+    const WEBSITE_URL = process.env.REACT_APP_URL || 'https://the-ai-rundown-frontend.vercel.app';
+    const formattedDate = formatDateForEmail(day);
+
+    const emailHtml = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f5f7fa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0">
+<tr><td align="center" style="padding:24px 16px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;">
+
+<tr><td style="background:linear-gradient(135deg,#6366f1 0%,#ec4899 100%);border-radius:12px 12px 0 0;padding:28px 32px;">
+  <p style="margin:0;font-size:22px;font-weight:900;color:white;letter-spacing:-0.02em;">✦ The AI Rundown</p>
+  <p style="margin:8px 0 0;font-size:14px;color:rgba(255,255,255,0.82);">${timeSlot} Digest &nbsp;·&nbsp; ${formattedDate}</p>
+</td></tr>
+
+<tr><td style="background:white;padding:20px 32px 16px;">
+  <a href="${WEBSITE_URL}" style="display:inline-block;padding:10px 22px;background:linear-gradient(135deg,#6366f1,#ec4899);color:white;text-decoration:none;border-radius:999px;font-weight:700;font-size:13px;">View on Website →</a>
+</td></tr>
+<tr><td style="background:white;padding:0 32px;"><hr style="border:none;border-top:1px solid #f3f4f6;margin:0;"></td></tr>
+
+${sorted.map(item => `
+<tr><td style="background:white;padding:24px 32px 20px;">
+  <h2 style="margin:0 0 10px;font-size:17px;font-weight:800;color:#111827;letter-spacing:-0.02em;">${item.category}</h2>
+  <div style="font-size:14px;line-height:1.75;color:#374151;">${markdownToEmailHtml(item.content)}</div>
+</td></tr>
+<tr><td style="background:white;padding:0 32px;"><hr style="border:none;border-top:1px solid #f3f4f6;margin:0;"></td></tr>
+`).join('')}
+
+<tr><td style="background:#faf8ff;padding:24px 32px;border-top:3px solid #6366f1;">
+  <p style="margin:0 0 6px;font-size:14px;font-weight:800;color:#6366f1;">Want news on your specific topics?</p>
+  <p style="margin:0 0 14px;font-size:13px;color:#64748b;line-height:1.6;">Custom categories (your favourite team, company, or niche topic) are generated on demand and won't appear in this email. Log in and click any custom category to generate it instantly.</p>
+  <a href="${WEBSITE_URL}" style="display:inline-block;padding:9px 20px;border:1.5px solid #6366f1;color:#6366f1;text-decoration:none;border-radius:999px;font-weight:700;font-size:12px;background:white;">Generate Custom News →</a>
+</td></tr>
+
+<tr><td style="background:#f5f7fa;border-radius:0 0 12px 12px;padding:16px 32px;text-align:center;">
+  <p style="margin:0;font-size:12px;color:#9ca3af;line-height:1.6;">
+    You're receiving this because you subscribed to ${timeSlot} digests on The AI Rundown.<br>
+    <a href="${WEBSITE_URL}" style="color:#6366f1;text-decoration:none;font-weight:600;">Manage your preferences</a>
+  </p>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`;
+
+    for (const user of optedIn) {
+      try {
+        await resend.emails.send({
+          from: process.env.FROM_EMAIL || 'noreply@resend.dev',
+          to: user.email,
+          subject: `Your ${timeSlot} AI Rundown — ${formattedDate}`,
+          html: emailHtml
+        });
+        console.log(`  ✉️  Sent to ${user.email}`);
+      } catch (err) {
+        console.error(`  ✗ Failed for ${user.email}:`, err.message);
+      }
+    }
+
+    console.log(`✅ ${timeSlot} digest sent to ${optedIn.length} user(s)`);
+  } catch (error) {
+    console.error('Error sending digest emails:', error.message);
+  }
+}
+
 // Function to generate all news for a time slot
 async function generateAllNewsForTimeSlot(timeSlot) {
   console.log(`\n🚀 Starting news generation for ${timeSlot} time slot...`);
@@ -156,6 +277,9 @@ async function generateAllNewsForTimeSlot(timeSlot) {
   }
   
   console.log(`✨ Completed news generation for ${timeSlot} time slot\n`);
+
+  // Email digest to opted-in users
+  await sendNewsDigestEmails(timeSlot, today);
 }
 
 // Cloud Scheduler will trigger the /api/generate/:timeSlot endpoints
@@ -696,6 +820,27 @@ app.post('/api/metrics/track', async (req, res) => {
 
   } catch (error) {
     console.error('Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// ENDPOINT: SAVE EMAIL PREFERENCES
+// ==========================================
+app.put('/api/user/email-preferences', async (req, res) => {
+  try {
+    const { userId, preferences } = req.body;
+    if (!userId || !preferences) {
+      return res.status(400).json({ error: 'userId and preferences are required' });
+    }
+    const { error } = await supabaseAdmin
+      .from('users')
+      .update({ email_preferences: preferences })
+      .eq('id', userId);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error saving email preferences:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
