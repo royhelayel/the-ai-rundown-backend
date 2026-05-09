@@ -407,17 +407,15 @@ async function loadNews() {
     if (!data?.length) { document.getElementById('news-wrap').innerHTML = '<div class="empty">No news found for these filters.</div>'; return; }
 
     let h = `<table class="data-table"><thead><tr>
-      <th>Category</th><th>Date</th><th>Slot</th><th>Generated</th><th>Preview</th><th></th>
+      <th>Category</th><th>Date</th><th>Slot</th><th>Generated</th><th></th>
     </tr></thead><tbody>`;
     data.forEach(n => {
-      const preview = (n.content||'').replace(/\*\*/g,'').replace(/#{1,3} /g,'').slice(0,110) + '…';
       const gen = n.generated_at ? new Date(n.generated_at).toLocaleString() : '—';
       h += `<tr>
         <td><strong>${n.category}</strong></td>
         <td style="color:#6b7280;font-size:0.8rem;">${n.day}</td>
         <td><span class="badge bp">${n.time_slot}</span></td>
         <td style="color:#6b7280;font-size:0.78rem;">${gen}</td>
-        <td><span class="truncate" style="font-size:0.8rem;color:#64748b;">${preview}</span></td>
         <td><button onclick='viewNews(${JSON.stringify(JSON.stringify(n))})' style="padding:0.22rem 0.6rem;background:none;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-size:0.75rem;color:#6366f1;font-weight:700;">View</button></td>
       </tr>`;
     });
