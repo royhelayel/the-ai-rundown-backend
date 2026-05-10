@@ -79,8 +79,20 @@ function markdownToEmailHtml(content) {
 }
 
 // Function to generate news using Claude API (with retry on 429)
+// Map broad category names to richer search queries that surface fresh results
+const CATEGORY_SEARCH_QUERIES = {
+  'Technology':    'latest technology news Apple Google Meta Microsoft AI gadgets announcements',
+  'Business':      'latest business markets economy finance corporate news',
+  'Politics':      'latest politics government elections policy legislation news',
+  'Sports':        'latest sports results scores transfers breaking news',
+  'Entertainment': 'latest entertainment movies music celebrity film television news',
+  'Science':       'latest science research discoveries space climate health news',
+  'Health':        'latest health medicine medical research pandemic wellness news',
+  'World News':    'top global breaking news world events today',
+};
+
 async function generateNews(category, day, timeSlot, retries = 3) {
-  const categoryQuery = (category === 'All' || category === 'World News') ? 'top news' : category;
+  const categoryQuery = CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category);
   const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
 
   console.log(`Generating news for ${category} on ${day} at ${timeSlot}`);
@@ -97,7 +109,9 @@ async function generateNews(category, day, timeSlot, retries = 3) {
       max_tokens: 4000,
       messages: [{
         role: "user",
-        content: `Search for the latest news about "${categoryQuery}" from ${dayInfo}. This is a global news digest — search across international sources, not just US media. Prioritize articles published in the last 24 hours.
+        content: `Search for: ${categoryQuery} — published ${dayInfo} (${day}). This is a global news digest covering international sources worldwide, not limited to US media.
+
+Important: There is ALWAYS fresh news published every day on every major topic. Do not conclude there is nothing — search specifically, try multiple angles, look for announcements, company news, political developments, research releases, match results, etc.
 
 Write a news digest covering 6 to 8 distinct stories. Use ONLY this format — no introduction, no preamble, no section groupings:
 
@@ -111,7 +125,7 @@ Write a news digest covering 6 to 8 distinct stories. Use ONLY this format — n
 - Key fact
 - ...
 
-If articles from the exact date are unavailable, include the most recent available (within 48 hours) and add ONE italic line at the very top: _Note: Most recent articles found are from [date]._
+Only if genuinely no articles from ${day} exist (within 48 hours), add this one sentence before the first ##: _I found that the most recent [category] news available is from [date] and earlier dates._
 
 After all stories, add:
 ## Sources
