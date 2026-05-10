@@ -68,14 +68,74 @@ function formatDateForEmail(dateStr) {
 }
 
 function markdownToEmailHtml(content) {
-  return content
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/^### (.+)$/gm, '<h4 style="margin:10px 0 4px;color:#111827;font-size:13px;font-weight:800;letter-spacing:-0.01em;">$1</h4>')
-    .replace(/^## (.+)$/gm,  '<h3 style="margin:14px 0 6px;color:#111827;font-size:15px;font-weight:800;letter-spacing:-0.01em;">$1</h3>')
-    .replace(/^# (.+)$/gm,   '<h2 style="margin:16px 0 8px;color:#111827;font-size:17px;font-weight:800;letter-spacing:-0.01em;">$1</h2>')
-    .replace(/^- (.+)$/gm,   '<div style="margin:3px 0;padding-left:12px;border-left:2px solid #e5e7eb;color:#374151;font-size:14px;">$1</div>')
-    .replace(/\n\n/g, '<br><br>')
-    .replace(/\n/g, '<br>');
+  const getDomain = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
+
+  // 1. Split sources section
+  const sourcesIdx = content.search(/^#{1,3} (?:\[)?Sources(?:\]|\()?/im);
+  const beforeSources = sourcesIdx > -1 ? content.slice(0, sourcesIdx).trim() : content.trim();
+  const sourcesSection = sourcesIdx > -1 ? content.slice(sourcesIdx) : '';
+  const sourceLinks = [...sourcesSection.matchAll(/[-*\d.]\s*\[([^\]]+)\]\(([^)\s]+)\)/g)]
+    .map(m => ({ title: m[1], url: m[2] }))
+    .filter((s, i, arr) => arr.findIndex(x => x.url === s.url) === i);
+
+  // 2. Extract top note (italic disclaimer before first ## heading)
+  const firstHeadingIdx = beforeSources.search(/^#{1,3} /m);
+  const topNote = firstHeadingIdx > 0 ? beforeSources.slice(0, firstHeadingIdx).trim() : '';
+  const mainContent = firstHeadingIdx > 0 ? beforeSources.slice(firstHeadingIdx).trim() : beforeSources;
+
+  // 3. Render stories
+  const bodyHtml = mainContent
+    .replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ')
+    .replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2')
+    .replace(/^[-*.]\s*$/gm, '')
+    .replace(/^\*\*Why this matters:\*\*\s*(.+)$/gm, (_, text) =>
+      `<div style="margin:6px 0 14px;padding:8px 12px;background:#f5f3ff;border-left:3px solid #6366f1;border-radius:0 6px 6px 0;font-size:13px;color:#6b7280;line-height:1.5;"><span style="display:block;color:#6366f1;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.03em;margin-bottom:3px;">Why this matters</span>${text}</div>`
+    )
+    .replace(/\*\*(.+?)\*\*/g, '<strong style="font-weight:700;color:#111827;">$1</strong>')
+    .replace(/_(.*?)_/g, '<em style="color:#9ca3af;font-style:italic;">$1</em>')
+    .replace(/^#{1,3} \[(.+?)\]\(([^)\s]+)\)/gm, (_, text, url) =>
+      `<div style="margin:18px 0 5px;padding-top:12px;border-top:1px solid #f3f4f6;"><a href="${url}" target="_blank" rel="noopener noreferrer" style="font-size:15px;font-weight:800;color:#111827;text-decoration:underline;text-decoration-color:#d1d5db;line-height:1.3;">${text}</a></div>`
+    )
+    .replace(/^#{1,3} (.+)$/gm, (_, text) =>
+      `<div style="font-size:15px;font-weight:800;color:#374151;margin:18px 0 5px;padding-top:12px;border-top:1px solid #f3f4f6;line-height:1.3;">${text}</div>`
+    )
+    .replace(/^[-*] (.+)$/gm, (_, text) =>
+      `<div style="margin:4px 0 4px 10px;padding-left:8px;border-left:2px solid #e5e7eb;color:#374151;font-size:13px;line-height:1.55;">${text}</div>`
+    )
+    .replace(/\n\n+/g, '<div style="height:4px;"></div>')
+    .replace(/\n/g, '');
+
+  // 4. Source cards — 2-column table for email client compatibility
+  let sourcesHtml = '';
+  if (sourceLinks.length > 0) {
+    const rows = [];
+    for (let i = 0; i < sourceLinks.length; i += 2) {
+      const pair = [sourceLinks[i], sourceLinks[i + 1]].filter(Boolean);
+      const cells = pair.map(s => {
+        const domain = getDomain(s.url);
+        return `<td width="50%" style="padding:4px;vertical-align:top;">
+          <a href="${s.url}" target="_blank" rel="noopener noreferrer" style="display:block;padding:8px 10px;background:#fafafa;border:1px solid #f0f0f0;border-radius:8px;text-decoration:none;">
+            <div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${domain}</div>
+            <div style="font-size:12px;font-weight:600;color:#1e293b;line-height:1.35;">${s.title}</div>
+            <div style="font-size:10px;color:#6366f1;font-weight:600;margin-top:5px;">Read article ↗</div>
+          </a>
+        </td>`;
+      }).join('');
+      rows.push(`<tr>${cells}</tr>`);
+    }
+    sourcesHtml = `<div style="margin-bottom:18px;">
+      <p style="margin:0 0 8px;font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.07em;">Sources</p>
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">${rows.join('')}</table>
+      <div style="border-top:1px solid #f3f4f6;margin-top:14px;"></div>
+    </div>`;
+  }
+
+  // 5. Top note
+  const topNoteHtml = topNote
+    ? `<p style="font-style:italic;color:#9ca3af;font-size:12px;margin:0 0 14px;line-height:1.5;">${topNote.replace(/^_+|_+$/g, '').replace(/\*\*(.+?)\*\*/g, '<strong style="color:#6b7280;font-weight:700;">$1</strong>')}</p>`
+    : '';
+
+  return topNoteHtml + sourcesHtml + bodyHtml;
 }
 
 // Function to generate news using Claude API (with retry on 429)
