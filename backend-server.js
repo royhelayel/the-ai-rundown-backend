@@ -97,7 +97,20 @@ async function generateNews(category, day, timeSlot, retries = 3) {
       max_tokens: 1500,
       messages: [{
         role: "user",
-        content: `Do a single web search for the latest news about "${categoryQuery}" from ${dayInfo}. Then write a well-structured summary covering the most important stories and key developments. Format with clear sections and headlines. Complete all sentences — do not cut off mid-sentence.`
+        content: `Search for the latest news about "${categoryQuery}" published on ${dayInfo}. Prioritize articles from the past 24 hours — if the most recent news is older, say so.
+
+Write a balanced, well-sourced news summary following these rules:
+- Format each main story as a heading that links to the source article: ## [Story Headline](https://actual-article-url.com)
+- Under each heading, use short bullet points for key details
+- For contested or politically sensitive claims, ALWAYS use attribution: "According to [source]...", "[Party X] claims...", "[Party Y] disputes this, stating...". Do not present debatable claims as undisputed facts.
+- When a topic has multiple sides (political, geopolitical, scientific debate), briefly represent each perspective
+- Complete all sentences — do not cut off mid-sentence
+
+End your response with a section in this exact format:
+## Sources
+- [Article title](URL)
+- [Article title](URL)
+(list every article you cited)`
       }],
       tools: [{ type: "web_search_20250305", name: "web_search" }]
     })
