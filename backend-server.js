@@ -141,37 +141,40 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
     .map(item => item.text)
     .join("\n");
 
-  // Step 1: Detect a date availability disclaimer before stripping anything
-  const dateMatch = rawSummary.match(
-    /most recent[^.\n]*?(?:news|articles?)[^.\n]*?(?:are from|is from|available[^.\n]*?from)\s+([A-Z][a-z]+ \d+(?:,\s*\d{4})?|\d{4}-\d{2}-\d{2})/i
-  );
-  const dateNote = dateMatch ? `_Note: Most recent articles found are from ${dateMatch[1].trim()}._` : '';
-
-  // Step 2: Remove specific filler lines wherever they appear
+  // Step 1: Remove specific throwaway lines Claude adds (sentence by sentence, line by line)
+  // Keep "Based on my search results..." and "There are no articles..." — those are useful disclaimers
+  const linesToRemove = [
+    /^I['']ll search\b/i,
+    /^Let me search\b/i,
+    /^Here is a summary\b/i,
+    /^The most recent major\b/i,
+  ];
   const noFiller = rawSummary
     .split('\n')
-    .filter(line => {
-      const t = line.trim();
-      return !/(^I['']ll search\b|^Let me search\b|^Here is a summary\b|^Based on my search results\b)/i.test(t)
-        && !/most recent[^.]*?(news|articles?)[^.]*?(available|from)[^.]*?\./i.test(t)
-        && !/[Tt]here are no[^.]*?articles?[^.]*?published[^.]*?\./i.test(t)
-        && !/[Tt]he most recent major[^.]*?stories?[^.]*?\./i.test(t);
-    })
+    .filter(line => !linesToRemove.some(re => re.test(line.trim())))
     .join('\n');
 
-  // Step 3: Strip everything before the first ## heading
-  const filteredLines = noFiller.split('\n');
-  const firstHeadingIdx = filteredLines.findIndex(l => /^#{1,3}[\s\[]/.test(l) || /^#{1,3}$/.test(l.trim()));
-  const afterPreamble = firstHeadingIdx > 0 ? filteredLines.slice(firstHeadingIdx).join('\n') : noFiller;
+  // Step 2: Separate disclaimer (before first ##) from story content (from first ## onward)
+  const allLines = noFiller.split('\n');
+  const firstHeadingIdx = allLines.findIndex(l => /^#{1,3}[\s\[]/.test(l) || /^#{1,3}$/.test(l.trim()));
+  const disclaimerLines = firstHeadingIdx > 0 ? allLines.slice(0, firstHeadingIdx) : [];
+  const storyLines    = firstHeadingIdx > 0 ? allLines.slice(firstHeadingIdx) : allLines;
 
-  // Step 4: Fix Claude putting ## on its own line — join with the next non-empty line
-  const joined = afterPreamble.replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ');
+  // Clean up the disclaimer: remove blank lines, trim
+  const disclaimer = disclaimerLines
+    .map(l => l.trim())
+    .filter(Boolean)
+    .join(' ')
+    .trim();
 
-  // Step 5: Fix missing opening [ in headings like: ## Title](URL) → ## [Title](URL)
+  // Step 3: Fix Claude putting ## on its own line — join with next non-empty line
+  const joined = storyLines.join('\n').replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ');
+
+  // Step 4: Fix missing opening [ in headings: ## Title](URL) → ## [Title](URL)
   const fixedHeadings = joined.replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2');
 
-  // Step 6: Prepend the short date note if one was detected
-  const summary = (dateNote ? dateNote + '\n\n' : '') + fixedHeadings;
+  // Step 5: Prepend disclaimer as a single italic line if present
+  const summary = (disclaimer ? `_${disclaimer}_\n\n` : '') + fixedHeadings;
 
   // Track token usage for cost monitoring (fire-and-forget)
   if (data.usage) {
