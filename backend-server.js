@@ -94,23 +94,29 @@ async function generateNews(category, day, timeSlot, retries = 3) {
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 1500,
+      max_tokens: 4000,
       messages: [{
         role: "user",
-        content: `Search for the latest news about "${categoryQuery}" published on ${dayInfo}. Prioritize articles from the past 24 hours — if the most recent news is older, say so.
+        content: `Search for the latest news about "${categoryQuery}" from ${dayInfo}. Prioritize articles published in the last 24 hours.
 
-Write a balanced, well-sourced news summary following these rules:
-- Format each main story as a heading that links to the source article: ## [Story Headline](https://actual-article-url.com)
-- Under each heading, use short bullet points for key details
-- For contested or politically sensitive claims, ALWAYS use attribution: "According to [source]...", "[Party X] claims...", "[Party Y] disputes this, stating...". Do not present debatable claims as undisputed facts.
-- When a topic has multiple sides (political, geopolitical, scientific debate), briefly represent each perspective
-- Complete all sentences — do not cut off mid-sentence
+Write a news digest covering 6 to 8 distinct stories. Use ONLY this format — no introduction, no section groupings, no preamble:
 
-End your response with a section in this exact format:
+## [Exact Article Headline](https://full-article-url.com)
+- Key fact or development
+- Another key detail
+- For contested claims, use attribution: "According to [source]..." or "[Party X] claims... [Party Y] disputes this, stating..."
+- Include perspectives from multiple sides when the topic is politically or geopolitically sensitive
+
+## [Next Article Headline](https://full-article-url.com)
+- Key fact
+- ...
+
+After all stories, add:
 ## Sources
 - [Article title](URL)
 - [Article title](URL)
-(list every article you cited)`
+
+Rules: Do NOT add any intro text. Start directly with the first ## heading. Use the actual article URL in every heading. Complete all sentences.`
       }],
       tools: [{ type: "web_search_20250305", name: "web_search" }]
     })
