@@ -121,7 +121,7 @@ async function generateNews(category, day, timeSlot, retries = 3) {
     .map(item => item.text)
     .join("\n");
 
-  // Track token usage for cost monitoring
+  // Track token usage for cost monitoring (fire-and-forget)
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
     const estimated_cost_usd = (input_tokens / 1_000_000) * 3 + (output_tokens / 1_000_000) * 15;
@@ -130,7 +130,9 @@ async function generateNews(category, day, timeSlot, retries = 3) {
       input_tokens, output_tokens, estimated_cost_usd,
       category, time_slot: timeSlot,
       created_at: new Date().toISOString()
-    }).catch(err => console.warn('Could not track API usage:', err.message));
+    }).then(({ error }) => {
+      if (error) console.warn('Could not track API usage:', error.message);
+    }, err => console.warn('Could not track API usage:', err.message));
   }
 
   return summary;
