@@ -1213,6 +1213,16 @@ app.put('/api/user/email-preferences', async (req, res) => {
 });
 
 // Debug: synchronously run generateNews and return result or error
+app.get('/admin/api/raw-content', async (req, res) => {
+  const { category, day, timeSlot } = req.query;
+  const { data } = await supabaseAdmin.from('news_summaries').select('content')
+    .eq('category', category || 'World News')
+    .eq('day', day || getTodayDate())
+    .eq('time_slot', timeSlot || 'Morning')
+    .maybeSingle();
+  res.json({ content: data?.content || null });
+});
+
 app.post('/admin/api/debug-generate', async (req, res) => {
   const { category, day, timeSlot } = req.body;
   try {
