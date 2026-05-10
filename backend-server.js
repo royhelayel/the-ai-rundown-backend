@@ -120,10 +120,12 @@ Write a news digest covering 6 to 8 distinct stories. Use ONLY this format — n
 - Another key detail
 - For contested claims use attribution: "According to [source]..." or "[Party X] claims... [Party Y] disputes this, stating..."
 - When a topic has political or geopolitical dimensions, briefly include both perspectives
+**Why this matters:** One or two sentences explaining why this story is significant and why readers should care.
 
 ## [Next Article Headline](https://full-article-url.com)
 - Key fact
 - ...
+**Why this matters:** Explanation.
 
 Only if genuinely no articles from ${day} exist (within 48 hours), add this one sentence before the first ##: _I found that the most recent [category] news available is from [date] and earlier dates._
 
