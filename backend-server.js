@@ -141,16 +141,37 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
     .map(item => item.text)
     .join("\n");
 
-  // Strip Claude's thinking preamble — keep only from the first ## heading onward
-  const lines = rawSummary.split('\n');
-  const firstHeadingIdx = lines.findIndex(l => /^#{1,3}[\s\[]/.test(l) || /^#{1,3}$/.test(l.trim()));
-  const afterPreamble = firstHeadingIdx > 0 ? lines.slice(firstHeadingIdx).join('\n') : rawSummary;
+  // Step 1: Detect a date availability disclaimer before stripping anything
+  const dateMatch = rawSummary.match(
+    /most recent[^.\n]*?(?:news|articles?)[^.\n]*?(?:are from|is from|available[^.\n]*?from)\s+([A-Z][a-z]+ \d+(?:,\s*\d{4})?|\d{4}-\d{2}-\d{2})/i
+  );
+  const dateNote = dateMatch ? `_Note: Most recent articles found are from ${dateMatch[1].trim()}._` : '';
 
-  // Fix Claude putting ## on its own line — join with the next non-empty line
+  // Step 2: Remove specific filler lines wherever they appear
+  const noFiller = rawSummary
+    .split('\n')
+    .filter(line => {
+      const t = line.trim();
+      return !/(^I['']ll search\b|^Let me search\b|^Here is a summary\b|^Based on my search results\b)/i.test(t)
+        && !/most recent[^.]*?(news|articles?)[^.]*?(available|from)[^.]*?\./i.test(t)
+        && !/[Tt]here are no[^.]*?articles?[^.]*?published[^.]*?\./i.test(t)
+        && !/[Tt]he most recent major[^.]*?stories?[^.]*?\./i.test(t);
+    })
+    .join('\n');
+
+  // Step 3: Strip everything before the first ## heading
+  const filteredLines = noFiller.split('\n');
+  const firstHeadingIdx = filteredLines.findIndex(l => /^#{1,3}[\s\[]/.test(l) || /^#{1,3}$/.test(l.trim()));
+  const afterPreamble = firstHeadingIdx > 0 ? filteredLines.slice(firstHeadingIdx).join('\n') : noFiller;
+
+  // Step 4: Fix Claude putting ## on its own line — join with the next non-empty line
   const joined = afterPreamble.replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ');
 
-  // Fix missing opening [ in headings like: ## Title](URL) → ## [Title](URL)
-  const summary = joined.replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2');
+  // Step 5: Fix missing opening [ in headings like: ## Title](URL) → ## [Title](URL)
+  const fixedHeadings = joined.replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2');
+
+  // Step 6: Prepend the short date note if one was detected
+  const summary = (dateNote ? dateNote + '\n\n' : '') + fixedHeadings;
 
   // Track token usage for cost monitoring (fire-and-forget)
   if (data.usage) {
