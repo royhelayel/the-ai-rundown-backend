@@ -185,7 +185,7 @@ async function sendNewsDigestEmails(timeSlot, day) {
 
     if (usersError || !users?.length) return;
 
-    // Support both old format { morning: true } and new format { morning: { enabled: true, categories: [] } }
+    // Support old { morning: true }, intermediate { morning: { enabled: true } }, and new flat { morning: true, categories: [] }
     const optedIn = users.filter(u => {
       const pref = u.email_preferences?.[timeSlotKey];
       return pref === true || pref?.enabled === true;
@@ -216,11 +216,11 @@ async function sendNewsDigestEmails(timeSlot, day) {
 
     for (const user of optedIn) {
       try {
-        // Determine which categories this user wants
-        const pref = user.email_preferences?.[timeSlotKey];
-        const userCategories = (typeof pref === 'boolean')
-          ? DEFAULT_CATEGORIES
-          : (pref.categories?.length ? pref.categories : DEFAULT_CATEGORIES);
+        // Determine which categories this user wants (new flat format stores categories at top level)
+        const prefs = user.email_preferences || {};
+        const userCategories = Array.isArray(prefs.categories) && prefs.categories.length
+          ? prefs.categories
+          : DEFAULT_CATEGORIES;
 
         // Filter and sort news to user's chosen categories
         const sorted = userCategories
@@ -892,6 +892,7 @@ app.get('/admin/api/overview', async (req, res) => {
     usersWithPrefs?.forEach(u => {
       Object.keys(emailSubs).forEach(slot => {
         const pref = u.email_preferences?.[slot];
+        // handles: boolean true, { enabled: true }, or new flat format where slot key is boolean
         if (pref === true || pref?.enabled === true) emailSubs[slot]++;
       });
     });
