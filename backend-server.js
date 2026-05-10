@@ -1207,6 +1207,16 @@ app.post('/admin/api/test-email', async (req, res) => {
   }
 });
 
+// Schedule news generation for each time slot (Dubai timezone)
+TIME_SLOTS.forEach(slot => {
+  cron.schedule(slot.cronTime, () => {
+    console.log(`⏰ Cron triggered: ${slot.label}`);
+    generateAllNewsForTimeSlot(slot.label).catch(err =>
+      console.error(`Cron generation failed for ${slot.label}:`, err.message)
+    );
+  }, { timezone: 'Asia/Dubai' });
+});
+
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
