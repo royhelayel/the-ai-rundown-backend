@@ -185,7 +185,12 @@ async function sendNewsDigestEmails(timeSlot, day) {
 
     if (usersError || !users?.length) return;
 
-    const optedIn = users.filter(u => u.email_preferences?.[timeSlotKey] === true);
+    // Support both old format { morning: true } and new format { morning: { enabled: true, categories: [] } }
+    const optedIn = users.filter(u => {
+      const pref = u.email_preferences?.[timeSlotKey];
+      return pref === true || pref?.enabled === true;
+    });
+
     if (!optedIn.length) {
       console.log(`📭 No users opted in for ${timeSlot} digest`);
       return;
@@ -193,7 +198,7 @@ async function sendNewsDigestEmails(timeSlot, day) {
 
     console.log(`📧 Sending ${timeSlot} digest to ${optedIn.length} user(s)...`);
 
-    // Fetch all default category news for this slot/day
+    // Fetch all default category news for this slot/day (fetch all, filter per user)
     const { data: newsItems } = await supabaseAdmin
       .from('news_summaries')
       .select('category, content')
@@ -206,13 +211,28 @@ async function sendNewsDigestEmails(timeSlot, day) {
       return;
     }
 
-    // Sort by default category order
-    const sorted = DEFAULT_CATEGORIES.map(cat => newsItems.find(n => n.category === cat)).filter(Boolean);
-
     const WEBSITE_URL = process.env.REACT_APP_URL || 'https://the-ai-rundown-frontend.vercel.app';
     const formattedDate = formatDateForEmail(day);
 
-    const emailHtml = `<!DOCTYPE html>
+    for (const user of optedIn) {
+      try {
+        // Determine which categories this user wants
+        const pref = user.email_preferences?.[timeSlotKey];
+        const userCategories = (typeof pref === 'boolean')
+          ? DEFAULT_CATEGORIES
+          : (pref.categories?.length ? pref.categories : DEFAULT_CATEGORIES);
+
+        // Filter and sort news to user's chosen categories
+        const sorted = userCategories
+          .map(cat => newsItems.find(n => n.category === cat))
+          .filter(Boolean);
+
+        if (!sorted.length) {
+          console.log(`  ⏭️  Skipping ${user.email} — none of their categories have news`);
+          continue;
+        }
+
+        const emailHtml = `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background:#f5f7fa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
@@ -221,7 +241,7 @@ async function sendNewsDigestEmails(timeSlot, day) {
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;">
 
 <tr><td style="background:linear-gradient(135deg,#6366f1 0%,#ec4899 100%);border-radius:12px 12px 0 0;padding:28px 32px;">
-  <p style="margin:0;font-size:22px;font-weight:900;color:white;letter-spacing:-0.02em;">✦ The AI Rundown</p>
+  <p style="margin:0;font-size:22px;font-weight:900;color:white;letter-spacing:-0.02em;">✦ The Rundown</p>
   <p style="margin:8px 0 0;font-size:14px;color:rgba(255,255,255,0.82);">${timeSlot} Digest &nbsp;·&nbsp; ${formattedDate}</p>
 </td></tr>
 
@@ -246,7 +266,7 @@ ${sorted.map(item => `
 
 <tr><td style="background:#f5f7fa;border-radius:0 0 12px 12px;padding:16px 32px;text-align:center;">
   <p style="margin:0;font-size:12px;color:#9ca3af;line-height:1.6;">
-    You're receiving this because you subscribed to ${timeSlot} digests on The AI Rundown.<br>
+    You're receiving this because you subscribed to ${timeSlot} digests on The Rundown.<br>
     <a href="${WEBSITE_URL}" style="color:#6366f1;text-decoration:none;font-weight:600;">Manage your preferences</a>
   </p>
 </td></tr>
@@ -257,15 +277,13 @@ ${sorted.map(item => `
 </body>
 </html>`;
 
-    for (const user of optedIn) {
-      try {
         await resend.emails.send({
           from: process.env.FROM_EMAIL || 'noreply@resend.dev',
           to: user.email,
-          subject: `Your ${timeSlot} AI Rundown — ${formattedDate}`,
+          subject: `Your ${timeSlot} Rundown — ${formattedDate}`,
           html: emailHtml
         });
-        console.log(`  ✉️  Sent to ${user.email}`);
+        console.log(`  ✉️  Sent to ${user.email} (${sorted.length} categories)`);
       } catch (err) {
         console.error(`  ✗ Failed for ${user.email}:`, err.message);
       }
@@ -553,9 +571,9 @@ app.post('/api/auth/send-verification', async (req, res) => {
     const result = await resend.emails.send({
       from: 'noreply@resend.dev',
       to: email,
-      subject: 'Verify your email - The AI Rundown',
+      subject: 'Verify your email - The Rundown',
       html: `
-        <h2>Welcome to The AI Rundown!</h2>
+        <h2>Welcome to The Rundown!</h2>
         <p>Click the link below to verify your email and complete your sign-up:</p>
         <a href="${verificationLink}" style="padding: 10px 20px; background: #6366f1; color: white; text-decoration: none; border-radius: 5px; display: inline-block;">
           Verify Email
@@ -745,7 +763,7 @@ app.post('/api/auth/resend-verification', async (req, res) => {
     const { error: emailError } = await resend.emails.send({
       from: process.env.FROM_EMAIL,
       to: email,
-      subject: '✨ Verify Your Email - The AI Rundown (Resend)',
+      subject: '✨ Verify Your Email - The Rundown (Resend)',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; background: #f5f7fa;">
           <div style="background: white; padding: 40px; border-radius: 12px;">
@@ -873,7 +891,8 @@ app.get('/admin/api/overview', async (req, res) => {
     const emailSubs = { night: 0, morning: 0, noon: 0, afternoon: 0, evening: 0 };
     usersWithPrefs?.forEach(u => {
       Object.keys(emailSubs).forEach(slot => {
-        if (u.email_preferences?.[slot] === true) emailSubs[slot]++;
+        const pref = u.email_preferences?.[slot];
+        if (pref === true || pref?.enabled === true) emailSubs[slot]++;
       });
     });
 
