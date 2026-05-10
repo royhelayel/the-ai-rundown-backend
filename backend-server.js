@@ -160,12 +160,9 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
   const disclaimerLines = firstHeadingIdx > 0 ? allLines.slice(0, firstHeadingIdx) : [];
   const storyLines    = firstHeadingIdx > 0 ? allLines.slice(firstHeadingIdx) : allLines;
 
-  // Clean up the disclaimer: remove blank lines, trim
-  const disclaimer = disclaimerLines
-    .map(l => l.trim())
-    .filter(Boolean)
-    .join(' ')
-    .trim();
+  // From the disclaimer block, extract only the "I found that ... available is from DATE" sentence
+  const fullDisclaimer = disclaimerLines.map(l => l.trim()).filter(Boolean).join(' ');
+  const usefulSentence = (fullDisclaimer.match(/I found that[^.]+\./i) || [])[0] || '';
 
   // Step 3: Fix Claude putting ## on its own line — join with next non-empty line
   const joined = storyLines.join('\n').replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ');
@@ -173,8 +170,8 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
   // Step 4: Fix missing opening [ in headings: ## Title](URL) → ## [Title](URL)
   const fixedHeadings = joined.replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2');
 
-  // Step 5: Prepend disclaimer as a single italic line if present
-  const summary = (disclaimer ? `_${disclaimer}_\n\n` : '') + fixedHeadings;
+  // Step 5: Prepend the one useful disclaimer sentence as italic if found
+  const summary = (usefulSentence ? `_${usefulSentence}_\n\n` : '') + fixedHeadings;
 
   // Track token usage for cost monitoring (fire-and-forget)
   if (data.usage) {
