@@ -117,7 +117,7 @@ After all stories, add:
 ## Sources
 - [Article title](URL)
 
-Rules: Start directly with the first ## heading — no preamble text whatsoever. Use the real article URL in every heading. Every bullet point must have actual content — no empty bullets. Complete all sentences.`
+Rules: Start directly with the first ## heading — no preamble text whatsoever. The ## symbol and the [Title](URL) MUST be on the same line, never on separate lines. Use the real article URL in every heading. Every bullet point must have actual content — no empty bullets. Complete all sentences.`
       }],
       tools: [{ type: "web_search_20250305", name: "web_search" }]
     })
@@ -143,8 +143,14 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
 
   // Strip Claude's thinking preamble — keep only from the first ## heading onward
   const lines = rawSummary.split('\n');
-  const firstHeadingIdx = lines.findIndex(l => /^#{1,3} /.test(l));
-  const summary = firstHeadingIdx > 0 ? lines.slice(firstHeadingIdx).join('\n') : rawSummary;
+  const firstHeadingIdx = lines.findIndex(l => /^#{1,3}[\s\[]/.test(l) || /^#{1,3}$/.test(l.trim()));
+  const afterPreamble = firstHeadingIdx > 0 ? lines.slice(firstHeadingIdx).join('\n') : rawSummary;
+
+  // Fix Claude putting ## on its own line — join with the next non-empty line
+  const joined = afterPreamble.replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ');
+
+  // Fix missing opening [ in headings like: ## Title](URL) → ## [Title](URL)
+  const summary = joined.replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2');
 
   // Track token usage for cost monitoring (fire-and-forget)
   if (data.usage) {
