@@ -93,11 +93,11 @@ async function generateNews(category, day, timeSlot, retries = 3) {
       "anthropic-version": "2023-06-01"
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 1500,
       messages: [{
         role: "user",
-        content: `Search the web for recent news about "${categoryQuery}" from ${dayInfo} during ${timeSlot.toLowerCase()}. Create a comprehensive, well-structured news summary with the most important stories, key developments, and notable events. Format with clear sections and headlines. Make it informative and engaging. IMPORTANT: Complete all sentences - do not cut off mid-sentence.`
+        content: `Do a single web search for the latest news about "${categoryQuery}" from ${dayInfo}. Then write a well-structured summary covering the most important stories and key developments. Format with clear sections and headlines. Complete all sentences — do not cut off mid-sentence.`
       }],
       tools: [{ type: "web_search_20250305", name: "web_search" }]
     })
@@ -124,9 +124,9 @@ async function generateNews(category, day, timeSlot, retries = 3) {
   // Track token usage for cost monitoring (fire-and-forget)
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
-    const estimated_cost_usd = (input_tokens / 1_000_000) * 3 + (output_tokens / 1_000_000) * 15;
+    const estimated_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
     supabaseAdmin.from('api_usage').insert({
-      service: 'anthropic', model: 'claude-sonnet-4-6',
+      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
       input_tokens, output_tokens, estimated_cost_usd,
       category, time_slot: timeSlot,
       created_at: new Date().toISOString()
