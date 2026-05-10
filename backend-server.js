@@ -97,26 +97,27 @@ async function generateNews(category, day, timeSlot, retries = 3) {
       max_tokens: 4000,
       messages: [{
         role: "user",
-        content: `Search for the latest news about "${categoryQuery}" from ${dayInfo}. Prioritize articles published in the last 24 hours.
+        content: `Search for the latest news about "${categoryQuery}" from ${dayInfo}. This is a global news digest — search across international sources, not just US media. Prioritize articles published in the last 24 hours.
 
-Write a news digest covering 6 to 8 distinct stories. Use ONLY this format — no introduction, no section groupings, no preamble:
+Write a news digest covering 6 to 8 distinct stories. Use ONLY this format — no introduction, no preamble, no section groupings:
 
 ## [Exact Article Headline](https://full-article-url.com)
 - Key fact or development
 - Another key detail
-- For contested claims, use attribution: "According to [source]..." or "[Party X] claims... [Party Y] disputes this, stating..."
-- Include perspectives from multiple sides when the topic is politically or geopolitically sensitive
+- For contested claims use attribution: "According to [source]..." or "[Party X] claims... [Party Y] disputes this, stating..."
+- When a topic has political or geopolitical dimensions, briefly include both perspectives
 
 ## [Next Article Headline](https://full-article-url.com)
 - Key fact
 - ...
 
+If articles from the exact date are unavailable, include the most recent available (within 48 hours) and add ONE italic line at the very top: _Note: Most recent articles found are from [date]._
+
 After all stories, add:
 ## Sources
 - [Article title](URL)
-- [Article title](URL)
 
-Rules: Do NOT add any intro text. Start directly with the first ## heading. Use the actual article URL in every heading. Complete all sentences.`
+Rules: Start directly with the first ## heading — no preamble text whatsoever. Use the real article URL in every heading. Every bullet point must have actual content — no empty bullets. Complete all sentences.`
       }],
       tools: [{ type: "web_search_20250305", name: "web_search" }]
     })
@@ -135,10 +136,15 @@ Rules: Do NOT add any intro text. Start directly with the first ## heading. Use 
   }
 
   const data = await response.json();
-  const summary = data.content
+  const rawSummary = data.content
     .filter(item => item.type === "text")
     .map(item => item.text)
     .join("\n");
+
+  // Strip Claude's thinking preamble — keep only from the first ## heading onward
+  const lines = rawSummary.split('\n');
+  const firstHeadingIdx = lines.findIndex(l => /^#{1,3} /.test(l));
+  const summary = firstHeadingIdx > 0 ? lines.slice(firstHeadingIdx).join('\n') : rawSummary;
 
   // Track token usage for cost monitoring (fire-and-forget)
   if (data.usage) {
