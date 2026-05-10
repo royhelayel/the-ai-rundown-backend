@@ -1191,6 +1191,22 @@ app.post('/admin/api/debug-generate', async (req, res) => {
   }
 });
 
+app.post('/admin/api/test-email', async (req, res) => {
+  const { to } = req.body;
+  if (!to) return res.status(400).json({ error: 'to is required' });
+  try {
+    const result = await resend.emails.send({
+      from: process.env.FROM_EMAIL || 'noreply@resend.dev',
+      to,
+      subject: 'Test email from The Rundown',
+      html: '<p>If you received this, Resend delivery is working.</p>',
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
