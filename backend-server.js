@@ -91,8 +91,8 @@ const CATEGORY_SEARCH_QUERIES = {
   'World News':    'top global breaking news world events today',
 };
 
-async function generateNews(category, day, timeSlot, retries = 3) {
-  const categoryQuery = CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category);
+async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null) {
+  const categoryQuery = searchQuery || CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category);
   const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
 
   console.log(`Generating news for ${category} on ${day} at ${timeSlot}`);
@@ -115,14 +115,14 @@ Important: There is ALWAYS fresh news published every day on every major topic. 
 
 Write a news digest covering 6 to 8 distinct stories. Use ONLY this format — no introduction, no preamble, no section groupings:
 
-## [Exact Article Headline](https://full-article-url.com)
+## [Exact headline copied word-for-word from the article — do not paraphrase or rewrite](https://full-article-url.com)
 - Key fact or development
 - Another key detail
 - For contested claims use attribution: "According to [source]..." or "[Party X] claims... [Party Y] disputes this, stating..."
 - When a topic has political or geopolitical dimensions, briefly include both perspectives
 **Why this matters:** One or two sentences explaining why this story is significant and why readers should care.
 
-## [Next Article Headline](https://full-article-url.com)
+## [Exact headline from article, copied verbatim](https://full-article-url.com)
 - Key fact
 - ...
 **Why this matters:** Explanation.
@@ -133,7 +133,7 @@ After all stories, add:
 ## Sources
 - [Article title](URL)
 
-Rules: Start directly with the first ## heading — no preamble text whatsoever. The ## symbol and the [Title](URL) MUST be on the same line, never on separate lines. Use the real article URL in every heading. Every bullet point must have actual content — no empty bullets. Complete all sentences.`
+Rules: Start directly with the first ## heading — no preamble text whatsoever. The ## symbol and the [Title](URL) MUST be on the same line, never on separate lines. Use the real article URL in every heading. Copy article headlines VERBATIM — never paraphrase, summarize, or rewrite them. Every bullet point must have actual content — no empty bullets. Complete all sentences.`
       }],
       tools: [{ type: "web_search_20250305", name: "web_search" }]
     })
@@ -398,7 +398,7 @@ app.get('/health', (req, res) => {
 
 // Generate news for a single custom category
 app.post('/api/generate/custom-category', async (req, res) => {
-  const { category, day, timeSlot } = req.body;
+  const { category, description, day, timeSlot } = req.body;
 
   if (!category || !day || !timeSlot) {
     return res.status(400).json({ error: 'category, day and timeSlot are required' });
@@ -411,7 +411,7 @@ app.post('/api/generate/custom-category', async (req, res) => {
   (async () => {
     try {
       console.log(`🔧 Generating custom category: ${category} / ${day} / ${timeSlot}`);
-      const newsContent = await generateNews(category, day, timeSlot);
+      const newsContent = await generateNews(category, day, timeSlot, 3, description || category);
       await storeNews(category, day, timeSlot, newsContent);
       console.log(`✓ Custom category news saved: ${category}`);
     } catch (err) {
