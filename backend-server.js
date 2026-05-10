@@ -85,9 +85,16 @@ function markdownToEmailHtml(content) {
 
   // 3. Render stories
   const bodyHtml = mainContent
+    // Fix ## alone on its own line
     .replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ')
+    // Fix missing [ in ## Title](URL)
     .replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2')
+    // Fix bare URL on line after heading: ## Title\nhttps://url → ## [Title](url)
+    .replace(/^(#{1,3} )(.+)\n(https?:\/\/[^\s]+)/gm, '$1[$2]($3)')
+    // Remove orphaned punctuation lines
     .replace(/^[-*.]\s*$/gm, '')
+    // Remove bare URLs that are on their own line (already merged above or leftover)
+    .replace(/^https?:\/\/[^\s]+$/gm, '')
     .replace(/^\*\*Why this matters:\*\*\s*(.+)$/gm, (_, text) =>
       `<div style="margin:6px 0 14px;padding:8px 12px;background:#f5f3ff;border-left:3px solid #6366f1;border-radius:0 6px 6px 0;font-size:13px;color:#6b7280;line-height:1.5;"><span style="display:block;color:#6366f1;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.03em;margin-bottom:3px;">Why this matters</span>${text}</div>`
     )
@@ -244,7 +251,10 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
   const joined = storyLines.join('\n').replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ');
 
   // Step 4: Fix missing opening [ in headings: ## Title](URL) → ## [Title](URL)
-  const fixedHeadings = joined.replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2');
+  // Also fix bare URL on its own line after a heading: ## Title\nhttps://url → ## [Title](url)
+  const fixedHeadings = joined
+    .replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2')
+    .replace(/^(#{1,3} )(.+)\n(https?:\/\/[^\s]+)/gm, '$1[$2]($3)');
 
   // Step 5: Prepend the one useful disclaimer sentence as italic if found
   const summary = (usefulSentence ? `_${usefulSentence}_\n\n` : '') + fixedHeadings;
