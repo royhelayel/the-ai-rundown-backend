@@ -83,18 +83,32 @@ function markdownToEmailHtml(content) {
   const topNote = firstHeadingIdx > 0 ? beforeSources.slice(0, firstHeadingIdx).trim() : '';
   const mainContent = firstHeadingIdx > 0 ? beforeSources.slice(firstHeadingIdx).trim() : beforeSources;
 
-  // 3. Render stories
-  const bodyHtml = mainContent
+  // 3. Pre-process line by line: merge bare URL lines into the heading above them
+  const fixedLines = mainContent.split('\n').reduce((acc, line) => {
+    const trimmed = line.trim();
+    const isUrl = /^https?:\/\/\S+$/.test(trimmed);
+    if (isUrl && acc.length > 0) {
+      const prev = acc[acc.length - 1];
+      const headingMatch = prev.match(/^(#{1,3} )(.+)$/);
+      if (headingMatch && !headingMatch[2].includes('](')) {
+        // Merge: ## Title + https://url → ## [Title](url)
+        acc[acc.length - 1] = `${headingMatch[1]}[${headingMatch[2].trim()}](${trimmed})`;
+        return acc;
+      }
+    }
+    acc.push(line);
+    return acc;
+  }, []).join('\n');
+
+  // 4. Render stories
+  const bodyHtml = fixedLines
     // Fix ## alone on its own line
     .replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ')
     // Fix missing [ in ## Title](URL)
     .replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2')
-    // Fix bare URL on line after heading: ## Title\nhttps://url → ## [Title](url)
-    .replace(/^(#{1,3} )(.+)\n(https?:\/\/[^\s]+)/gm, '$1[$2]($3)')
-    // Remove orphaned punctuation lines
+    // Remove orphaned punctuation lines and stray bare URLs
     .replace(/^[-*.]\s*$/gm, '')
-    // Remove bare URLs that are on their own line (already merged above or leftover)
-    .replace(/^https?:\/\/[^\s]+$/gm, '')
+    .replace(/^https?:\/\/\S+$/gm, '')
     .replace(/^\*\*Why this matters:\*\*\s*(.+)$/gm, (_, text) =>
       `<div style="margin:6px 0 14px;padding:8px 12px;background:#f5f3ff;border-left:3px solid #6366f1;border-radius:0 6px 6px 0;font-size:13px;color:#6b7280;line-height:1.5;"><span style="display:block;color:#6366f1;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.03em;margin-bottom:3px;">Why this matters</span>${text}</div>`
     )
