@@ -203,6 +203,19 @@ const CATEGORY_SEARCH_QUERIES = {
   'World News':    'top global breaking news world events today',
 };
 
+async function generateEmbedding(text) {
+  try {
+    const res = await fetch('https://api.voyageai.com/v1/embeddings', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${process.env.VOYAGE_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: [text], model: 'voyage-3-lite' })
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.data?.[0]?.embedding || null;
+  } catch { return null; }
+}
+
 async function serperSearch(query, num = 10) {
   const res = await fetch('https://google.serper.dev/news', {
     method: 'POST',
@@ -540,11 +553,11 @@ app.get('/health', (req, res) => {
 
 app.post('/api/user/custom-category', async (req, res) => {
   try {
-    const { user_id, category_name, category_description } = req.body;
+    const { user_id, category_name, category_description, shared_key_override } = req.body;
     if (!user_id || !category_name) return res.status(400).json({ error: 'user_id and category_name are required' });
 
     const todayUAE = getTodayDate();
-    const sharedKey = (category_description || category_name).toLowerCase().trim();
+    const sharedKey = shared_key_override || (category_description || category_name).toLowerCase().trim();
 
     // Check abuse lock
     const { data: userRow } = await supabaseAdmin.from('users').select('category_locked_until').eq('id', user_id).maybeSingle();
@@ -558,14 +571,20 @@ app.post('/api/user/custom-category', async (req, res) => {
       .eq('user_id', user_id)
       .is('deleted_at', null);
 
+    // Generate embedding for semantic similarity (best-effort, don't block on failure)
+    const descriptionText = (category_description || category_name).trim();
+    const embedding = await generateEmbedding(descriptionText);
+
     // Insert new category
-    const { error } = await supabaseAdmin.from('custom_categories').insert({
+    const row = {
       user_id,
       category_name: category_name.trim().slice(0, 25),
-      category_description: (category_description || category_name).trim(),
+      category_description: descriptionText,
       shared_key: sharedKey,
       created_at: new Date().toISOString()
-    });
+    };
+    if (embedding) row.description_embedding = embedding;
+    const { error } = await supabaseAdmin.from('custom_categories').insert(row);
     if (error) throw error;
 
     res.json({ success: true, shared_key: sharedKey });
@@ -594,22 +613,20 @@ app.delete('/api/user/custom-category', async (req, res) => {
 
 app.get('/api/categories/suggestions', async (req, res) => {
   try {
-    const q = (req.query.q || '').toLowerCase().trim();
-    const { data } = await supabaseAdmin
-      .from('custom_categories')
-      .select('category_description, shared_key, category_name')
-      .is('deleted_at', null)
-      .not('shared_key', 'is', null);
+    const q = (req.query.q || '').trim();
+    if (!q || q.length < 3) return res.json([]);
 
-    // Deduplicate by shared_key, filter by query
-    const seen = new Set();
-    const results = (data || [])
-      .filter(r => !q || r.shared_key?.includes(q) || r.category_description?.toLowerCase().includes(q))
-      .filter(r => { if (seen.has(r.shared_key)) return false; seen.add(r.shared_key); return true; })
-      .slice(0, 8)
-      .map(r => ({ description: r.category_description, shared_key: r.shared_key }));
+    const embedding = await generateEmbedding(q);
+    if (!embedding) return res.json([]);
 
-    res.json(results);
+    const { data, error } = await supabaseAdmin.rpc('search_similar_categories', {
+      query_embedding: embedding,
+      similarity_threshold: 0.65,
+      match_count: 5
+    });
+
+    if (error) throw error;
+    res.json((data || []).map(r => ({ description: r.category_description, shared_key: r.shared_key })));
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
