@@ -237,7 +237,7 @@ async function buildSearchContext(categoryQuery) {
   const articles = [];
   results.forEach(r => {
     (r.news || []).forEach(item => {
-      if (item.link && !seen.has(item.link)) {
+      if (item.link && !seen.has(item.link) && !item.link.includes('wikipedia.org')) {
         seen.add(item.link);
         articles.push(item);
       }
@@ -279,7 +279,7 @@ Write 5–7 grouped stories from the results above. Group articles covering the 
 ## Sources
 - [Article title](URL)
 
-Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. Complete all sentences.`;
+Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
