@@ -323,17 +323,20 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
 }
 
 // Function to store news in Supabase
-async function storeNews(category, day, timeSlot, content) {
+async function storeNews(category, day, timeSlot, content, userId = null) {
   try {
     const generated_at = new Date().toISOString();
 
-    const { data: existing } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('news_summaries')
       .select('id')
       .eq('category', category)
       .eq('day', day)
-      .eq('time_slot', timeSlot)
-      .maybeSingle();
+      .eq('time_slot', timeSlot);
+
+    query = userId ? query.eq('user_id', userId) : query.is('user_id', null);
+
+    const { data: existing } = await query.maybeSingle();
 
     let error;
     if (existing) {
@@ -342,14 +345,14 @@ async function storeNews(category, day, timeSlot, content) {
         .update({ content, generated_at })
         .eq('id', existing.id));
     } else {
-      ({ error } = await supabaseAdmin
-        .from('news_summaries')
-        .insert({ category, day, time_slot: timeSlot, content, generated_at }));
+      const row = { category, day, time_slot: timeSlot, content, generated_at };
+      if (userId) row.user_id = userId;
+      ({ error } = await supabaseAdmin.from('news_summaries').insert(row));
     }
 
     if (error) throw new Error(`Supabase error: ${error.message}`);
 
-    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot}`);
+    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot}${userId ? ` (user ${userId})` : ''}`);
   } catch (error) {
     console.error(`Error storing news in Supabase:`, error);
     throw error;
@@ -526,9 +529,9 @@ app.post('/api/generate/custom-category', async (req, res) => {
   // Generate and store in background
   (async () => {
     try {
-      console.log(`🔧 Generating custom category: ${category} / ${day} / ${timeSlot}`);
+      console.log(`🔧 Generating custom category: ${category} / ${day} / ${timeSlot} (user ${user_id})`);
       const newsContent = await generateNews(category, day, timeSlot, 3, description || category);
-      await storeNews(category, day, timeSlot, newsContent);
+      await storeNews(category, day, timeSlot, newsContent, user_id || null);
       console.log(`✓ Custom category news saved: ${category}`);
     } catch (err) {
       console.error('Custom category generation error:', err.message);
