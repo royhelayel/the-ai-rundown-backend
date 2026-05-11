@@ -226,20 +226,30 @@
 <!-- ── API & COSTS ── -->
 <div id="page-costs" class="page">
   <div class="alert alert-info">
-    ℹ️ Costs are estimated from tracked token usage (claude-sonnet-4-6: $3/M input · $15/M output). Check live balance on
-    <a href="https://console.anthropic.com" target="_blank" style="font-weight:700;">Anthropic Console</a> and
-    <a href="https://resend.com/overview" target="_blank" style="font-weight:700;">Resend Dashboard</a>.
-    Usage tracking starts with the next generation run.
+    ℹ️ Model: <strong>claude-haiku-4-5</strong> — $0.80/M input · $4.00/M output · $0.01/web search.
+    <strong>Estimated cost includes both token and web search fees.</strong>
+    Verify live balance on <a href="https://console.anthropic.com" target="_blank" style="font-weight:700;">Anthropic Console</a>.
+    Old records (before search tracking) show token cost only.
   </div>
+
   <div class="cards">
-    <div class="card"><div class="card-label">Est. Cost This Month</div><div class="card-value grad" id="c-month">—</div><div class="card-sub">USD</div></div>
+    <div class="card"><div class="card-label">Total Cost This Month</div><div class="card-value grad" id="c-month">—</div><div class="card-sub" id="c-month-sub">tokens + searches</div></div>
+    <div class="card"><div class="card-label">Avg Cost / Generation</div><div class="card-value grad" id="c-avg">—</div><div class="card-sub">this month</div></div>
+    <div class="card"><div class="card-label">Generations This Month</div><div class="card-value grad" id="c-runs">—</div><div class="card-sub" id="c-runs-sub"></div></div>
+    <div class="card"><div class="card-label">Avg Searches / Generation</div><div class="card-value grad" id="c-searches">—</div><div class="card-sub">web_search tool calls</div></div>
     <div class="card"><div class="card-label">Total Cost All Time</div><div class="card-value grad" id="c-total">—</div><div class="card-sub">USD</div></div>
+  </div>
+
+  <div class="cards" style="margin-top:-0.25rem;">
+    <div class="card"><div class="card-label">Token Cost This Month</div><div class="card-value" style="font-size:1.5rem;font-weight:800;color:#6366f1;" id="c-token-month">—</div><div class="card-sub">$0.80/M in · $4.00/M out</div></div>
+    <div class="card"><div class="card-label">Search Cost This Month</div><div class="card-value" style="font-size:1.5rem;font-weight:800;color:#ec4899;" id="c-search-month">—</div><div class="card-sub" id="c-search-month-sub">$0.01 × searches</div></div>
     <div class="card"><div class="card-label">Input Tokens (All Time)</div><div class="card-value grad" id="c-in">—</div><div class="card-sub" id="c-in-sub"></div></div>
     <div class="card"><div class="card-label">Output Tokens (All Time)</div><div class="card-value grad" id="c-out">—</div><div class="card-sub" id="c-out-sub"></div></div>
-    <div class="card"><div class="card-label">Generations This Month</div><div class="card-value grad" id="c-runs">—</div></div>
+    <div class="card"><div class="card-label">Web Searches (All Time)</div><div class="card-value grad" id="c-wsearch">—</div><div class="card-sub" id="c-wsearch-sub"></div></div>
   </div>
+
   <div class="section">
-    <div class="section-title"><span class="dot"></span>Daily Estimated Cost — Last 14 Days</div>
+    <div class="section-title"><span class="dot"></span>Daily Cost — Last 14 Days (Tokens vs Web Searches)</div>
     <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
   </div>
   <div class="section">
@@ -254,7 +264,6 @@
       <a class="ext-link ext-outline" href="https://supabase.com/dashboard" target="_blank">Supabase →</a>
       <a class="ext-link ext-outline" href="https://dashboard.render.com" target="_blank">Render →</a>
       <a class="ext-link ext-outline" href="https://vercel.com/dashboard" target="_blank">Vercel →</a>
-      <a class="ext-link ext-outline" href="https://console.cloud.google.com" target="_blank">Google Cloud →</a>
     </div>
   </div>
 </div>
@@ -541,38 +550,73 @@ async function loadCosts() {
   try {
     const d = await api('/usage');
 
-    document.getElementById('c-month').textContent  = '$' + (d.cost_this_month||0).toFixed(4);
-    document.getElementById('c-total').textContent  = '$' + (d.cost_all_time||0).toFixed(4);
-    document.getElementById('c-in').textContent     = fmtNum(d.total_input_tokens||0);
-    document.getElementById('c-in-sub').textContent = '$' + ((d.total_input_tokens||0)/1e6*3).toFixed(4) + ' est.';
-    document.getElementById('c-out').textContent    = fmtNum(d.total_output_tokens||0);
-    document.getElementById('c-out-sub').textContent= '$' + ((d.total_output_tokens||0)/1e6*15).toFixed(4) + ' est.';
-    document.getElementById('c-runs').textContent   = d.runs_this_month||0;
+    // Top row cards
+    document.getElementById('c-month').textContent      = '$' + (d.cost_this_month||0).toFixed(4);
+    document.getElementById('c-month-sub').textContent  = `$${(d.token_cost_this_month||0).toFixed(4)} tokens · $${(d.search_cost_this_month||0).toFixed(4)} searches`;
+    document.getElementById('c-avg').textContent        = '$' + (d.avg_cost_per_run||0).toFixed(5);
+    document.getElementById('c-runs').textContent       = d.runs_this_month||0;
+    document.getElementById('c-runs-sub').textContent   = (d.searches_this_month||0).toLocaleString() + ' total searches';
+    document.getElementById('c-searches').textContent   = (d.avg_searches_per_run||0).toFixed(1);
+    document.getElementById('c-total').textContent      = '$' + (d.cost_all_time||0).toFixed(4);
 
+    // Bottom row breakdown cards
+    document.getElementById('c-token-month').textContent  = '$' + (d.token_cost_this_month||0).toFixed(4);
+    document.getElementById('c-search-month').textContent = '$' + (d.search_cost_this_month||0).toFixed(4);
+    document.getElementById('c-search-month-sub').textContent = `$0.01 × ${(d.searches_this_month||0).toLocaleString()} searches`;
+    document.getElementById('c-in').textContent           = fmtNum(d.total_input_tokens||0);
+    document.getElementById('c-in-sub').textContent       = '$' + ((d.total_input_tokens||0)/1e6*0.8).toFixed(4) + ' est.';
+    document.getElementById('c-out').textContent          = fmtNum(d.total_output_tokens||0);
+    document.getElementById('c-out-sub').textContent      = '$' + ((d.total_output_tokens||0)/1e6*4).toFixed(4) + ' est.';
+    document.getElementById('c-wsearch').textContent      = fmtNum(d.total_web_searches||0);
+    document.getElementById('c-wsearch-sub').textContent  = '$' + ((d.total_web_searches||0)*0.01).toFixed(2) + ' est.';
+
+    // Stacked bar chart — tokens vs search cost per day
     destroyChart('chart-cost');
     if (d.by_day?.length) {
       new Chart('chart-cost', {
         type: 'bar',
-        data: { labels: d.by_day.map(r=>r.date), datasets: [{ label:'Cost ($)', data: d.by_day.map(r=>r.cost), backgroundColor:'rgba(99,102,241,0.72)', borderRadius:5, borderSkipped:false }] },
-        options: { ...CHART_OPTS, scales: { y: { beginAtZero:true, grid:{color:'#f1f5f9'}, ticks:{callback: v=>'$'+v.toFixed(3)} }, x:{grid:{display:false}} } }
+        data: {
+          labels: d.by_day.map(r => r.date),
+          datasets: [
+            { label: 'Token cost ($)', data: d.by_day.map(r => r.tokens), backgroundColor: 'rgba(99,102,241,0.75)', borderRadius: 0, borderSkipped: false },
+            { label: 'Search cost ($)', data: d.by_day.map(r => r.search), backgroundColor: 'rgba(236,72,153,0.72)', borderRadius: 5, borderSkipped: 'bottom' }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: true, position: 'top', labels: { font: { size: 11 }, boxWidth: 12 } } },
+          scales: {
+            x: { stacked: true, grid: { display: false } },
+            y: { stacked: true, beginAtZero: true, grid: { color: '#f1f5f9' }, ticks: { callback: v => '$' + v.toFixed(3) } }
+          }
+        }
       });
     }
 
+    // Recent runs table
     if (!d.recent_runs?.length) {
       document.getElementById('usage-wrap').innerHTML = '<div class="empty">No usage tracked yet. Starts automatically with the next generation run.</div>';
     } else {
-      let h = `<table class="data-table"><thead><tr><th>Time</th><th>Category</th><th>Slot</th><th>Input Tokens</th><th>Output Tokens</th><th>Est. Cost</th></tr></thead><tbody>`;
+      let h = `<table class="data-table"><thead><tr>
+        <th>Time</th><th>Category</th><th>Slot</th><th>Input Tokens</th><th>Output Tokens</th><th>Searches</th><th>Token Cost</th><th>Search Cost</th><th>Total Cost</th>
+      </tr></thead><tbody>`;
       d.recent_runs.forEach(r => {
+        const tokenCost  = r.token_cost_usd  ?? r.estimated_cost_usd ?? 0;
+        const searchCost = r.search_cost_usd ?? 0;
+        const totalCost  = r.estimated_cost_usd ?? 0;
         h += `<tr>
           <td style="color:#6b7280;font-size:0.78rem;">${r.created_at ? new Date(r.created_at).toLocaleString() : '—'}</td>
           <td>${r.category||'—'}</td>
           <td>${r.time_slot ? `<span class="badge bp">${r.time_slot}</span>` : '—'}</td>
-          <td>${(r.input_tokens||0).toLocaleString()}</td>
-          <td>${(r.output_tokens||0).toLocaleString()}</td>
-          <td style="font-weight:700;color:#6366f1;">$${(r.estimated_cost_usd||0).toFixed(5)}</td>
+          <td style="font-size:0.8rem;">${(r.input_tokens||0).toLocaleString()}</td>
+          <td style="font-size:0.8rem;">${(r.output_tokens||0).toLocaleString()}</td>
+          <td style="font-size:0.8rem;color:#6b7280;">${r.web_searches != null ? r.web_searches : '—'}</td>
+          <td style="color:#6366f1;">$${tokenCost.toFixed(5)}</td>
+          <td style="color:#ec4899;">$${searchCost.toFixed(5)}</td>
+          <td style="font-weight:800;color:#111827;">$${totalCost.toFixed(5)}</td>
         </tr>`;
       });
-      h += `</tbody></table><div class="tbl-footer">${d.recent_runs.length} recent runs shown</div>`;
+      h += `</tbody></table><div class="tbl-footer">${d.recent_runs.length} recent runs shown · pre-search-tracking rows show token cost only</div>`;
       document.getElementById('usage-wrap').innerHTML = h;
     }
     stamp();

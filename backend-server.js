@@ -305,13 +305,18 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
   // Step 5: Prepend the one useful disclaimer sentence as italic if found
   const summary = (usefulSentence ? `_${usefulSentence}_\n\n` : '') + fixedHeadings;
 
-  // Track token usage for cost monitoring (fire-and-forget)
+  // Track token + web search usage (fire-and-forget)
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
-    const estimated_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
+    const web_searches     = data.content.filter(b => b.type === 'tool_use' && b.name === 'web_search').length;
+    const token_cost_usd   = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
+    const search_cost_usd  = web_searches * 0.01;
+    const estimated_cost_usd = token_cost_usd + search_cost_usd;
     supabaseAdmin.from('api_usage').insert({
       service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-      input_tokens, output_tokens, estimated_cost_usd,
+      input_tokens, output_tokens,
+      web_searches, search_cost_usd,
+      token_cost_usd, estimated_cost_usd,
       category, time_slot: timeSlot,
       created_at: new Date().toISOString()
     }).then(({ error }) => {
@@ -1196,29 +1201,50 @@ app.get('/admin/api/usage', async (req, res) => {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
     const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
 
-    const { data: allUsage }     = await supabaseAdmin.from('api_usage').select('*').order('created_at', { ascending: false });
-    const { data: monthUsage }   = await supabaseAdmin.from('api_usage').select('estimated_cost_usd, input_tokens, output_tokens').gte('created_at', monthStart);
-    const { data: recentUsage }  = await supabaseAdmin.from('api_usage').select('*').gte('created_at', fourteenDaysAgo).order('created_at', { ascending: false });
+    const { data: allUsage }    = await supabaseAdmin.from('api_usage').select('*').order('created_at', { ascending: false });
+    const { data: monthUsage }  = await supabaseAdmin.from('api_usage').select('estimated_cost_usd, token_cost_usd, search_cost_usd, input_tokens, output_tokens, web_searches').gte('created_at', monthStart);
+    const { data: recentUsage } = await supabaseAdmin.from('api_usage').select('*').gte('created_at', fourteenDaysAgo).order('created_at', { ascending: false });
 
-    const total_input_tokens  = allUsage?.reduce((s,r) => s + (r.input_tokens||0), 0) || 0;
-    const total_output_tokens = allUsage?.reduce((s,r) => s + (r.output_tokens||0), 0) || 0;
-    const cost_all_time       = allUsage?.reduce((s,r) => s + (r.estimated_cost_usd||0), 0) || 0;
-    const cost_this_month     = monthUsage?.reduce((s,r) => s + (r.estimated_cost_usd||0), 0) || 0;
-    const runs_this_month     = monthUsage?.length || 0;
+    const total_input_tokens   = allUsage?.reduce((s,r) => s + (r.input_tokens||0), 0) || 0;
+    const total_output_tokens  = allUsage?.reduce((s,r) => s + (r.output_tokens||0), 0) || 0;
+    const total_web_searches   = allUsage?.reduce((s,r) => s + (r.web_searches||0), 0) || 0;
+    const cost_all_time        = allUsage?.reduce((s,r) => s + (r.estimated_cost_usd||0), 0) || 0;
+    const cost_this_month      = monthUsage?.reduce((s,r) => s + (r.estimated_cost_usd||0), 0) || 0;
+    const token_cost_this_month  = monthUsage?.reduce((s,r) => s + (r.token_cost_usd||0), 0) || 0;
+    const search_cost_this_month = monthUsage?.reduce((s,r) => s + (r.search_cost_usd||0), 0) || 0;
+    const searches_this_month  = monthUsage?.reduce((s,r) => s + (r.web_searches||0), 0) || 0;
+    const runs_this_month      = monthUsage?.length || 0;
+    const avg_cost_per_run     = runs_this_month ? cost_this_month / runs_this_month : 0;
+    const avg_searches_per_run = runs_this_month ? searches_this_month / runs_this_month : 0;
 
-    // Daily cost buckets (last 14 days)
+    // Daily cost buckets (last 14 days) — split token vs search
     const dayBuckets = {};
     for (let i = 13; i >= 0; i--) {
       const d = new Date(); d.setDate(d.getDate() - i);
-      dayBuckets[d.toISOString().split('T')[0]] = 0;
+      dayBuckets[d.toISOString().split('T')[0]] = { total: 0, tokens: 0, search: 0 };
     }
     recentUsage?.forEach(r => {
       const day = r.created_at?.split('T')[0];
-      if (day && dayBuckets[day] !== undefined) dayBuckets[day] += (r.estimated_cost_usd || 0);
+      if (day && dayBuckets[day] !== undefined) {
+        dayBuckets[day].total  += (r.estimated_cost_usd || 0);
+        dayBuckets[day].tokens += (r.token_cost_usd || r.estimated_cost_usd || 0);
+        dayBuckets[day].search += (r.search_cost_usd || 0);
+      }
     });
-    const by_day = Object.entries(dayBuckets).map(([date, cost]) => ({ date, cost: parseFloat(cost.toFixed(6)) }));
+    const by_day = Object.entries(dayBuckets).map(([date, c]) => ({
+      date,
+      cost:   parseFloat(c.total.toFixed(6)),
+      tokens: parseFloat(c.tokens.toFixed(6)),
+      search: parseFloat(c.search.toFixed(6))
+    }));
 
-    res.json({ total_input_tokens, total_output_tokens, cost_all_time, cost_this_month, runs_this_month, by_day, recent_runs: (allUsage || []).slice(0, 100) });
+    res.json({
+      total_input_tokens, total_output_tokens, total_web_searches,
+      cost_all_time, cost_this_month, runs_this_month,
+      token_cost_this_month, search_cost_this_month, searches_this_month,
+      avg_cost_per_run, avg_searches_per_run,
+      by_day, recent_runs: (allUsage || []).slice(0, 100)
+    });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
