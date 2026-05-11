@@ -118,16 +118,30 @@ function markdownToEmailHtml(content) {
   const bodyHtml = fixedLines
     // Fix ## alone on its own line
     .replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ')
-    // Fix missing [ in ## Title](URL)
+    // Fix missing [ in ## Title](URL) — backward compat for old stored content
     .replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2')
     // Remove orphaned punctuation lines and stray bare URLs
     .replace(/^[-*.]\s*$/gm, '')
     .replace(/^https?:\/\/\S+$/gm, '')
+    // Coverage line — row of source badges (must come before **bold** replacement)
+    .replace(/^\*\*Coverage:\*\*\s*(.+)$/gm, (_, links) => {
+      const badges = [...links.matchAll(/\[([^\]]+)\]\(([^)\s]+)\)/g)].map(([, text, url]) => {
+        let domain = '';
+        try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+        return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:2px 8px 2px 5px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:999px;text-decoration:none;margin:2px 3px 2px 0;font-size:11px;font-weight:600;color:#374151;"><img src="https://www.google.com/s2/favicons?domain=${domain}&sz=32" width="10" height="10" style="border-radius:2px;opacity:0.85;vertical-align:middle;margin-right:3px;" />${text}</a>`;
+      }).join('');
+      return `<div style="margin:4px 0 10px;">${badges}</div>`;
+    })
+    // Perspectives differ — amber callout (must come before **bold** replacement)
+    .replace(/^\*\*Perspectives differ:\*\*\s*(.+)$/gm, (_, text) =>
+      `<div style="margin:4px 0 10px;font-size:12px;color:#92400e;line-height:1.55;background:#fffbeb;padding:8px 10px;border-radius:6px;border-left:3px solid #f59e0b;"><span style="font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;color:#b45309;">Perspectives differ</span>&nbsp;&nbsp;${text}</div>`
+    )
     .replace(/^\*\*Why this matters:\*\*\s*(.+)$/gm, (_, text) =>
       `<div style="margin:4px 0 14px;font-size:13px;color:#9ca3af;line-height:1.55;font-style:italic;"><span style="font-style:normal;font-weight:700;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;">Why this matters</span>&nbsp;&nbsp;${text}</div>`
     )
     .replace(/\*\*(.+?)\*\*/g, '<strong style="font-weight:700;color:#111827;">$1</strong>')
     .replace(/_(.*?)_/g, '<em style="color:#9ca3af;font-style:italic;">$1</em>')
+    // Linked heading ## [Title](URL) — backward compat for old stored content
     .replace(/^#{1,3} \[(.+?)\]\(([^)\s]+)\)/gm, (_, text, url) => {
       let domain = '';
       try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
@@ -136,8 +150,9 @@ function markdownToEmailHtml(content) {
         : '';
       return `<div style="margin:18px 0 5px;padding-top:12px;border-top:1px solid #f3f4f6;">${sourceLine}<a href="${url}" target="_blank" rel="noopener noreferrer" style="font-size:15px;font-weight:800;color:#111827;text-decoration:underline;text-decoration-color:#d1d5db;line-height:1.3;">${text}</a></div>`;
     })
+    // Plain heading — new format (synthesized headline, no URL)
     .replace(/^#{1,3} (.+)$/gm, (_, text) =>
-      `<div style="font-size:15px;font-weight:800;color:#374151;margin:18px 0 5px;padding-top:12px;border-top:1px solid #f3f4f6;line-height:1.3;">${text}</div>`
+      `<div style="font-size:15px;font-weight:800;color:#111827;margin:18px 0 4px;padding-top:12px;border-top:1px solid #f3f4f6;line-height:1.3;">${text}</div>`
     )
     .replace(/^[-*] (.+)$/gm, (_, text) =>
       `<div style="margin:4px 0 4px 10px;padding-left:8px;border-left:2px solid #e5e7eb;color:#374151;font-size:13px;line-height:1.55;">${text}</div>`
@@ -206,26 +221,24 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 4000,
+      max_tokens: 6000,
       messages: [{
         role: "user",
-        content: `Search for: ${categoryQuery} — published ${dayInfo} (${day}). This is a global news digest covering international sources worldwide, not limited to US media.
+        content: `Search for: ${categoryQuery} — published ${dayInfo} (${day}). Global news digest covering international sources worldwide, not limited to US media.
 
-Important: There is ALWAYS fresh news published every day on every major topic. Do not conclude there is nothing — search specifically, try multiple angles, look for announcements, company news, political developments, research releases, match results, etc.
+Important: There is ALWAYS fresh news published every day on every major topic. Search specifically — try multiple angles, announcements, political developments, research, match results, etc.
 
-Write a news digest covering 6 to 8 distinct stories. Use ONLY this format — no introduction, no preamble, no section groupings:
+For each major story, find 2–4 different news outlets covering it, then synthesize them into one unified entry. Use ONLY this exact format — no introduction, no preamble:
 
-## [Exact headline copied word-for-word from the article — do not paraphrase or rewrite](https://full-article-url.com)
+## Synthesized neutral headline (your own words — not copied from any single source; plain text, no URL on this line)
+**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url)
 - Key fact or development
 - Another key detail
-- For contested claims use attribution: "According to [source]..." or "[Party X] claims... [Party Y] disputes this, stating..."
-- When a topic has political or geopolitical dimensions, briefly include both perspectives
-**Why this matters:** One or two sentences explaining why this story is significant and why readers should care.
+- For contested claims: "According to [source]..." or "[Party X] claims... while [Party Y] argues..."
+**Perspectives differ:** Only include this line if outlets genuinely frame the story differently in emphasis, interpretation, or spin — describe how they diverge. Omit entirely if coverage is consistent.
+**Why this matters:** One or two sentences on why this story is significant.
 
-## [Exact headline from article, copied verbatim](https://full-article-url.com)
-- Key fact
-- ...
-**Why this matters:** Explanation.
+Write 5–7 such grouped stories. Each headline must be neutral and original — a synthesis, not copied verbatim from any outlet. Each Coverage line must list the real article URLs from your search results.
 
 Only if genuinely no articles from ${day} exist (within 48 hours), add this one sentence before the first ##: _I found that the most recent [category] news available is from [date] and earlier dates._
 
@@ -233,7 +246,7 @@ After all stories, add:
 ## Sources
 - [Article title](URL)
 
-Rules: Start directly with the first ## heading — no preamble text whatsoever. The ## symbol and the [Title](URL) MUST be on the same line, never on separate lines. Use the real article URL in every heading. Copy article headlines VERBATIM — never paraphrase, summarize, or rewrite them. Every bullet point must have actual content — no empty bullets. Complete all sentences.`
+Rules: Start directly with the first ## heading — no preamble text whatsoever. The ## symbol and the headline MUST be on the same line. Do NOT put any URL in the ## headline line — headlines are plain text only. Always include **Coverage:** immediately after each ## heading. Every bullet must have actual content — no empty bullets. Complete all sentences.`
       }],
       tools: [{ type: "web_search_20250305", name: "web_search" }]
     })
@@ -638,15 +651,18 @@ app.post('/api/auth/send-verification', async (req, res) => {
 
     let userId;
 
+    let isResend = false;
+
     if (existingUser) {
       console.log('✓ User already exists:', existingUser.id);
       userId = existingUser.id;
-      
+
       if (existingUser.verification_status === 'verified') {
-        return res.status(400).json({ 
-          error: 'This email is already verified. Please sign in instead.' 
+        return res.status(400).json({
+          error: 'This email is already verified. Please sign in instead.'
         });
       }
+      isResend = true;
     } else {
       // === CREATE USER IN SUPABASE AUTH ===
       console.log('Creating new Auth user...');
@@ -764,10 +780,11 @@ app.post('/api/auth/send-verification', async (req, res) => {
 
     console.log('✓ Verification email sent');
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'Verification email sent',
-      userId: userId
+      userId: userId,
+      resent: isResend
     });
 
   } catch (error) {
