@@ -124,13 +124,18 @@ function markdownToEmailHtml(content) {
     .replace(/^[-*.]\s*$/gm, '')
     .replace(/^https?:\/\/\S+$/gm, '')
     .replace(/^\*\*Why this matters:\*\*\s*(.+)$/gm, (_, text) =>
-      `<div style="margin:6px 0 14px;padding:8px 12px;background:#f5f3ff;border-left:3px solid #6366f1;border-radius:0 6px 6px 0;font-size:13px;color:#6b7280;line-height:1.5;"><span style="display:block;color:#6366f1;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.03em;margin-bottom:3px;">Why this matters</span>${text}</div>`
+      `<div style="margin:4px 0 14px;font-size:13px;color:#9ca3af;line-height:1.55;font-style:italic;"><span style="font-style:normal;font-weight:700;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;">Why this matters</span>&nbsp;&nbsp;${text}</div>`
     )
     .replace(/\*\*(.+?)\*\*/g, '<strong style="font-weight:700;color:#111827;">$1</strong>')
     .replace(/_(.*?)_/g, '<em style="color:#9ca3af;font-style:italic;">$1</em>')
-    .replace(/^#{1,3} \[(.+?)\]\(([^)\s]+)\)/gm, (_, text, url) =>
-      `<div style="margin:18px 0 5px;padding-top:12px;border-top:1px solid #f3f4f6;"><a href="${url}" target="_blank" rel="noopener noreferrer" style="font-size:15px;font-weight:800;color:#111827;text-decoration:underline;text-decoration-color:#d1d5db;line-height:1.3;">${text}</a></div>`
-    )
+    .replace(/^#{1,3} \[(.+?)\]\(([^)\s]+)\)/gm, (_, text, url) => {
+      let domain = '';
+      try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+      const sourceLine = domain
+        ? `<div style="display:flex;align-items:center;gap:5px;margin-bottom:4px;"><img src="https://www.google.com/s2/favicons?domain=${domain}&sz=32" width="12" height="12" style="border-radius:2px;opacity:0.85;" /><span style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;">${domain}</span></div>`
+        : '';
+      return `<div style="margin:18px 0 5px;padding-top:12px;border-top:1px solid #f3f4f6;">${sourceLine}<a href="${url}" target="_blank" rel="noopener noreferrer" style="font-size:15px;font-weight:800;color:#111827;text-decoration:underline;text-decoration-color:#d1d5db;line-height:1.3;">${text}</a></div>`;
+    })
     .replace(/^#{1,3} (.+)$/gm, (_, text) =>
       `<div style="font-size:15px;font-weight:800;color:#374151;margin:18px 0 5px;padding-top:12px;border-top:1px solid #f3f4f6;line-height:1.3;">${text}</div>`
     )
