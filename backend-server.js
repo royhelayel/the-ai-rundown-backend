@@ -84,11 +84,22 @@ function markdownToEmailHtml(content) {
   const mainContent = firstHeadingIdx > 0 ? beforeSources.slice(firstHeadingIdx).trim() : beforeSources;
 
   // 3. Pre-process: normalize all heading+URL variants into ## [Title](url)
+  const normalizeHeading = (line) => {
+    const m = line.match(/^(#{1,3} )(.+)$/);
+    if (!m) return line;
+    const [, hashes, text] = m;
+    if (/^\[.+\]\(https?:\/\/[^)]+\)\s*$/.test(text)) return line; // already clean
+    const urlMatch = text.match(/(https?:\/\/[^\s)]+)/);
+    if (!urlMatch) return line;
+    const url = urlMatch[1];
+    const title = text.replace(urlMatch[0], '').replace(/[()[\]]/g, '').replace(/\s+/g, ' ').trim();
+    return `${hashes}[${title || url}](${url})`;
+  };
+
   const fixedLines = mainContent
     .split('\n')
     .reduce((acc, line) => {
       const trimmed = line.trim();
-      // Case 1: bare URL on its own line after a heading → merge up
       if (/^https?:\/\/\S+$/.test(trimmed) && acc.length > 0) {
         const prev = acc[acc.length - 1];
         const m = prev.match(/^(#{1,3} )(.+)$/);
@@ -97,15 +108,10 @@ function markdownToEmailHtml(content) {
           return acc;
         }
       }
-      acc.push(line);
+      acc.push(/^#{1,3} /.test(line) ? normalizeHeading(line) : line);
       return acc;
     }, [])
     .join('\n')
-    // Case 2: URL trailing inside heading text: ## Title https://url → ## [Title](url)
-    .replace(/^(#{1,3} )(.+?)\s+(https?:\/\/\S+)$/gm, '$1[$2]($3)')
-    // Case 3: auto-linked trailing URL: ## Title [url](url) → ## [Title](url)
-    .replace(/^(#{1,3} )(.+?)\s+\[https?:\/\/[^\]]*\]\((https?:\/\/\S+)\)$/gm, '$1[$2]($3)')
-    // Strip any remaining bare URL lines
     .replace(/^https?:\/\/\S+$/gm, '');
 
   // 4. Render stories
