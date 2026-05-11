@@ -29,11 +29,8 @@ const DEFAULT_CATEGORIES = [
 ];
 
 const TIME_SLOTS = [
-  { value: 'night', label: 'Night', time: '12 AM - 6 AM', hours: [0, 1, 2, 3, 4, 5], cronTime: '0 0 * * *' }, // 12 AM (midnight)
-  { value: 'morning', label: 'Morning', time: '6 AM - 10 AM', hours: [6, 7, 8, 9], cronTime: '0 6 * * *' }, // 6 AM
-  { value: 'noon', label: 'Noon', time: '10 AM - 2 PM', hours: [10, 11, 12, 13], cronTime: '0 10 * * *' }, // 10 AM
-  { value: 'afternoon', label: 'Afternoon', time: '2 PM - 6 PM', hours: [14, 15, 16, 17], cronTime: '0 14 * * *' }, // 2 PM
-  { value: 'evening', label: 'Evening', time: '6 PM - 12 AM', hours: [18, 19, 20, 21, 22, 23], cronTime: '0 18 * * *' } // 6 PM
+  { value: 'morning', label: 'Morning', time: '6 AM', cronTime: '0 6  * * *' },
+  { value: 'evening', label: 'Evening', time: '6 PM', cronTime: '0 18 * * *' },
 ];
 
 
@@ -206,11 +203,70 @@ const CATEGORY_SEARCH_QUERIES = {
   'World News':    'top global breaking news world events today',
 };
 
+async function serperSearch(query, num = 10) {
+  const res = await fetch('https://google.serper.dev/news', {
+    method: 'POST',
+    headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ q: query, num, gl: 'us', hl: 'en' })
+  });
+  if (!res.ok) return { news: [] };
+  return res.json();
+}
+
+async function buildSearchContext(categoryQuery) {
+  const queries = [
+    `${categoryQuery} news today`,
+    `${categoryQuery} latest breaking news`,
+    `${categoryQuery} analysis update`,
+  ];
+  const results = await Promise.all(queries.map(q => serperSearch(q, 10).catch(() => ({ news: [] }))));
+  const seen = new Set();
+  const articles = [];
+  results.forEach(r => {
+    (r.news || []).forEach(item => {
+      if (item.link && !seen.has(item.link)) {
+        seen.add(item.link);
+        articles.push(item);
+      }
+    });
+  });
+  return articles.map((item, i) =>
+    `[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${item.link}\nSummary: ${item.snippet || ''}`
+  ).join('\n\n');
+}
+
 async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null) {
   const categoryQuery = searchQuery || CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category);
   const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
 
   console.log(`Generating news for ${category} on ${day} at ${timeSlot}`);
+
+  // Fetch search results via Serper (3 queries)
+  const searchContext = await buildSearchContext(categoryQuery);
+  const serper_searches = 3;
+  const serper_cost = serper_searches * 0.001;
+
+  const prompt = `You are a news analyst. Below are recent news articles about "${categoryQuery}" published ${dayInfo} (${day}). Synthesize them into a news digest.
+
+SEARCH RESULTS:
+${searchContext}
+
+For each major story group, use this EXACT format — no introduction, no preamble:
+
+## Synthesized neutral headline (your own words, not copied from any single source)
+**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url)
+- Key fact or development
+- Another key detail
+- For contested claims: "According to [source]..." or "[Party X] claims... while [Party Y] argues..."
+**Perspectives differ:** Only if outlets genuinely frame the story differently — describe how. Omit if consistent.
+**Why this matters:** One or two sentences on significance.
+
+Write 5–7 grouped stories from the results above. Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories:
+
+## Sources
+- [Article title](URL)
+
+Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. Complete all sentences.`;
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -221,42 +277,16 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 6000,
-      messages: [{
-        role: "user",
-        content: `Search for: ${categoryQuery} — published ${dayInfo} (${day}). Global news digest covering international sources worldwide, not limited to US media.
-
-Important: There is ALWAYS fresh news published every day on every major topic. Search specifically — try multiple angles, announcements, political developments, research, match results, etc.
-
-For each major story, find 2–4 different news outlets covering it, then synthesize them into one unified entry. Use ONLY this exact format — no introduction, no preamble:
-
-## Synthesized neutral headline (your own words — not copied from any single source; plain text, no URL on this line)
-**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url)
-- Key fact or development
-- Another key detail
-- For contested claims: "According to [source]..." or "[Party X] claims... while [Party Y] argues..."
-**Perspectives differ:** Only include this line if outlets genuinely frame the story differently in emphasis, interpretation, or spin — describe how they diverge. Omit entirely if coverage is consistent.
-**Why this matters:** One or two sentences on why this story is significant.
-
-Write 5–7 such grouped stories. Each headline must be neutral and original — a synthesis, not copied verbatim from any outlet. Each Coverage line must list the real article URLs from your search results.
-
-Only if genuinely no articles from ${day} exist (within 48 hours), add this one sentence before the first ##: _I found that the most recent [category] news available is from [date] and earlier dates._
-
-After all stories, add:
-## Sources
-- [Article title](URL)
-
-Rules: Start directly with the first ## heading — no preamble text whatsoever. The ## symbol and the headline MUST be on the same line. Do NOT put any URL in the ## headline line — headlines are plain text only. Always include **Coverage:** immediately after each ## heading. Every bullet must have actual content — no empty bullets. Complete all sentences.`
-      }],
-      tools: [{ type: "web_search_20250305", name: "web_search" }]
+      max_tokens: 4000,
+      messages: [{ role: "user", content: prompt }]
     })
   });
 
   if (response.status === 429 && retries > 0) {
     const retryAfter = parseInt(response.headers.get('retry-after') || '65', 10);
-    console.log(`⏳ Rate limited. Waiting ${retryAfter}s before retry (${retries} retries left)...`);
+    console.log(`⏳ Rate limited. Waiting ${retryAfter}s (${retries} retries left)...`);
     await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-    return generateNews(category, day, timeSlot, retries - 1);
+    return generateNews(category, day, timeSlot, retries - 1, searchQuery);
   }
 
   if (!response.ok) {
@@ -265,58 +295,36 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
   }
 
   const data = await response.json();
-  const rawSummary = data.content
-    .filter(item => item.type === "text")
-    .map(item => item.text)
-    .join("\n");
+  const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
 
-  // Step 1: Remove specific throwaway lines Claude adds (sentence by sentence, line by line)
-  // Keep "Based on my search results..." and "There are no articles..." — those are useful disclaimers
-  const linesToRemove = [
-    /^I['']ll search\b/i,
-    /^Let me search\b/i,
-    /^Here is a summary\b/i,
-    /^The most recent major\b/i,
-  ];
-  const noFiller = rawSummary
-    .split('\n')
-    .filter(line => !linesToRemove.some(re => re.test(line.trim())))
-    .join('\n');
+  const linesToRemove = [/^I['']ll search\b/i, /^Let me search\b/i, /^Here is a summary\b/i, /^The most recent major\b/i];
+  const noFiller = rawSummary.split('\n').filter(line => !linesToRemove.some(re => re.test(line.trim()))).join('\n');
 
-  // Step 2: Separate disclaimer (before first ##) from story content (from first ## onward)
   const allLines = noFiller.split('\n');
   const firstHeadingIdx = allLines.findIndex(l => /^#{1,3}[\s\[]/.test(l) || /^#{1,3}$/.test(l.trim()));
   const disclaimerLines = firstHeadingIdx > 0 ? allLines.slice(0, firstHeadingIdx) : [];
-  const storyLines    = firstHeadingIdx > 0 ? allLines.slice(firstHeadingIdx) : allLines;
+  const storyLines = firstHeadingIdx > 0 ? allLines.slice(firstHeadingIdx) : allLines;
 
-  // From the disclaimer block, extract only the "I found that ... available is from DATE" sentence
   const fullDisclaimer = disclaimerLines.map(l => l.trim()).filter(Boolean).join(' ');
   const usefulSentence = (fullDisclaimer.match(/I found that[^.]+\./i) || [])[0] || '';
 
-  // Step 3: Fix Claude putting ## on its own line — join with next non-empty line
   const joined = storyLines.join('\n').replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ');
 
-  // Step 4: Fix missing opening [ in headings: ## Title](URL) → ## [Title](URL)
-  // Also fix bare URL on its own line after a heading: ## Title\nhttps://url → ## [Title](url)
   const fixedHeadings = joined
     .replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2')
     .replace(/^(#{1,3} )(.+)\n(https?:\/\/[^\s]+)/gm, '$1[$2]($3)');
-
-  // Step 5: Prepend the one useful disclaimer sentence as italic if found
   const summary = (usefulSentence ? `_${usefulSentence}_\n\n` : '') + fixedHeadings;
 
-  // Track token + web search usage (fire-and-forget)
+  // Track usage
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
-    const web_searches     = data.content.filter(b => b.type === 'tool_use' && b.name === 'web_search').length;
-    const token_cost_usd   = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
-    const search_cost_usd  = web_searches * 0.01;
+    const token_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
+    const search_cost_usd = serper_cost;
     const estimated_cost_usd = token_cost_usd + search_cost_usd;
     supabaseAdmin.from('api_usage').insert({
       service: 'anthropic', model: 'claude-haiku-4-5-20251001',
       input_tokens, output_tokens,
-      web_searches, search_cost_usd,
-      token_cost_usd, estimated_cost_usd,
+      web_searches: serper_searches, search_cost_usd, token_cost_usd, estimated_cost_usd,
       category, time_slot: timeSlot,
       created_at: new Date().toISOString()
     }).then(({ error }) => {
@@ -328,7 +336,7 @@ Rules: Start directly with the first ## heading — no preamble text whatsoever.
 }
 
 // Function to store news in Supabase
-async function storeNews(category, day, timeSlot, content, userId = null) {
+async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null) {
   try {
     const generated_at = new Date().toISOString();
 
@@ -339,7 +347,13 @@ async function storeNews(category, day, timeSlot, content, userId = null) {
       .eq('day', day)
       .eq('time_slot', timeSlot);
 
-    query = userId ? query.eq('user_id', userId) : query.is('user_id', null);
+    if (sharedKey) {
+      query = query.eq('shared_key', sharedKey).is('user_id', null);
+    } else if (userId) {
+      query = query.eq('user_id', userId).is('shared_key', null);
+    } else {
+      query = query.is('user_id', null).is('shared_key', null);
+    }
 
     const { data: existing } = await query.maybeSingle();
 
@@ -351,13 +365,17 @@ async function storeNews(category, day, timeSlot, content, userId = null) {
         .eq('id', existing.id));
     } else {
       const row = { category, day, time_slot: timeSlot, content, generated_at };
-      if (userId) row.user_id = userId;
+      if (sharedKey) {
+        row.shared_key = sharedKey;
+      } else if (userId) {
+        row.user_id = userId;
+      }
       ({ error } = await supabaseAdmin.from('news_summaries').insert(row));
     }
 
     if (error) throw new Error(`Supabase error: ${error.message}`);
 
-    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot}${userId ? ` (user ${userId})` : ''}`);
+    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot}${userId ? ` (user ${userId})` : ''}${sharedKey ? ` (shared_key: ${sharedKey})` : ''}`);
   } catch (error) {
     console.error(`Error storing news in Supabase:`, error);
     throw error;
@@ -520,27 +538,112 @@ app.get('/health', (req, res) => {
 });
 
 
+app.post('/api/user/custom-category', async (req, res) => {
+  try {
+    const { user_id, category_name, category_description } = req.body;
+    if (!user_id || !category_name) return res.status(400).json({ error: 'user_id and category_name are required' });
+
+    const todayUAE = getTodayDate();
+    const sharedKey = (category_description || category_name).toLowerCase().trim();
+
+    // Check abuse lock
+    const { data: userRow } = await supabaseAdmin.from('users').select('category_locked_until').eq('id', user_id).maybeSingle();
+    if (userRow?.category_locked_until >= todayUAE) {
+      return res.status(429).json({ error: 'You can create a new category starting tomorrow.' });
+    }
+
+    // Soft-delete existing active category for this user
+    await supabaseAdmin.from('custom_categories')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('user_id', user_id)
+      .is('deleted_at', null);
+
+    // Insert new category
+    const { error } = await supabaseAdmin.from('custom_categories').insert({
+      user_id,
+      category_name: category_name.trim().slice(0, 25),
+      category_description: (category_description || category_name).trim(),
+      shared_key: sharedKey,
+      created_at: new Date().toISOString()
+    });
+    if (error) throw error;
+
+    res.json({ success: true, shared_key: sharedKey });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.delete('/api/user/custom-category', async (req, res) => {
+  try {
+    const { user_id, category_name } = req.body;
+    if (!user_id || !category_name) return res.status(400).json({ error: 'user_id and category_name are required' });
+
+    const todayUAE = getTodayDate();
+
+    await supabaseAdmin.from('custom_categories')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('user_id', user_id)
+      .eq('category_name', category_name)
+      .is('deleted_at', null);
+
+    // Lock user from creating another category today
+    await supabaseAdmin.from('users').update({ category_locked_until: todayUAE }).eq('id', user_id);
+
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/api/categories/suggestions', async (req, res) => {
+  try {
+    const q = (req.query.q || '').toLowerCase().trim();
+    const { data } = await supabaseAdmin
+      .from('custom_categories')
+      .select('category_description, shared_key, category_name')
+      .is('deleted_at', null)
+      .not('shared_key', 'is', null);
+
+    // Deduplicate by shared_key, filter by query
+    const seen = new Set();
+    const results = (data || [])
+      .filter(r => !q || r.shared_key?.includes(q) || r.category_description?.toLowerCase().includes(q))
+      .filter(r => { if (seen.has(r.shared_key)) return false; seen.add(r.shared_key); return true; })
+      .slice(0, 8)
+      .map(r => ({ description: r.category_description, shared_key: r.shared_key }));
+
+    res.json(results);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
 // Generate news for a single custom category
 app.post('/api/generate/custom-category', async (req, res) => {
-  const { category, description, day, timeSlot } = req.body;
+  const { user_id, category, description, day, timeSlot } = req.body;
 
   if (!category || !day || !timeSlot) {
     return res.status(400).json({ error: 'category, day and timeSlot are required' });
   }
 
-  // Respond immediately so the client can start polling without hitting a timeout
-  res.json({ status: 'accepted', category, day, timeSlot });
+  const sharedKey = (description || category).toLowerCase().trim();
+  const todayUAE = getTodayDate();
 
-  // Generate and store in background
+  // Check if news already exists for this sharedKey + day + 'Daily'
+  const { data: existing } = await supabaseAdmin.from('news_summaries')
+    .select('id').eq('shared_key', sharedKey).eq('day', day).eq('time_slot', 'Daily').maybeSingle();
+  if (existing) { res.json({ status: 'already_exists', category, day, timeSlot: 'Daily' }); return; }
+
+  // Check abuse prevention — if user already generated today
+  const { data: userRow } = await supabaseAdmin.from('users').select('last_generated_date, category_locked_until').eq('id', user_id).maybeSingle();
+  if (userRow?.last_generated_date === todayUAE) {
+    return res.status(429).json({ error: 'You have already generated your custom news today. Come back tomorrow.' });
+  }
+
+  // Respond with accepted immediately, then generate in background
+  res.json({ status: 'accepted', category, day, timeSlot: 'Daily' });
   (async () => {
     try {
-      console.log(`🔧 Generating custom category: ${category} / ${day} / ${timeSlot} (user ${user_id})`);
-      const newsContent = await generateNews(category, day, timeSlot, 3, description || category);
-      await storeNews(category, day, timeSlot, newsContent, user_id || null);
-      console.log(`✓ Custom category news saved: ${category}`);
-    } catch (err) {
-      console.error('Custom category generation error:', err.message);
-    }
+      const newsContent = await generateNews(category, day, 'Daily', 3, description || category);
+      await storeNews(category, day, 'Daily', newsContent, null, sharedKey);
+      await supabaseAdmin.from('users').update({ last_generated_date: todayUAE }).eq('id', user_id);
+      console.log(`✓ Custom category news saved: ${category} (shared_key: ${sharedKey})`);
+    } catch (err) { console.error('Custom category generation error:', err.message); }
   })();
 });
 
