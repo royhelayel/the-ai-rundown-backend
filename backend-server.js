@@ -740,7 +740,7 @@ app.post('/api/auth/send-verification', async (req, res) => {
     const verificationLink = `${process.env.REACT_APP_URL}/verify-email?token=${verificationToken}&email=${encodeURIComponent(email)}`;
     
     const result = await resend.emails.send({
-      from: 'noreply@resend.dev',
+      from: process.env.FROM_EMAIL || 'noreply@resend.dev',
       to: email,
       subject: 'Verify your email - The Rundown',
       html: `
