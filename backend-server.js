@@ -519,16 +519,116 @@ ${sorted.map(item => `
   }
 }
 
+// ── TTS pre-generation helpers ──
+
+// Mirrors the frontend parseStories() exactly so cache keys align
+function parseStoriesForTTS(raw) {
+  if (!raw) return [];
+  const sourcesStart = raw.search(/^#{1,3}\s+(?:\[)?Sources(?:\])?/im);
+  const content = sourcesStart > -1 ? raw.slice(0, sourcesStart).trim() : raw.trim();
+  const chunks = content.split(/(?=^#{1,3} )/m).filter(c => /^#{1,3} /.test(c.trim()));
+  return chunks.map(chunk => {
+    const lines = chunk.trim().split('\n');
+    const headingRaw = lines[0].replace(/^#{1,3}\s+/, '').trim();
+    const headline = headingRaw
+      .replace(/^\[(.+?)\]\(https?:\/\/[^)]+\)$/, '$1')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/[()[\]]/g, '')
+      .trim();
+    const rest = lines.slice(1).join('\n');
+    const bullets = [...rest.matchAll(/^[-*]\s+(.+)$/gm)].map(m => m[1]).slice(0, 3);
+    const perspMatch = rest.match(/\*\*Perspectives differ:\*\*\s*(.+)/);
+    const whyMatch   = rest.match(/\*\*Why this matters:\*\*\s*(.+)/);
+    if (!headline || bullets.length === 0) return null;
+    return { headline, bullets, perspectives: perspMatch?.[1] || null, why: whyMatch?.[1] || null };
+  }).filter(Boolean);
+}
+
+// Mirrors narrateStoryFrom() in the frontend
+function buildStoryScript(story) {
+  const parts = [story.headline + '.'];
+  story.bullets.forEach(b => parts.push(b + '.'));
+  if (story.perspectives) parts.push('On the other hand... ' + story.perspectives + '.');
+  if (story.why) parts.push('Here is why this matters. ' + story.why + '.');
+  return parts.join(' ');
+}
+
+async function pregenerateTTSForContent(content, label) {
+  const apiKey = process.env.FISH_AUDIO_API_KEY;
+  if (!apiKey) { console.log('⚠️  FISH_AUDIO_API_KEY not set — skipping TTS pre-gen'); return; }
+
+  const stories = parseStoriesForTTS(content);
+  if (!stories.length) return;
+
+  console.log(`🔊 Pre-generating TTS for ${stories.length} stories (${label})...`);
+  const voiceId = process.env.FISH_AUDIO_VOICE_ID;
+
+  for (const story of stories) {
+    try {
+      const text   = buildStoryScript(story);
+      const key    = crypto.createHash('md5').update(text.trim()).digest('hex');
+      const fileName = `${key}.mp3`;
+
+      // Skip if already cached
+      const { data: existing } = await supabaseAdmin.storage
+        .from('tts-cache').download(fileName).catch(() => ({ data: null }));
+      if (existing) {
+        console.log(`  ⏭️  Cached: ${story.headline.slice(0, 50)}`);
+        continue;
+      }
+
+      const fishRes = await fetch('https://api.fish.audio/v1/tts', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          'model': 's2-pro',
+        },
+        body: JSON.stringify({
+          text: text.trim(),
+          ...(voiceId ? { reference_id: voiceId } : {}),
+          format: 'mp3',
+          mp3_bitrate: 128,
+          latency: 'balanced',
+        }),
+      });
+
+      if (!fishRes.ok) {
+        console.warn(`  ✗ Fish Audio ${fishRes.status} for: ${story.headline.slice(0, 50)}`);
+        continue;
+      }
+
+      const audioBuffer = Buffer.from(await fishRes.arrayBuffer());
+      const { error: uploadErr } = await supabaseAdmin.storage
+        .from('tts-cache')
+        .upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false });
+
+      if (uploadErr) console.warn(`  ✗ Upload failed: ${uploadErr.message}`);
+      else console.log(`  ✅ TTS cached: ${story.headline.slice(0, 50)}`);
+
+      // Small delay to stay inside Fish Audio rate limits
+      await new Promise(r => setTimeout(r, 500));
+    } catch (err) {
+      console.warn(`  ✗ TTS error: ${err.message}`);
+    }
+  }
+}
+
 // Function to generate all news for a time slot
 async function generateAllNewsForTimeSlot(timeSlot) {
   console.log(`\n🚀 Starting news generation for ${timeSlot} time slot...`);
   const today = getTodayDate();
-  
+
   for (const category of DEFAULT_CATEGORIES) {
     try {
       const content = await generateNews(category, today, timeSlot);
       await storeNews(category, today, timeSlot, content);
-      
+
+      // Pre-generate TTS audio for each story (fire-and-forget — doesn't block next category)
+      pregenerateTTSForContent(content, `${category} / ${timeSlot}`).catch(err =>
+        console.warn(`TTS pre-gen failed for ${category}:`, err.message)
+      );
+
       // Delay between API calls to stay within rate limits (30k tokens/min)
       await new Promise(resolve => setTimeout(resolve, 15000));
     } catch (error) {
@@ -536,7 +636,7 @@ async function generateAllNewsForTimeSlot(timeSlot) {
       // Continue with next category even if one fails
     }
   }
-  
+
   console.log(`✨ Completed news generation for ${timeSlot} time slot\n`);
 
   // Email digest to opted-in users
