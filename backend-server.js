@@ -4,6 +4,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -1423,6 +1424,70 @@ app.post('/admin/api/test-email', async (req, res) => {
     res.json({ ok: true, result });
   } catch (err) {
     res.json({ ok: false, error: err.message });
+  }
+});
+
+// ── TTS endpoint (ElevenLabs with Supabase Storage cache) ──
+app.post('/api/tts', async (req, res) => {
+  const { text } = req.body;
+  if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
+
+  const key = crypto.createHash('md5').update(text.trim()).digest('hex');
+  const fileName = `${key}.mp3`;
+
+  try {
+    // Check cache first
+    const { data: cached, error: cacheErr } = await supabaseAdmin.storage
+      .from('tts-cache')
+      .download(fileName);
+
+    if (cached && !cacheErr) {
+      const buf = Buffer.from(await cached.arrayBuffer());
+      res.set('Content-Type', 'audio/mpeg');
+      res.set('Cache-Control', 'public, max-age=604800');
+      return res.send(buf);
+    }
+  } catch {}
+
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'ElevenLabs not configured' });
+
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
+
+  try {
+    const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'audio/mpeg',
+        'Content-Type': 'application/json',
+        'xi-api-key': apiKey,
+      },
+      body: JSON.stringify({
+        text: text.trim(),
+        model_id: 'eleven_turbo_v2_5',
+        voice_settings: { stability: 0.45, similarity_boost: 0.80, style: 0.35, use_speaker_boost: true },
+      }),
+    });
+
+    if (!elRes.ok) {
+      const errText = await elRes.text();
+      console.error('ElevenLabs error:', elRes.status, errText);
+      return res.status(502).json({ error: 'ElevenLabs request failed' });
+    }
+
+    const audioBuffer = Buffer.from(await elRes.arrayBuffer());
+
+    // Cache in Supabase Storage (fire-and-forget)
+    supabaseAdmin.storage.from('tts-cache')
+      .upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false })
+      .catch(() => {});
+
+    res.set('Content-Type', 'audio/mpeg');
+    res.set('Cache-Control', 'public, max-age=604800');
+    return res.send(audioBuffer);
+  } catch (err) {
+    console.error('TTS error:', err.message);
+    return res.status(500).json({ error: 'TTS failed' });
   }
 });
 
