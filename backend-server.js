@@ -424,17 +424,23 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     const updatePayload = { content, generated_at };
     if (storiesContent !== null) updatePayload.stories_content = storiesContent;
 
-    let error;
-    if (existing) {
-      ({ error } = await supabaseAdmin
-        .from('news_summaries')
-        .update(updatePayload)
-        .eq('id', existing.id));
-    } else {
-      const row = { category, day, time_slot: timeSlot, ...updatePayload };
-      if (sharedKey) row.shared_key = sharedKey;
-      else if (userId) row.user_id = userId;
-      ({ error } = await supabaseAdmin.from('news_summaries').insert(row));
+    const runUpsert = async (payload) => {
+      if (existing) {
+        return supabaseAdmin.from('news_summaries').update(payload).eq('id', existing.id);
+      } else {
+        const row = { category, day, time_slot: timeSlot, ...payload };
+        if (sharedKey) row.shared_key = sharedKey;
+        else if (userId) row.user_id = userId;
+        return supabaseAdmin.from('news_summaries').insert(row);
+      }
+    };
+
+    let { error } = await runUpsert(updatePayload);
+
+    // Graceful fallback: if stories_content column doesn't exist yet, retry without it
+    if (error && storiesContent !== null && (error.message?.includes('stories_content') || error.code === '42703')) {
+      console.warn(`⚠️  stories_content column missing — run this SQL in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS stories_content text;\n  Storing digest only for now.`);
+      ({ error } = await runUpsert({ content, generated_at }));
     }
 
     if (error) throw new Error(`Supabase error: ${error.message}`);
