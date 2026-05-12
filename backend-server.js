@@ -692,11 +692,15 @@ async function generateAllNewsForTimeSlot(timeSlot) {
 
       await storeNews(category, today, timeSlot, digestContent, null, null, storiesContent);
 
-      // Pre-generate TTS using stories content (shorter = better for audio), fallback to digest
-      const ttsContent = storiesContent || digestContent;
-      pregenerateTTSForContent(ttsContent, `${category} / ${timeSlot}`).catch(err =>
-        console.warn(`TTS pre-gen failed for ${category}:`, err.message)
+      // Pre-generate TTS for both versions independently (different text = different cache keys)
+      pregenerateTTSForContent(digestContent, `${category} / ${timeSlot} / digest`).catch(err =>
+        console.warn(`TTS pre-gen (digest) failed for ${category}:`, err.message)
       );
+      if (storiesContent) {
+        pregenerateTTSForContent(storiesContent, `${category} / ${timeSlot} / stories`).catch(err =>
+          console.warn(`TTS pre-gen (stories) failed for ${category}:`, err.message)
+        );
+      }
 
       // Delay between categories to stay within rate limits
       await new Promise(resolve => setTimeout(resolve, 15000));
