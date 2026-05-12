@@ -1427,7 +1427,7 @@ app.post('/admin/api/test-email', async (req, res) => {
   }
 });
 
-// ── TTS endpoint (ElevenLabs with Supabase Storage cache) ──
+// ── TTS endpoint (Fish Audio with Supabase Storage cache) ──
 app.post('/api/tts', async (req, res) => {
   const { text } = req.body;
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
@@ -1449,33 +1449,35 @@ app.post('/api/tts', async (req, res) => {
     }
   } catch {}
 
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'ElevenLabs not configured' });
+  const apiKey = process.env.FISH_AUDIO_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'Fish Audio not configured' });
 
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
+  const voiceId = process.env.FISH_AUDIO_VOICE_ID;
 
   try {
-    const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    const fishRes = await fetch('https://api.fish.audio/v1/tts', {
       method: 'POST',
       headers: {
-        'Accept': 'audio/mpeg',
+        'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'xi-api-key': apiKey,
+        'model': 's2-pro',
       },
       body: JSON.stringify({
         text: text.trim(),
-        model_id: 'eleven_turbo_v2_5',
-        voice_settings: { stability: 0.45, similarity_boost: 0.80, style: 0.35, use_speaker_boost: true },
+        ...(voiceId ? { reference_id: voiceId } : {}),
+        format: 'mp3',
+        mp3_bitrate: 128,
+        latency: 'balanced',
       }),
     });
 
-    if (!elRes.ok) {
-      const errText = await elRes.text();
-      console.error('ElevenLabs error:', elRes.status, errText);
-      return res.status(502).json({ error: 'ElevenLabs request failed' });
+    if (!fishRes.ok) {
+      const errText = await fishRes.text();
+      console.error('Fish Audio error:', fishRes.status, errText);
+      return res.status(502).json({ error: 'Fish Audio request failed' });
     }
 
-    const audioBuffer = Buffer.from(await elRes.arrayBuffer());
+    const audioBuffer = Buffer.from(await fishRes.arrayBuffer());
 
     // Cache in Supabase Storage (fire-and-forget)
     supabaseAdmin.storage.from('tts-cache')
