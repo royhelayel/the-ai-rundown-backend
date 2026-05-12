@@ -465,7 +465,7 @@ async function sendNewsDigestEmails(timeSlot, day) {
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;">
 
 <tr><td style="background:linear-gradient(135deg,#6366f1 0%,#ec4899 100%);border-radius:12px 12px 0 0;padding:28px 32px;">
-  <p style="margin:0;font-size:22px;font-weight:900;color:white;letter-spacing:-0.02em;">✦ The Rundown</p>
+  <p style="margin:0;font-size:22px;font-weight:900;color:white;letter-spacing:-0.02em;">✦ The News Rundown</p>
   <p style="margin:8px 0 0;font-size:14px;color:rgba(255,255,255,0.82);">${timeSlot} Digest &nbsp;·&nbsp; ${formattedDate}</p>
 </td></tr>
 
@@ -490,7 +490,7 @@ ${sorted.map(item => `
 
 <tr><td style="background:#f5f7fa;border-radius:0 0 12px 12px;padding:16px 32px;text-align:center;">
   <p style="margin:0;font-size:12px;color:#9ca3af;line-height:1.6;">
-    You're receiving this because you subscribed to ${timeSlot} digests on The Rundown.<br>
+    You're receiving this because you subscribed to ${timeSlot} digests on The News Rundown.<br>
     <a href="${WEBSITE_URL}" style="color:#6366f1;text-decoration:none;font-weight:600;">Manage your preferences</a>
   </p>
 </td></tr>
@@ -504,7 +504,7 @@ ${sorted.map(item => `
         await resend.emails.send({
           from: process.env.FROM_EMAIL || 'noreply@resend.dev',
           to: user.email,
-          subject: `Your ${timeSlot} Rundown — ${formattedDate}`,
+          subject: `Your ${timeSlot} News Rundown — ${formattedDate}`,
           html: emailHtml
         });
         console.log(`  ✉️  Sent to ${user.email} (${sorted.length} categories)`);
@@ -987,9 +987,9 @@ app.post('/api/auth/send-verification', async (req, res) => {
     const result = await resend.emails.send({
       from: process.env.FROM_EMAIL || 'noreply@resend.dev',
       to: email,
-      subject: 'Verify your email - The Rundown',
+      subject: 'Verify your email - The News Rundown',
       html: `
-        <h2>Welcome to The Rundown!</h2>
+        <h2>Welcome to The News Rundown!</h2>
         <p>Click the link below to verify your email and complete your sign-up:</p>
         <a href="${verificationLink}" style="padding: 10px 20px; background: #6366f1; color: white; text-decoration: none; border-radius: 5px; display: inline-block;">
           Verify Email
@@ -1180,7 +1180,7 @@ app.post('/api/auth/resend-verification', async (req, res) => {
     const { error: emailError } = await resend.emails.send({
       from: process.env.FROM_EMAIL,
       to: email,
-      subject: '✨ Verify Your Email - The Rundown (Resend)',
+      subject: '✨ Verify Your Email - The News Rundown (Resend)',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; background: #f5f7fa;">
           <div style="background: white; padding: 40px; border-radius: 12px;">
@@ -1518,7 +1518,7 @@ app.post('/admin/api/test-email', async (req, res) => {
     const result = await resend.emails.send({
       from: process.env.FROM_EMAIL || 'noreply@resend.dev',
       to,
-      subject: 'Test email from The Rundown',
+      subject: 'Test email from The News Rundown',
       html: '<p>If you received this, Resend delivery is working.</p>',
     });
     res.json({ ok: true, result });
