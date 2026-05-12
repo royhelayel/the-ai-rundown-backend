@@ -54,10 +54,9 @@ console.log('✓ Resend Email Service Initialized');
 
 
 // Function to get today's date in YYYY-MM-DD format (UAE timezone)
+// Uses Intl API directly to avoid the new Date(localeString).toISOString() timezone bug
 function getTodayDate() {
-  const now = new Date();
-  const uaeDate = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Dubai' }));
-  return uaeDate.toISOString().split('T')[0];
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(new Date());
 }
 
 function formatDateForEmail(dateStr) {
@@ -244,6 +243,10 @@ async function buildSearchContext(categoryQuery) {
       }
     });
   });
+  if (articles.length === 0) {
+    throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
+  }
+
   return articles.map((item, i) =>
     `[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${item.link}\nSummary: ${item.snippet || ''}`
   ).join('\n\n');
@@ -281,8 +284,27 @@ async function callClaude(prompt, maxTokens = 4000, retries = 3) {
   return response.json();
 }
 
+// Detect when Claude returned an error/refusal instead of a news digest
+function isClaudeErrorResponse(text) {
+  const errorPhrases = [
+    'no search results',
+    'search results.*empty',
+    'no articles.*provided',
+    'haven\'t provided any',
+    'i notice that no',
+    'i appreciate.*but i notice',
+    'i appreciate.*but i\'m unable',
+    'unable to complete this task',
+  ];
+  const lower = text.toLowerCase().slice(0, 400);
+  return errorPhrases.some(p => new RegExp(p).test(lower));
+}
+
 // Clean raw Claude output: strip filler lines, extract from first heading
 function cleanRawSummary(rawSummary) {
+  if (isClaudeErrorResponse(rawSummary)) {
+    throw new Error('Claude returned an error response instead of a news digest — search results were likely empty');
+  }
   const linesToRemove = [/^I['']ll search\b/i, /^Let me search\b/i, /^Here is a summary\b/i, /^The most recent major\b/i];
   const noFiller = rawSummary.split('\n').filter(line => !linesToRemove.some(re => re.test(line.trim()))).join('\n');
   const allLines = noFiller.split('\n');
