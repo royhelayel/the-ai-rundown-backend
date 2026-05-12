@@ -29,7 +29,7 @@ const DEFAULT_CATEGORIES = [
 ];
 
 const TIME_SLOTS = [
-  { value: 'morning', label: 'Morning', time: '6 AM', cronTime: '0 6  * * *' },
+  { value: 'morning', label: 'Morning', time: '6 AM', cronTime: '0 6 * * *' },
   { value: 'evening', label: 'Evening', time: '6 PM', cronTime: '0 18 * * *' },
 ];
 
