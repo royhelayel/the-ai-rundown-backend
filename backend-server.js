@@ -249,39 +249,11 @@ async function buildSearchContext(categoryQuery) {
   ).join('\n\n');
 }
 
-async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null) {
-  const categoryQuery = searchQuery || CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category);
-  const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
+// ─── Feature flag — set to false to revert to single-content generation ───────
+const GENERATE_STORIES_CONTENT = true;
 
-  console.log(`Generating news for ${category} on ${day} at ${timeSlot}`);
-
-  // Fetch search results via Serper (3 queries)
-  const searchContext = await buildSearchContext(categoryQuery);
-  const serper_searches = 3;
-  const serper_cost = serper_searches * 0.001;
-
-  const prompt = `You are a news analyst. Below are recent news articles about "${categoryQuery}" published ${dayInfo} (${day}). Synthesize them into a news digest.
-
-SEARCH RESULTS:
-${searchContext}
-
-For each major story group, use this EXACT format — no introduction, no preamble:
-
-## Synthesized neutral headline (your own words, not copied from any single source)
-**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url)
-- Key fact or development
-- Another key detail
-- For contested claims: "According to [source]..." or "[Party X] claims... while [Party Y] argues..."
-**Perspectives differ:** Only if outlets genuinely frame the story differently — describe how. Omit if consistent.
-**Why this matters:** One or two sentences on significance.
-
-Write 5–7 grouped stories from the results above. Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories:
-
-## Sources
-- [Article title](URL)
-
-Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
-
+// Shared Claude caller — used by both digest and stories generators
+async function callClaude(prompt, maxTokens = 4000, retries = 3) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -291,7 +263,7 @@ Rules: Start with the first ## heading — no preamble. Headline is plain text �
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 4000,
+      max_tokens: maxTokens,
       messages: [{ role: "user", content: prompt }]
     })
   });
@@ -300,57 +272,135 @@ Rules: Start with the first ## heading — no preamble. Headline is plain text �
     const retryAfter = parseInt(response.headers.get('retry-after') || '65', 10);
     console.log(`⏳ Rate limited. Waiting ${retryAfter}s (${retries} retries left)...`);
     await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-    return generateNews(category, day, timeSlot, retries - 1, searchQuery);
+    return callClaude(prompt, maxTokens, retries - 1);
   }
-
   if (!response.ok) {
     const errData = await response.json();
     throw new Error(`Claude API error: ${response.status} - ${JSON.stringify(errData)}`);
   }
+  return response.json();
+}
 
-  const data = await response.json();
-  const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
-
+// Clean raw Claude output: strip filler lines, extract from first heading
+function cleanRawSummary(rawSummary) {
   const linesToRemove = [/^I['']ll search\b/i, /^Let me search\b/i, /^Here is a summary\b/i, /^The most recent major\b/i];
   const noFiller = rawSummary.split('\n').filter(line => !linesToRemove.some(re => re.test(line.trim()))).join('\n');
-
   const allLines = noFiller.split('\n');
   const firstHeadingIdx = allLines.findIndex(l => /^#{1,3}[\s\[]/.test(l) || /^#{1,3}$/.test(l.trim()));
   const disclaimerLines = firstHeadingIdx > 0 ? allLines.slice(0, firstHeadingIdx) : [];
   const storyLines = firstHeadingIdx > 0 ? allLines.slice(firstHeadingIdx) : allLines;
-
   const fullDisclaimer = disclaimerLines.map(l => l.trim()).filter(Boolean).join(' ');
   const usefulSentence = (fullDisclaimer.match(/I found that[^.]+\./i) || [])[0] || '';
-
   const joined = storyLines.join('\n').replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ');
-
   const fixedHeadings = joined
     .replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2')
     .replace(/^(#{1,3} )(.+)\n(https?:\/\/[^\s]+)/gm, '$1[$2]($3)');
-  const summary = (usefulSentence ? `_${usefulSentence}_\n\n` : '') + fixedHeadings;
+  return (usefulSentence ? `_${usefulSentence}_\n\n` : '') + fixedHeadings;
+}
+
+async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null) {
+  const categoryQuery = searchQuery || CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category);
+  const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
+
+  console.log(`Generating digest for ${category} on ${day} at ${timeSlot}`);
+
+  // Fetch search results — reuse prebuiltContext if provided (shared with stories)
+  const searchContext = prebuiltContext || await buildSearchContext(categoryQuery);
+  const serper_searches = prebuiltContext ? 0 : 3;
+  const serper_cost = serper_searches * 0.001;
+
+  const prompt = `You are a news analyst. Below are recent news articles about "${categoryQuery}" published ${dayInfo} (${day}). Synthesize them into a detailed news digest.
+
+SEARCH RESULTS:
+${searchContext}
+
+For each major story group, use this EXACT format — no introduction, no preamble:
+
+## Synthesized neutral headline (your own words, not copied from any single source)
+**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url)
+- Key fact or development, with context and nuance
+- Another key detail — include numbers, names, and specifics where available
+- Additional relevant detail or background
+- For contested claims: "According to [source]..." or "[Party X] claims... while [Party Y] argues..."
+**Perspectives differ:** Only if outlets genuinely frame the story differently — describe how. Omit if consistent.
+**Why this matters:** One or two sentences on broader significance and implications.
+
+Write 5–7 grouped stories from the results above. Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories:
+
+## Sources
+- [Article title](URL)
+
+Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
+
+  const data = await callClaude(prompt, 4000);
+  const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+  const summary = cleanRawSummary(rawSummary);
 
   // Track usage
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
     const token_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
-    const search_cost_usd = serper_cost;
-    const estimated_cost_usd = token_cost_usd + search_cost_usd;
+    const estimated_cost_usd = token_cost_usd + serper_cost;
     supabaseAdmin.from('api_usage').insert({
       service: 'anthropic', model: 'claude-haiku-4-5-20251001',
       input_tokens, output_tokens,
-      web_searches: serper_searches, search_cost_usd, token_cost_usd, estimated_cost_usd,
-      category, time_slot: timeSlot,
+      web_searches: serper_searches, search_cost_usd: serper_cost, token_cost_usd, estimated_cost_usd,
+      category, time_slot: timeSlot, content_type: 'digest',
       created_at: new Date().toISOString()
     }).then(({ error }) => {
       if (error) console.warn('Could not track API usage:', error.message);
     }, err => console.warn('Could not track API usage:', err.message));
   }
 
+  return { summary, searchContext };
+}
+
+// Generate shorter, punchier stories content from pre-fetched search context
+async function generateStoriesContent(category, day, timeSlot, searchContext) {
+  console.log(`Generating stories content for ${category} on ${day} at ${timeSlot}`);
+
+  const categoryQuery = CATEGORY_SEARCH_QUERIES[category] || category;
+  const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
+
+  const prompt = `You are a news briefing editor. Create a punchy, audio-friendly news briefing about "${categoryQuery}" published ${dayInfo}.
+
+ARTICLES:
+${searchContext}
+
+For each story, use this EXACT format — no preamble:
+
+## Concise punchy headline (5–8 words, plain text)
+- One key fact — short, direct sentence.
+- Second key detail — short, direct sentence.
+- Third point if critical — short, direct sentence.
+**Why this matters:** One sentence, maximum impact.
+
+Write 5–7 stories. Rules: Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence under 20 words. Prioritise clarity and flow for listening, not reading.`;
+
+  const data = await callClaude(prompt, 2500);
+  const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+  const summary = cleanRawSummary(rawSummary);
+
+  // Track usage (search cost = 0, context reused from digest)
+  if (data.usage) {
+    const { input_tokens, output_tokens } = data.usage;
+    const token_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
+    supabaseAdmin.from('api_usage').insert({
+      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+      input_tokens, output_tokens,
+      web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
+      category, time_slot: timeSlot, content_type: 'stories',
+      created_at: new Date().toISOString()
+    }).then(({ error }) => {
+      if (error) console.warn('Could not track stories API usage:', error.message);
+    }, err => console.warn('Could not track stories API usage:', err.message));
+  }
+
   return summary;
 }
 
 // Function to store news in Supabase
-async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null) {
+async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null) {
   try {
     const generated_at = new Date().toISOString();
 
@@ -371,25 +421,25 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
 
     const { data: existing } = await query.maybeSingle();
 
+    const updatePayload = { content, generated_at };
+    if (storiesContent !== null) updatePayload.stories_content = storiesContent;
+
     let error;
     if (existing) {
       ({ error } = await supabaseAdmin
         .from('news_summaries')
-        .update({ content, generated_at })
+        .update(updatePayload)
         .eq('id', existing.id));
     } else {
-      const row = { category, day, time_slot: timeSlot, content, generated_at };
-      if (sharedKey) {
-        row.shared_key = sharedKey;
-      } else if (userId) {
-        row.user_id = userId;
-      }
+      const row = { category, day, time_slot: timeSlot, ...updatePayload };
+      if (sharedKey) row.shared_key = sharedKey;
+      else if (userId) row.user_id = userId;
       ({ error } = await supabaseAdmin.from('news_summaries').insert(row));
     }
 
     if (error) throw new Error(`Supabase error: ${error.message}`);
 
-    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot}${userId ? ` (user ${userId})` : ''}${sharedKey ? ` (shared_key: ${sharedKey})` : ''}`);
+    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot}${storiesContent ? ' (+ stories)' : ''}${userId ? ` (user ${userId})` : ''}${sharedKey ? ` (shared_key: ${sharedKey})` : ''}`);
   } catch (error) {
     console.error(`Error storing news in Supabase:`, error);
     throw error;
@@ -621,25 +671,36 @@ async function generateAllNewsForTimeSlot(timeSlot) {
 
   for (const category of DEFAULT_CATEGORIES) {
     try {
-      const content = await generateNews(category, today, timeSlot);
-      await storeNews(category, today, timeSlot, content);
+      // Generate digest (also returns the search context so we can reuse it)
+      const { summary: digestContent, searchContext } = await generateNews(category, today, timeSlot);
 
-      // Pre-generate TTS audio for each story (fire-and-forget — doesn't block next category)
-      pregenerateTTSForContent(content, `${category} / ${timeSlot}`).catch(err =>
+      // Generate stories content from the same search context — no extra web search cost
+      let storiesContent = null;
+      if (GENERATE_STORIES_CONTENT) {
+        try {
+          storiesContent = await generateStoriesContent(category, today, timeSlot, searchContext);
+        } catch (err) {
+          console.warn(`Stories content generation failed for ${category}, falling back to digest:`, err.message);
+        }
+      }
+
+      await storeNews(category, today, timeSlot, digestContent, null, null, storiesContent);
+
+      // Pre-generate TTS using stories content (shorter = better for audio), fallback to digest
+      const ttsContent = storiesContent || digestContent;
+      pregenerateTTSForContent(ttsContent, `${category} / ${timeSlot}`).catch(err =>
         console.warn(`TTS pre-gen failed for ${category}:`, err.message)
       );
 
-      // Delay between API calls to stay within rate limits (30k tokens/min)
+      // Delay between categories to stay within rate limits
       await new Promise(resolve => setTimeout(resolve, 15000));
     } catch (error) {
       console.error(`Failed to generate/store news for ${category}:`, error.message);
-      // Continue with next category even if one fails
     }
   }
 
   console.log(`✨ Completed news generation for ${timeSlot} time slot\n`);
 
-  // Email digest to opted-in users
   await sendNewsDigestEmails(timeSlot, today);
 }
 
@@ -757,7 +818,7 @@ app.post('/api/generate/custom-category', async (req, res) => {
   res.json({ status: 'accepted', category, day, timeSlot: 'Daily' });
   (async () => {
     try {
-      const newsContent = await generateNews(category, day, 'Daily', 3, description || category);
+      const { summary: newsContent } = await generateNews(category, day, 'Daily', 3, description || category);
       await storeNews(category, day, 'Daily', newsContent, null, sharedKey);
       await supabaseAdmin.from('users').update({ last_generated_date: todayUAE }).eq('id', user_id);
       console.log(`✓ Custom category news saved: ${category} (shared_key: ${sharedKey})`);
@@ -1504,7 +1565,7 @@ app.get('/admin/api/raw-content', async (req, res) => {
 app.post('/admin/api/debug-generate', async (req, res) => {
   const { category, day, timeSlot } = req.body;
   try {
-    const content = await generateNews(category || 'test', day || getTodayDate(), timeSlot || 'Evening');
+    const { summary: content } = await generateNews(category || 'test', day || getTodayDate(), timeSlot || 'Evening');
     res.json({ ok: true, contentLength: content.length, preview: content.slice(0, 300) });
   } catch (err) {
     res.json({ ok: false, error: err.message });
