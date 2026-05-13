@@ -344,7 +344,7 @@ For each major story group, use this EXACT format — no introduction, no preamb
 - Another key detail — include numbers, names, and specifics where available
 - Additional relevant detail or background
 - For contested claims: "According to [source]..." or "[Party X] claims... while [Party Y] argues..."
-**Perspectives differ:** Only if outlets genuinely frame the story differently — describe how. Omit if consistent.
+**Perspectives differ:** Include whenever different outlets, parties, or experts frame the story differently — one sentence describing the contrast. Omit only if all sources are fully aligned.
 **Why this matters:** One or two sentences on broader significance and implications.
 
 Write 5–7 grouped stories from the results above. Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories:
@@ -394,8 +394,9 @@ For each story in the digest, use this EXACT format — no preamble:
 - Second key detail — short, direct sentence under 20 words.
 - Third point if critical — short, direct sentence under 20 words.
 **Why this matters:** One sentence, maximum impact.
+**Perspectives differ:** Include this line if the digest includes it for this story — condense to one punchy sentence.
 
-Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence. Omit **Perspectives differ** unless genuinely relevant.`;
+Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence.`;
 
   const data = await callClaude(prompt, 2500);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
