@@ -1665,7 +1665,7 @@ app.post('/api/tts', async (req, res) => {
     if (!fishRes.ok) {
       const errText = await fishRes.text();
       console.error('Fish Audio error:', fishRes.status, errText);
-      return res.status(502).json({ error: 'Fish Audio request failed' });
+      return res.status(502).json({ error: 'Fish Audio request failed', fishStatus: fishRes.status, fishError: errText });
     }
 
     const audioBuffer = Buffer.from(await fishRes.arrayBuffer());
