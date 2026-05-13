@@ -377,27 +377,25 @@ Rules: Start with the first ## heading — no preamble. Headline is plain text �
   return { summary, searchContext };
 }
 
-// Generate shorter, punchier stories content from pre-fetched search context
-async function generateStoriesContent(category, day, timeSlot, searchContext) {
+// Generate shorter, punchier stories content by reformatting the already-generated digest.
+// Using the digest (not raw search results) guarantees stories covers the exact same headlines.
+async function generateStoriesContent(category, day, timeSlot, digestContent) {
   console.log(`Generating stories content for ${category} on ${day} at ${timeSlot}`);
 
-  const categoryQuery = CATEGORY_SEARCH_QUERIES[category] || category;
-  const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
+  const prompt = `You are a news editor. Below is a detailed news digest. Convert every story in it into a short, punchy card suitable for audio listening and mobile reading.
 
-  const prompt = `You are a news briefing editor. Create a punchy, audio-friendly news briefing about "${categoryQuery}" published ${dayInfo}.
+DIGEST:
+${digestContent}
 
-ARTICLES:
-${searchContext}
+For each story in the digest, use this EXACT format — no preamble:
 
-For each story, use this EXACT format — no preamble:
-
-## Concise punchy headline (5–8 words, plain text)
-- One key fact — short, direct sentence.
-- Second key detail — short, direct sentence.
-- Third point if critical — short, direct sentence.
+## [Headline: same story as digest, 5–8 words, plain text]
+- One key fact — short, direct sentence under 20 words.
+- Second key detail — short, direct sentence under 20 words.
+- Third point if critical — short, direct sentence under 20 words.
 **Why this matters:** One sentence, maximum impact.
 
-Write 5–7 stories. Rules: Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence under 20 words. Prioritise clarity and flow for listening, not reading.`;
+Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence. Omit **Perspectives differ** unless genuinely relevant.`;
 
   const data = await callClaude(prompt, 2500);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
@@ -699,14 +697,14 @@ async function generateAllNewsForTimeSlot(timeSlot) {
 
   for (const category of DEFAULT_CATEGORIES) {
     try {
-      // Generate digest (also returns the search context so we can reuse it)
-      const { summary: digestContent, searchContext } = await generateNews(category, today, timeSlot);
+      // Generate digest first
+      const { summary: digestContent } = await generateNews(category, today, timeSlot);
 
-      // Generate stories content from the same search context — no extra web search cost
+      // Generate stories by reformatting the digest — same headlines guaranteed, no extra search cost
       let storiesContent = null;
       if (GENERATE_STORIES_CONTENT) {
         try {
-          storiesContent = await generateStoriesContent(category, today, timeSlot, searchContext);
+          storiesContent = await generateStoriesContent(category, today, timeSlot, digestContent);
         } catch (err) {
           console.warn(`Stories content generation failed for ${category}, falling back to digest:`, err.message);
         }
