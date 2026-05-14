@@ -241,6 +241,30 @@ async function serperSearch(query, num = 10, day = null) {
   return res.json();
 }
 
+// Tier-1 news outlets — articles from these domains are sorted to the top of the
+// context so Claude prioritises major stories over niche/low-authority sources.
+const TIER1_DOMAINS = new Set([
+  'reuters.com', 'apnews.com', 'bbc.com', 'bbc.co.uk',
+  'nytimes.com', 'cnn.com', 'theguardian.com', 'washingtonpost.com',
+  'wsj.com', 'bloomberg.com', 'ft.com', 'economist.com',
+  'nbcnews.com', 'abcnews.go.com', 'cbsnews.com', 'npr.org',
+  'politico.com', 'axios.com', 'theatlantic.com', 'time.com',
+  'forbes.com', 'businessinsider.com', 'techcrunch.com', 'wired.com',
+  'arstechnica.com', 'theverge.com', 'engadget.com',
+  'espn.com', 'skysports.com', 'bbc.com/sport',
+  'sciencenews.org', 'nature.com', 'scientificamerican.com',
+  'healthline.com', 'webmd.com', 'statnews.com',
+  'variety.com', 'hollywoodreporter.com', 'deadline.com',
+  'aljazeera.com', 'dw.com', 'france24.com',
+]);
+
+function isTier1(url) {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    return TIER1_DOMAINS.has(host) || [...TIER1_DOMAINS].some(d => host.endsWith('.' + d));
+  } catch { return false; }
+}
+
 async function buildSearchContext(categoryQuery, day) {
   // Format day as human-readable for queries (e.g. "May 14 2026")
   const dateLabel = day
@@ -269,12 +293,18 @@ async function buildSearchContext(categoryQuery, day) {
     throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
   }
 
-  const context = rawArticles.map((item, i) =>
+  // Boost: sort tier-1 outlets to the front so Claude reads them first and
+  // prioritises major stories over niche/low-authority sources.
+  const tier1 = rawArticles.filter(a => isTier1(a.link));
+  const rest   = rawArticles.filter(a => !isTier1(a.link));
+  const sorted = [...tier1, ...rest];
+
+  const context = sorted.map((item, i) =>
     `[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${item.link}\nSummary: ${item.snippet || ''}`
   ).join('\n\n');
 
   // Return both formatted context (for Claude) and raw article metadata (for audit storage)
-  const articles = rawArticles.map(item => ({
+  const articles = sorted.map(item => ({
     title:   item.title   || '',
     source:  item.source  || '',
     date:    item.date    || '',
