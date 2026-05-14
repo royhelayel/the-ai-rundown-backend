@@ -109,23 +109,29 @@ function markdownToEmailHtml(content) {
     .join('\n')
     .replace(/^https?:\/\/\S+$/gm, '');
 
-  // 4. Split into per-story chunks
+  // 4. Split into per-story chunks and build URL → story-index map
+  //    (same approach as the website's urlToStoryIdx)
   const chunks = [];
+  const urlToStoryIdx = {};
   let cur = null;
   processedLines.split('\n').forEach(line => {
     if (/^#{1,3} /.test(line)) {
       if (cur) chunks.push(cur);
-      cur = { heading: line.replace(/^#{1,3} /, '').trim(), lines: [] };
+      cur = { heading: line.replace(/^#{1,3} /, '').trim(), lines: [], idx: chunks.length };
     } else if (cur) {
       cur.lines.push(line);
     }
+    // Record every URL in this line against the current story index
+    [...line.matchAll(/\((https?:\/\/[^)\s]+)\)/g)].forEach(([, url]) => {
+      if (urlToStoryIdx[url] === undefined && cur) urlToStoryIdx[url] = cur.idx ?? chunks.length;
+    });
   });
   if (cur) chunks.push(cur);
 
   // 5. Render a single body line into HTML
   const renderBodyLine = (line) => {
     if (!line.trim()) return '';
-    // Coverage — removed (sources shown as cards below, matching website)
+    // Coverage — extract URLs for story mapping but don't render the line itself
     if (/^\*\*Coverage:\*\*/.test(line)) return '';
     // Perspectives differ — gray label + text (matches website)
     const perspMatch = line.match(/^\*\*Perspectives differ:\*\*\s*(.+)$/);
@@ -152,24 +158,15 @@ function markdownToEmailHtml(content) {
     return '';
   };
 
-  // 6. Render all story cards (matching website's #fafafa card layout)
-  const storiesHtml = chunks.map(chunk => {
-    const bodyHtml = chunk.lines.map(renderBodyLine).filter(Boolean).join('');
-    return `<div style="background:#fafafa;border:1px solid #f0f0f0;border-radius:12px;padding:16px 20px;margin-bottom:12px;">
-      <div style="font-size:15px;font-weight:800;color:#111827;line-height:1.3;margin-bottom:8px;">${chunk.heading}</div>
-      ${bodyHtml}
-    </div>`;
-  }).join('');
-
-  // 7. Source cards — 2-column grid matching website's card style (white bg, favicon, domain, ↗)
-  let sourcesHtml = '';
-  if (sourceLinks.length > 0) {
+  // Helper: render source cards for a given list of sources (2-column table for email clients)
+  const renderSourceCards = (sources) => {
+    if (!sources.length) return '';
     const rows = [];
-    for (let i = 0; i < sourceLinks.length; i += 2) {
-      const pair = [sourceLinks[i], sourceLinks[i + 1]].filter(Boolean);
+    for (let i = 0; i < sources.length; i += 2) {
+      const pair = [sources[i], sources[i + 1]].filter(Boolean);
       const cells = pair.map(s => {
         const domain = getDomain(s.url);
-        return `<td width="50%" style="padding:4px;vertical-align:top;">
+        return `<td width="50%" style="padding:3px;vertical-align:top;">
           <a href="${s.url}" target="_blank" rel="noopener noreferrer" style="display:block;padding:8px 10px;background:white;border:1px solid #e8e8ee;border-radius:10px;text-decoration:none;">
             <div style="display:flex;align-items:center;gap:5px;margin-bottom:5px;">
               <img src="https://www.google.com/s2/favicons?domain=${domain}&sz=32" width="11" height="11" style="border-radius:2px;opacity:0.85;vertical-align:middle;" />
@@ -182,18 +179,26 @@ function markdownToEmailHtml(content) {
       }).join('');
       rows.push(`<tr>${cells}</tr>`);
     }
-    sourcesHtml = `<div style="margin-top:4px;">
-      <p style="margin:0 0 8px;font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.07em;">Sources</p>
-      <table width="100%" cellpadding="0" cellspacing="0" border="0">${rows.join('')}</table>
-    </div>`;
-  }
+    return `<div style="margin-top:10px;"><table width="100%" cellpadding="0" cellspacing="0" border="0">${rows.join('')}</table></div>`;
+  };
 
-  // 8. Top note
+  // 6. Render all story cards — each with its own per-story source cards below (matches website)
+  const storiesHtml = chunks.map(chunk => {
+    const bodyHtml = chunk.lines.map(renderBodyLine).filter(Boolean).join('');
+    const storySources = sourceLinks.filter(s => urlToStoryIdx[s.url] === chunk.idx);
+    const storySourcesHtml = renderSourceCards(storySources);
+    return `<div style="background:#fafafa;border:1px solid #f0f0f0;border-radius:12px;padding:16px 20px;margin-bottom:12px;">
+      <div style="font-size:15px;font-weight:800;color:#111827;line-height:1.3;margin-bottom:8px;">${chunk.heading}</div>
+      ${bodyHtml}${storySourcesHtml}
+    </div>`;
+  }).join('');
+
+  // 7. Top note
   const topNoteHtml = topNote
     ? `<p style="font-style:italic;color:#9ca3af;font-size:12px;margin:0 0 14px;line-height:1.5;">${topNote.replace(/^_+|_+$/g, '').replace(/\*\*(.+?)\*\*/g, '<strong style="color:#6b7280;font-weight:700;">$1</strong>')}</p>`
     : '';
 
-  return topNoteHtml + storiesHtml + sourcesHtml;
+  return topNoteHtml + storiesHtml;
 }
 
 // Function to generate news using Claude API (with retry on 429)
