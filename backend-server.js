@@ -26,7 +26,11 @@ const DEFAULT_CATEGORIES = [
   'Sports',
   'Entertainment',
   'Science',
-  'Health'
+  'Health',
+  'UAE',
+  'KSA',
+  'QAT',
+  'LEB',
 ];
 
 const TIME_SLOTS = [
@@ -212,6 +216,10 @@ const CATEGORY_SEARCH_QUERIES = {
   'Science':       'latest science research discoveries space climate health news',
   'Health':        'latest health medicine medical research pandemic wellness news',
   'World News':    'top global breaking news world events today',
+  'UAE':           'UAE United Arab Emirates Dubai Abu Dhabi local news announcements government entertainment',
+  'KSA':           'Saudi Arabia KSA Riyadh Jeddah local news announcements Vision 2030 government entertainment',
+  'QAT':           'Qatar Doha local news announcements government entertainment updates',
+  'LEB':           'Lebanon Beirut local news announcements government politics economy entertainment',
 };
 
 async function generateEmbedding(text) {
@@ -227,7 +235,10 @@ async function generateEmbedding(text) {
   } catch { return null; }
 }
 
-async function serperSearch(query, num = 10, day = null) {
+// gl overrides per regional category — surfaces local results from Serper
+const CATEGORY_GL = { 'UAE': 'ae', 'KSA': 'sa', 'QAT': 'qa', 'LEB': 'lb' };
+
+async function serperSearch(query, num = 10, day = null, gl = 'us') {
   // Build day-pinned tbs: cover the target day plus the day before, so articles published
   // that day and any pieces filed just before midnight are both included.
   let tbs = 'qdr:2d'; // fallback when no day is provided
@@ -240,7 +251,7 @@ async function serperSearch(query, num = 10, day = null) {
   const res = await fetch('https://google.serper.dev/news', {
     method: 'POST',
     headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ q: query, num, gl: 'us', hl: 'en', tbs })
+    body: JSON.stringify({ q: query, num, gl, hl: 'en', tbs })
   });
   if (!res.ok) return { news: [] };
   return res.json();
@@ -261,6 +272,11 @@ const TIER1_DOMAINS = new Set([
   'healthline.com', 'webmd.com', 'statnews.com',
   'variety.com', 'hollywoodreporter.com', 'deadline.com',
   'aljazeera.com', 'dw.com', 'france24.com',
+  // Regional — Gulf & Levant
+  'khaleejtimes.com', 'gulfnews.com', 'thenationalnews.com', 'arabianbusiness.com',
+  'arabnews.com', 'saudigazette.com.sa', 'argaam.com',
+  'gulf-times.com', 'thepeninsulaqatar.com',
+  'dailystar.com.lb', 'lorientlejour.com', 'naharnet.com',
 ]);
 
 function isTier1(url) {
@@ -270,7 +286,7 @@ function isTier1(url) {
   } catch { return false; }
 }
 
-async function buildSearchContext(categoryQuery, day) {
+async function buildSearchContext(categoryQuery, day, gl = 'us') {
   // Format day as human-readable for queries (e.g. "May 14 2026")
   const dateLabel = day
     ? new Date(day + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
@@ -282,7 +298,7 @@ async function buildSearchContext(categoryQuery, day) {
     `${categoryQuery} update ${dateLabel}`,
   ];
   // Pass day so serperSearch uses date-pinned tbs (cdr:1,cd_min/cd_max)
-  const results = await Promise.all(queries.map(q => serperSearch(q, 10, day).catch(() => ({ news: [] }))));
+  const results = await Promise.all(queries.map(q => serperSearch(q, 10, day, gl).catch(() => ({ news: [] }))));
 
   // Merge results while preserving Google's ranking signal.
   // Each article gets a score = sum of (1 / position) across every query it appears in.
@@ -413,7 +429,8 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   if (prebuiltContext) {
     searchContext = prebuiltContext;
   } else {
-    const { context, articles } = await buildSearchContext(categoryQuery, day);
+    const gl = CATEGORY_GL[category] || 'us';
+    const { context, articles } = await buildSearchContext(categoryQuery, day, gl);
     searchContext = context;
     sourceArticles = articles;
   }
