@@ -1701,6 +1701,24 @@ app.put('/api/user/email-preferences', async (req, res) => {
   }
 });
 
+app.put('/api/user/feed-categories', async (req, res) => {
+  try {
+    const { userId, categories } = req.body;
+    if (!userId || !Array.isArray(categories)) {
+      return res.status(400).json({ error: 'userId and categories array are required' });
+    }
+    const { error } = await supabaseAdmin
+      .from('users')
+      .update({ feed_categories: categories })
+      .eq('id', userId);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error saving feed categories:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Debug: synchronously run generateNews and return result or error
 app.get('/admin/api/raw-content', async (req, res) => {
   const { category, day, timeSlot } = req.query;
