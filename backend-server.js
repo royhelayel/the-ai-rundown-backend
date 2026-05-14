@@ -216,10 +216,10 @@ const CATEGORY_SEARCH_QUERIES = {
   'Science':       'latest science research discoveries space climate health news',
   'Health':        'latest health medicine medical research pandemic wellness news',
   'World News':    'top global breaking news world events today',
-  'UAE':           'UAE United Arab Emirates Dubai Abu Dhabi local news announcements government entertainment',
-  'KSA':           'Saudi Arabia KSA Riyadh Jeddah local news announcements Vision 2030 government entertainment',
-  'QAT':           'Qatar Doha local news announcements government entertainment updates',
-  'LEB':           'Lebanon Beirut local news announcements government politics economy entertainment',
+  'UAE':           'UAE Dubai Abu Dhabi news today',
+  'KSA':           'Saudi Arabia Riyadh news today',
+  'QAT':           'Qatar Doha news today',
+  'LEB':           'Lebanon Beirut news today',
 };
 
 async function generateEmbedding(text) {
@@ -235,8 +235,10 @@ async function generateEmbedding(text) {
   } catch { return null; }
 }
 
-// gl overrides per regional category — surfaces local results from Serper
-const CATEGORY_GL = { 'UAE': 'ae', 'KSA': 'sa', 'QAT': 'qa', 'LEB': 'lb' };
+// Regional categories: always use gl='us' so Serper hits Google's main English index.
+// Country-specific gl codes (ae/sa/qa/lb) route to sparse regional indexes that return
+// unrelated content. The country name in the query is enough to surface local news.
+const REGIONAL_CATEGORIES_SET = new Set(['UAE', 'KSA', 'QAT', 'LEB']);
 
 async function serperSearch(query, num = 10, day = null, gl = 'us') {
   // Build day-pinned tbs: cover the target day plus the day before, so articles published
@@ -286,7 +288,7 @@ function isTier1(url) {
   } catch { return false; }
 }
 
-async function buildSearchContext(categoryQuery, day, gl = 'us') {
+async function buildSearchContext(categoryQuery, day, isRegional = false) {
   // Format day as human-readable for queries (e.g. "May 14 2026")
   const dateLabel = day
     ? new Date(day + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
@@ -297,8 +299,11 @@ async function buildSearchContext(categoryQuery, day, gl = 'us') {
     `${categoryQuery} latest breaking news`,
     `${categoryQuery} update ${dateLabel}`,
   ];
-  // Pass day so serperSearch uses date-pinned tbs (cdr:1,cd_min/cd_max)
-  const results = await Promise.all(queries.map(q => serperSearch(q, 10, day, gl).catch(() => ({ news: [] }))));
+
+  // Regional categories: widen the date window to 3 days to capture more English-language
+  // coverage of smaller markets (LEB, QAT especially have sparse daily English news).
+  const searchDay = isRegional ? null : day; // null → Serper uses qdr:2d fallback (recent)
+  const results = await Promise.all(queries.map(q => serperSearch(q, 10, searchDay).catch(() => ({ news: [] }))));
 
   // Merge results while preserving Google's ranking signal.
   // Each article gets a score = sum of (1 / position) across every query it appears in.
@@ -429,8 +434,8 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   if (prebuiltContext) {
     searchContext = prebuiltContext;
   } else {
-    const gl = CATEGORY_GL[category] || 'us';
-    const { context, articles } = await buildSearchContext(categoryQuery, day, gl);
+    const isRegional = REGIONAL_CATEGORIES_SET.has(category);
+    const { context, articles } = await buildSearchContext(categoryQuery, day, isRegional);
     searchContext = context;
     sourceArticles = articles;
   }
