@@ -294,6 +294,17 @@
   </div>
 </div>
 
+<!-- ── Sources Modal ── -->
+<div class="modal-overlay" id="sources-modal" onclick="if(event.target===this)closeSourcesModal()">
+  <div class="modal" style="max-width:900px;">
+    <div class="modal-header">
+      <div class="modal-title" id="sources-modal-title"></div>
+      <button class="modal-close" onclick="closeSourcesModal()">✕</button>
+    </div>
+    <div class="modal-body" style="padding:1rem 1.4rem;white-space:normal;" id="sources-modal-body"></div>
+  </div>
+</div>
+
 <script>
 // ── State ──
 let currentTab = 'overview';
@@ -468,7 +479,10 @@ async function loadNews() {
         <td style="color:#6b7280;font-size:0.8rem;">${n.day}</td>
         <td><span class="badge bp">${n.time_slot}</span></td>
         <td style="color:#6b7280;font-size:0.78rem;">${gen}</td>
-        <td><button onclick="viewNews(${i})" style="padding:0.22rem 0.6rem;background:none;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-size:0.75rem;color:#6366f1;font-weight:700;">View</button></td>
+        <td style="white-space:nowrap;">
+          <button onclick="viewNews(${i})" style="padding:0.22rem 0.6rem;background:none;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-size:0.75rem;color:#6366f1;font-weight:700;">View</button>
+          <button onclick="viewSources(${i})" style="margin-left:0.35rem;padding:0.22rem 0.6rem;background:none;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-size:0.75rem;color:#ec4899;font-weight:700;">Sources</button>
+        </td>
       </tr>`;
     });
     h += `</tbody></table><div class="tbl-footer">${data.length} article${data.length!==1?'s':''}</div>`;
@@ -485,6 +499,49 @@ function viewNews(i) {
 }
 
 function closeModal() { document.getElementById('modal').classList.remove('open'); }
+
+function viewSources(i) {
+  const n = window._newsItems[i];
+  const genTime = n.generated_at ? new Date(n.generated_at).toLocaleString() : '—';
+  document.getElementById('sources-modal-title').textContent =
+    `Sources · ${n.category} · ${n.time_slot} · ${n.day}`;
+
+  const articles = n.source_articles;
+  if (!articles || !Array.isArray(articles) || articles.length === 0) {
+    document.getElementById('sources-modal-body').innerHTML =
+      `<div class="empty" style="padding:2rem 0;">No source articles recorded for this generation.<br><small style="color:#9ca3af;">Sources are stored from the next generation onwards.</small></div>`;
+    document.getElementById('sources-modal').classList.add('open');
+    return;
+  }
+
+  let h = `<div style="font-size:0.75rem;color:#64748b;margin-bottom:0.9rem;">Generated: <strong>${genTime}</strong> &nbsp;·&nbsp; ${articles.length} article${articles.length!==1?'s':''} retrieved from Serper</div>`;
+  h += `<table class="data-table" style="font-size:0.78rem;">
+    <thead><tr>
+      <th style="width:42%">Title</th>
+      <th>Outlet</th>
+      <th>Article Date</th>
+      <th>Generation Date</th>
+    </tr></thead><tbody>`;
+
+  articles.forEach(a => {
+    const title = a.title || '(no title)';
+    const titleCell = a.url
+      ? `<a href="${a.url}" target="_blank" rel="noopener" style="color:#6366f1;text-decoration:none;font-weight:600;">${title} ↗</a>`
+      : `<span style="font-weight:600;">${title}</span>`;
+    h += `<tr>
+      <td style="max-width:300px;word-break:break-word;">${titleCell}</td>
+      <td style="white-space:nowrap;color:#374151;">${a.source || '—'}</td>
+      <td style="white-space:nowrap;color:#6b7280;">${a.date || '—'}</td>
+      <td style="white-space:nowrap;color:#6b7280;">${genTime}</td>
+    </tr>`;
+  });
+
+  h += `</tbody></table>`;
+  document.getElementById('sources-modal-body').innerHTML = h;
+  document.getElementById('sources-modal').classList.add('open');
+}
+
+function closeSourcesModal() { document.getElementById('sources-modal').classList.remove('open'); }
 
 // ── USERS ──
 async function loadUsers() {

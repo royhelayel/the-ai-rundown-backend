@@ -216,33 +216,23 @@ async function generateEmbedding(text) {
   } catch { return null; }
 }
 
-async function serperSearch(query, num = 10) {
+async function serperSearch(query, num = 10, day = null) {
+  // Build day-pinned tbs: cover the target day plus the day before, so articles published
+  // that day and any pieces filed just before midnight are both included.
+  let tbs = 'qdr:2d'; // fallback when no day is provided
+  if (day) {
+    const d  = new Date(day + 'T12:00:00Z');
+    const d1 = new Date(d); d1.setUTCDate(d1.getUTCDate() - 1);
+    const fmt = x => `${String(x.getUTCMonth()+1).padStart(2,'0')}/${String(x.getUTCDate()).padStart(2,'0')}/${x.getUTCFullYear()}`;
+    tbs = `cdr:1,cd_min:${fmt(d1)},cd_max:${fmt(d)}`;
+  }
   const res = await fetch('https://google.serper.dev/news', {
     method: 'POST',
     headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
-    // tbs: 'qdr:2d' restricts results to articles published in the past 2 days
-    body: JSON.stringify({ q: query, num, gl: 'us', hl: 'en', tbs: 'qdr:2d' })
+    body: JSON.stringify({ q: query, num, gl: 'us', hl: 'en', tbs })
   });
   if (!res.ok) return { news: [] };
   return res.json();
-}
-
-// Returns true if the article's date string looks recent (within ~3 days)
-function isArticleRecent(dateStr) {
-  if (!dateStr) return true; // no date = assume recent
-  const d = dateStr.toLowerCase().trim();
-  // Relative strings Serper returns: "X minutes ago", "X hours ago", "X days ago"
-  if (/\d+\s*(minute|hour)s?\s*ago/.test(d)) return true;
-  const daysMatch = d.match(/(\d+)\s*days?\s*ago/);
-  if (daysMatch) return parseInt(daysMatch[1]) <= 3;
-  if (/week|month|year/.test(d)) return false;
-  // Absolute date — try to parse and compare
-  try {
-    const parsed = new Date(dateStr);
-    if (isNaN(parsed.getTime())) return true; // unparseable = keep
-    const ageMs = Date.now() - parsed.getTime();
-    return ageMs < 4 * 24 * 60 * 60 * 1000; // within 4 days
-  } catch { return true; }
 }
 
 async function buildSearchContext(categoryQuery, day) {
@@ -256,37 +246,37 @@ async function buildSearchContext(categoryQuery, day) {
     `${categoryQuery} latest breaking news`,
     `${categoryQuery} update ${dateLabel}`,
   ];
-  const results = await Promise.all(queries.map(q => serperSearch(q, 10).catch(() => ({ news: [] }))));
+  // Pass day so serperSearch uses date-pinned tbs (cdr:1,cd_min/cd_max)
+  const results = await Promise.all(queries.map(q => serperSearch(q, 10, day).catch(() => ({ news: [] }))));
   const seen = new Set();
-  const articles = [];
+  const rawArticles = [];
   results.forEach(r => {
     (r.news || []).forEach(item => {
-      if (item.link && !seen.has(item.link) && !item.link.includes('wikipedia.org') && isArticleRecent(item.date)) {
+      if (item.link && !seen.has(item.link) && !item.link.includes('wikipedia.org')) {
         seen.add(item.link);
-        articles.push(item);
+        rawArticles.push(item);
       }
     });
   });
 
-  // If recency filter removed everything, retry without it (better old news than nothing)
-  if (articles.length === 0) {
-    results.forEach(r => {
-      (r.news || []).forEach(item => {
-        if (item.link && !seen.has(item.link) && !item.link.includes('wikipedia.org')) {
-          seen.add(item.link);
-          articles.push(item);
-        }
-      });
-    });
-  }
-
-  if (articles.length === 0) {
+  if (rawArticles.length === 0) {
     throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
   }
 
-  return articles.map((item, i) =>
+  const context = rawArticles.map((item, i) =>
     `[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${item.link}\nSummary: ${item.snippet || ''}`
   ).join('\n\n');
+
+  // Return both formatted context (for Claude) and raw article metadata (for audit storage)
+  const articles = rawArticles.map(item => ({
+    title:   item.title   || '',
+    source:  item.source  || '',
+    date:    item.date    || '',
+    url:     item.link    || '',
+    snippet: item.snippet || '',
+  }));
+
+  return { context, articles };
 }
 
 // ─── Feature flag — set to false to revert to single-content generation ───────
@@ -364,11 +354,18 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   console.log(`Generating digest for ${category} on ${day} at ${timeSlot}`);
 
   // Fetch search results — reuse prebuiltContext if provided (shared with stories)
-  const searchContext = prebuiltContext || await buildSearchContext(categoryQuery, day);
+  let searchContext, sourceArticles = [];
+  if (prebuiltContext) {
+    searchContext = prebuiltContext;
+  } else {
+    const { context, articles } = await buildSearchContext(categoryQuery, day);
+    searchContext = context;
+    sourceArticles = articles;
+  }
   const serper_searches = prebuiltContext ? 0 : 3;
   const serper_cost = serper_searches * 0.001;
 
-  const prompt = `You are a news analyst. Below are recent news articles about "${categoryQuery}" published ${dayInfo} (${day}). Synthesize them into a detailed news digest. Only use articles from the past 2 days — skip any article whose date is older than that.
+  const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.
 
 SEARCH RESULTS:
 ${searchContext}
@@ -411,7 +408,7 @@ Rules: Start with the first ## heading — no preamble. Headline is plain text �
     }, err => console.warn('Could not track API usage:', err.message));
   }
 
-  return { summary, searchContext };
+  return { summary, searchContext, sourceArticles };
 }
 
 // Generate shorter, punchier stories content by reformatting the already-generated digest.
@@ -458,7 +455,7 @@ Rules: Cover the same stories as the digest, in the same order. Start immediatel
 }
 
 // Function to store news in Supabase
-async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null) {
+async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null) {
   try {
     const generated_at = new Date().toISOString();
 
@@ -481,6 +478,7 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
 
     const updatePayload = { content, generated_at };
     if (storiesContent !== null) updatePayload.stories_content = storiesContent;
+    if (sourceArticles !== null) updatePayload.source_articles = sourceArticles;
 
     const runUpsert = async (payload) => {
       if (existing) {
@@ -495,15 +493,15 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
 
     let { error } = await runUpsert(updatePayload);
 
-    // Graceful fallback: if stories_content column doesn't exist yet, retry without it
-    if (error && storiesContent !== null && (error.message?.includes('stories_content') || error.code === '42703')) {
-      console.warn(`⚠️  stories_content column missing — run this SQL in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS stories_content text;\n  Storing digest only for now.`);
+    // Graceful fallback: if optional columns don't exist yet, retry with just the core fields
+    if (error && (error.message?.includes('stories_content') || error.message?.includes('source_articles') || error.code === '42703')) {
+      console.warn(`⚠️  Optional column missing — retrying without optional columns. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS stories_content text;\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS source_articles jsonb;`);
       ({ error } = await runUpsert({ content, generated_at }));
     }
 
     if (error) throw new Error(`Supabase error: ${error.message}`);
 
-    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot}${storiesContent ? ' (+ stories)' : ''}${userId ? ` (user ${userId})` : ''}${sharedKey ? ` (shared_key: ${sharedKey})` : ''}`);
+    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot}${storiesContent ? ' (+ stories)' : ''}${sourceArticles ? ` (+ ${sourceArticles.length} sources)` : ''}${userId ? ` (user ${userId})` : ''}${sharedKey ? ` (shared_key: ${sharedKey})` : ''}`);
   } catch (error) {
     console.error(`Error storing news in Supabase:`, error);
     throw error;
@@ -735,8 +733,8 @@ async function generateAllNewsForTimeSlot(timeSlot) {
 
   for (const category of DEFAULT_CATEGORIES) {
     try {
-      // Generate digest first
-      const { summary: digestContent } = await generateNews(category, today, timeSlot);
+      // Generate digest first (also retrieves source articles for audit)
+      const { summary: digestContent, sourceArticles } = await generateNews(category, today, timeSlot);
 
       // Generate stories by reformatting the digest — same headlines guaranteed, no extra search cost
       let storiesContent = null;
@@ -748,7 +746,7 @@ async function generateAllNewsForTimeSlot(timeSlot) {
         }
       }
 
-      await storeNews(category, today, timeSlot, digestContent, null, null, storiesContent);
+      await storeNews(category, today, timeSlot, digestContent, null, null, storiesContent, sourceArticles);
 
       // Pre-generate TTS for both versions independently (different text = different cache keys)
       pregenerateTTSForContent(digestContent, `${category} / ${timeSlot} / digest`).catch(err =>
