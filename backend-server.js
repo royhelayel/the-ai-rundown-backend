@@ -278,26 +278,40 @@ async function buildSearchContext(categoryQuery, day) {
   ];
   // Pass day so serperSearch uses date-pinned tbs (cdr:1,cd_min/cd_max)
   const results = await Promise.all(queries.map(q => serperSearch(q, 10, day).catch(() => ({ news: [] }))));
-  const seen = new Set();
-  const rawArticles = [];
+
+  // Merge results while preserving Google's ranking signal.
+  // Each article gets a score = sum of (1 / position) across every query it appears in.
+  // This means an article at rank 1 in two queries scores higher than one that only
+  // appeared at rank 8 in one query — rather than the naive first-seen merge that
+  // previously destroyed Serper's ordering.
+  const scoreMap = {};   // url → cumulative score
+  const itemMap  = {};   // url → article object (first seen wins for metadata)
+
   results.forEach(r => {
-    (r.news || []).forEach(item => {
-      if (item.link && !seen.has(item.link) && !item.link.includes('wikipedia.org')) {
-        seen.add(item.link);
-        rawArticles.push(item);
-      }
+    (r.news || []).forEach((item, idx) => {
+      if (!item.link || item.link.includes('wikipedia.org')) return;
+      const url = item.link;
+      const positionScore = 1 / (idx + 1); // rank 1 → 1.0, rank 2 → 0.5, rank 10 → 0.1
+      scoreMap[url] = (scoreMap[url] || 0) + positionScore;
+      if (!itemMap[url]) itemMap[url] = item;
     });
   });
 
-  if (rawArticles.length === 0) {
+  if (Object.keys(scoreMap).length === 0) {
     throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
   }
 
-  // Boost: sort tier-1 outlets to the front so Claude reads them first and
-  // prioritises major stories over niche/low-authority sources.
-  const tier1 = rawArticles.filter(a => isTier1(a.link));
-  const rest   = rawArticles.filter(a => !isTier1(a.link));
-  const sorted = [...tier1, ...rest];
+  // Sort by score descending (preserves Google ranking signal across merged queries),
+  // then apply tier-1 boost on top: tier-1 articles get a +10 bonus so they always
+  // beat same-scored niche sources, but a genuinely top-ranked niche article (score ~3)
+  // can still appear above a tier-1 article that only appeared once at rank 10 (score ~0.1).
+  const sorted = Object.keys(scoreMap)
+    .sort((a, b) => {
+      const scoreA = scoreMap[a] + (isTier1(a) ? 10 : 0);
+      const scoreB = scoreMap[b] + (isTier1(b) ? 10 : 0);
+      return scoreB - scoreA;
+    })
+    .map(url => itemMap[url]);
 
   const context = sorted.map((item, i) =>
     `[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${item.link}\nSummary: ${item.snippet || ''}`
