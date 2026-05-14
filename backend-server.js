@@ -220,29 +220,66 @@ async function serperSearch(query, num = 10) {
   const res = await fetch('https://google.serper.dev/news', {
     method: 'POST',
     headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ q: query, num, gl: 'us', hl: 'en' })
+    // tbs: 'qdr:2d' restricts results to articles published in the past 2 days
+    body: JSON.stringify({ q: query, num, gl: 'us', hl: 'en', tbs: 'qdr:2d' })
   });
   if (!res.ok) return { news: [] };
   return res.json();
 }
 
-async function buildSearchContext(categoryQuery) {
+// Returns true if the article's date string looks recent (within ~3 days)
+function isArticleRecent(dateStr) {
+  if (!dateStr) return true; // no date = assume recent
+  const d = dateStr.toLowerCase().trim();
+  // Relative strings Serper returns: "X minutes ago", "X hours ago", "X days ago"
+  if (/\d+\s*(minute|hour)s?\s*ago/.test(d)) return true;
+  const daysMatch = d.match(/(\d+)\s*days?\s*ago/);
+  if (daysMatch) return parseInt(daysMatch[1]) <= 3;
+  if (/week|month|year/.test(d)) return false;
+  // Absolute date — try to parse and compare
+  try {
+    const parsed = new Date(dateStr);
+    if (isNaN(parsed.getTime())) return true; // unparseable = keep
+    const ageMs = Date.now() - parsed.getTime();
+    return ageMs < 4 * 24 * 60 * 60 * 1000; // within 4 days
+  } catch { return true; }
+}
+
+async function buildSearchContext(categoryQuery, day) {
+  // Format day as human-readable for queries (e.g. "May 14 2026")
+  const dateLabel = day
+    ? new Date(day + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+    : 'today';
+
   const queries = [
-    `${categoryQuery} news today`,
+    `${categoryQuery} news ${dateLabel}`,
     `${categoryQuery} latest breaking news`,
-    `${categoryQuery} analysis update`,
+    `${categoryQuery} update ${dateLabel}`,
   ];
   const results = await Promise.all(queries.map(q => serperSearch(q, 10).catch(() => ({ news: [] }))));
   const seen = new Set();
   const articles = [];
   results.forEach(r => {
     (r.news || []).forEach(item => {
-      if (item.link && !seen.has(item.link) && !item.link.includes('wikipedia.org')) {
+      if (item.link && !seen.has(item.link) && !item.link.includes('wikipedia.org') && isArticleRecent(item.date)) {
         seen.add(item.link);
         articles.push(item);
       }
     });
   });
+
+  // If recency filter removed everything, retry without it (better old news than nothing)
+  if (articles.length === 0) {
+    results.forEach(r => {
+      (r.news || []).forEach(item => {
+        if (item.link && !seen.has(item.link) && !item.link.includes('wikipedia.org')) {
+          seen.add(item.link);
+          articles.push(item);
+        }
+      });
+    });
+  }
+
   if (articles.length === 0) {
     throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
   }
@@ -327,11 +364,11 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   console.log(`Generating digest for ${category} on ${day} at ${timeSlot}`);
 
   // Fetch search results — reuse prebuiltContext if provided (shared with stories)
-  const searchContext = prebuiltContext || await buildSearchContext(categoryQuery);
+  const searchContext = prebuiltContext || await buildSearchContext(categoryQuery, day);
   const serper_searches = prebuiltContext ? 0 : 3;
   const serper_cost = serper_searches * 0.001;
 
-  const prompt = `You are a news analyst. Below are recent news articles about "${categoryQuery}" published ${dayInfo} (${day}). Synthesize them into a detailed news digest.
+  const prompt = `You are a news analyst. Below are recent news articles about "${categoryQuery}" published ${dayInfo} (${day}). Synthesize them into a detailed news digest. Only use articles from the past 2 days — skip any article whose date is older than that.
 
 SEARCH RESULTS:
 ${searchContext}
