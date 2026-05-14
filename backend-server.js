@@ -80,30 +80,28 @@ function markdownToEmailHtml(content) {
   const topNote = firstHeadingIdx > 0 ? beforeSources.slice(0, firstHeadingIdx).trim() : '';
   const mainContent = firstHeadingIdx > 0 ? beforeSources.slice(firstHeadingIdx).trim() : beforeSources;
 
-  // 3. Pre-process: normalize all heading+URL variants into ## [Title](url)
+  // 3. Normalize headings — strip any embedded URL so headlines are always plain text
   const normalizeHeading = (line) => {
     const m = line.match(/^(#{1,3} )(.+)$/);
     if (!m) return line;
     const [, hashes, text] = m;
-    if (/^\[.+\]\(https?:\/\/[^)]+\)\s*$/.test(text)) return line; // already clean
-    const urlMatch = text.match(/(https?:\/\/[^\s)]+)/);
-    if (!urlMatch) return line;
-    const url = urlMatch[1];
-    const title = text.replace(urlMatch[0], '').replace(/[()[\]]/g, '').replace(/\s+/g, ' ').trim();
-    return `${hashes}[${title || url}](${url})`;
+    // ## [Title](URL) → ## Title
+    const linkedMatch = text.match(/^\[(.+?)\]\(https?:\/\/[^)]+\)\s*$/);
+    if (linkedMatch) return `${hashes}${linkedMatch[1]}`;
+    // Strip bare URL anywhere in heading
+    const stripped = text.replace(/(https?:\/\/[^\s)]+)/g, '').replace(/[()[\]]/g, '').replace(/\s+/g, ' ').trim();
+    return `${hashes}${stripped || text}`;
   };
 
-  const fixedLines = mainContent
+  const processedLines = mainContent
     .split('\n')
     .reduce((acc, line) => {
       const trimmed = line.trim();
+      // Merge bare URL lines onto preceding heading (backward compat)
       if (/^https?:\/\/\S+$/.test(trimmed) && acc.length > 0) {
         const prev = acc[acc.length - 1];
         const m = prev.match(/^(#{1,3} )(.+)$/);
-        if (m && !m[2].includes('](')) {
-          acc[acc.length - 1] = `${m[1]}[${m[2].trim()}](${trimmed})`;
-          return acc;
-        }
+        if (m && !m[2].includes('](')) { acc[acc.length - 1] = `${m[1]}[${m[2].trim()}](${trimmed})`; return acc; }
       }
       acc.push(/^#{1,3} /.test(line) ? normalizeHeading(line) : line);
       return acc;
@@ -111,53 +109,59 @@ function markdownToEmailHtml(content) {
     .join('\n')
     .replace(/^https?:\/\/\S+$/gm, '');
 
-  // 4. Render stories
-  const bodyHtml = fixedLines
-    // Fix ## alone on its own line
-    .replace(/^(#{1,3})\s*\n(?!\s*\n)/gm, '$1 ')
-    // Fix missing [ in ## Title](URL) — backward compat for old stored content
-    .replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2')
-    // Remove orphaned punctuation lines and stray bare URLs
-    .replace(/^[-*.]\s*$/gm, '')
-    .replace(/^https?:\/\/\S+$/gm, '')
-    // Coverage line — row of source badges (must come before **bold** replacement)
-    .replace(/^\*\*Coverage:\*\*\s*(.+)$/gm, (_, links) => {
-      const badges = [...links.matchAll(/\[([^\]]+)\]\(([^)\s]+)\)/g)].map(([, text, url]) => {
-        let domain = '';
-        try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
-        return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="display:inline-block;padding:2px 8px 2px 5px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:999px;text-decoration:none;margin:2px 3px 2px 0;font-size:11px;font-weight:600;color:#374151;"><img src="https://www.google.com/s2/favicons?domain=${domain}&sz=32" width="10" height="10" style="border-radius:2px;opacity:0.85;vertical-align:middle;margin-right:3px;" />${text}</a>`;
-      }).join('');
-      return `<div style="margin:4px 0 10px;">${badges}</div>`;
-    })
-    // Perspectives differ — amber callout (must come before **bold** replacement)
-    .replace(/^\*\*Perspectives differ:\*\*\s*(.+)$/gm, (_, text) =>
-      `<div style="margin:4px 0 10px;font-size:12px;color:#92400e;line-height:1.55;background:#fffbeb;padding:8px 10px;border-radius:6px;border-left:3px solid #f59e0b;"><span style="font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;color:#b45309;">Perspectives differ</span>&nbsp;&nbsp;${text}</div>`
-    )
-    .replace(/^\*\*Why this matters:\*\*\s*(.+)$/gm, (_, text) =>
-      `<div style="margin:4px 0 14px;font-size:13px;color:#9ca3af;line-height:1.55;font-style:italic;"><span style="font-style:normal;font-weight:700;color:#6b7280;font-size:11px;text-transform:uppercase;letter-spacing:0.04em;">Why this matters</span>&nbsp;&nbsp;${text}</div>`
-    )
-    .replace(/\*\*(.+?)\*\*/g, '<strong style="font-weight:700;color:#111827;">$1</strong>')
-    .replace(/_(.*?)_/g, '<em style="color:#9ca3af;font-style:italic;">$1</em>')
-    // Linked heading ## [Title](URL) — backward compat for old stored content
-    .replace(/^#{1,3} \[(.+?)\]\(([^)\s]+)\)/gm, (_, text, url) => {
-      let domain = '';
-      try { domain = new URL(url).hostname.replace(/^www\./, ''); } catch {}
-      const sourceLine = domain
-        ? `<div style="display:flex;align-items:center;gap:5px;margin-bottom:4px;"><img src="https://www.google.com/s2/favicons?domain=${domain}&sz=32" width="12" height="12" style="border-radius:2px;opacity:0.85;" /><span style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;">${domain}</span></div>`
-        : '';
-      return `<div style="margin:18px 0 5px;padding-top:12px;border-top:1px solid #f3f4f6;">${sourceLine}<a href="${url}" target="_blank" rel="noopener noreferrer" style="font-size:15px;font-weight:800;color:#111827;text-decoration:underline;text-decoration-color:#d1d5db;line-height:1.3;">${text}</a></div>`;
-    })
-    // Plain heading — new format (synthesized headline, no URL)
-    .replace(/^#{1,3} (.+)$/gm, (_, text) =>
-      `<div style="font-size:15px;font-weight:800;color:#111827;margin:18px 0 4px;padding-top:12px;border-top:1px solid #f3f4f6;line-height:1.3;">${text}</div>`
-    )
-    .replace(/^[-*] (.+)$/gm, (_, text) =>
-      `<div style="margin:4px 0 4px 10px;padding-left:8px;border-left:2px solid #e5e7eb;color:#374151;font-size:13px;line-height:1.55;">${text}</div>`
-    )
-    .replace(/\n\n+/g, '<div style="height:4px;"></div>')
-    .replace(/\n/g, '');
+  // 4. Split into per-story chunks
+  const chunks = [];
+  let cur = null;
+  processedLines.split('\n').forEach(line => {
+    if (/^#{1,3} /.test(line)) {
+      if (cur) chunks.push(cur);
+      cur = { heading: line.replace(/^#{1,3} /, '').trim(), lines: [] };
+    } else if (cur) {
+      cur.lines.push(line);
+    }
+  });
+  if (cur) chunks.push(cur);
 
-  // 4. Source cards — 2-column table for email client compatibility
+  // 5. Render a single body line into HTML
+  const renderBodyLine = (line) => {
+    if (!line.trim()) return '';
+    // Coverage — removed (sources shown as cards below, matching website)
+    if (/^\*\*Coverage:\*\*/.test(line)) return '';
+    // Perspectives differ — gray label + text (matches website)
+    const perspMatch = line.match(/^\*\*Perspectives differ:\*\*\s*(.+)$/);
+    if (perspMatch) {
+      const text = perspMatch[1].replace(/\*\*(.+?)\*\*/g, '<strong style="font-weight:700;color:#111827;">$1</strong>');
+      return `<div style="margin:6px 0 10px;font-size:12px;color:#9ca3af;line-height:1.55;"><span style="font-weight:700;color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;">Perspectives differ</span>&nbsp;&nbsp;${text}</div>`;
+    }
+    // Why this matters — gray label + text (matches website)
+    const whyMatch = line.match(/^\*\*Why this matters:\*\*\s*(.+)$/);
+    if (whyMatch) {
+      const text = whyMatch[1].replace(/\*\*(.+?)\*\*/g, '<strong style="font-weight:700;color:#111827;">$1</strong>');
+      return `<div style="margin:6px 0 10px;font-size:12px;color:#9ca3af;line-height:1.55;"><span style="font-weight:700;color:#6b7280;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;">Why this matters</span>&nbsp;&nbsp;${text}</div>`;
+    }
+    // Bullet point — left-border style matching website
+    const bulletMatch = line.match(/^[-*] (.+)$/);
+    if (bulletMatch) {
+      const text = bulletMatch[1].replace(/\*\*(.+?)\*\*/g, '<strong style="font-weight:700;color:#111827;">$1</strong>');
+      return `<div style="margin:4px 0;padding-left:9px;border-left:2px solid #e5e7eb;color:#374151;font-size:13px;line-height:1.5;">${text}</div>`;
+    }
+    // Italic lines
+    if (/^_.*_$/.test(line.trim())) {
+      return `<div style="font-size:12px;color:#9ca3af;font-style:italic;margin:4px 0;">${line.trim().replace(/^_+|_+$/g, '')}</div>`;
+    }
+    return '';
+  };
+
+  // 6. Render all story cards (matching website's #fafafa card layout)
+  const storiesHtml = chunks.map(chunk => {
+    const bodyHtml = chunk.lines.map(renderBodyLine).filter(Boolean).join('');
+    return `<div style="background:#fafafa;border:1px solid #f0f0f0;border-radius:12px;padding:16px 20px;margin-bottom:12px;">
+      <div style="font-size:15px;font-weight:800;color:#111827;line-height:1.3;margin-bottom:8px;">${chunk.heading}</div>
+      ${bodyHtml}
+    </div>`;
+  }).join('');
+
+  // 7. Source cards — 2-column grid matching website's card style (white bg, favicon, domain, ↗)
   let sourcesHtml = '';
   if (sourceLinks.length > 0) {
     const rows = [];
@@ -166,28 +170,30 @@ function markdownToEmailHtml(content) {
       const cells = pair.map(s => {
         const domain = getDomain(s.url);
         return `<td width="50%" style="padding:4px;vertical-align:top;">
-          <a href="${s.url}" target="_blank" rel="noopener noreferrer" style="display:block;padding:8px 10px;background:#fafafa;border:1px solid #f0f0f0;border-radius:8px;text-decoration:none;">
-            <div style="font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${domain}</div>
+          <a href="${s.url}" target="_blank" rel="noopener noreferrer" style="display:block;padding:8px 10px;background:white;border:1px solid #e8e8ee;border-radius:10px;text-decoration:none;">
+            <div style="display:flex;align-items:center;gap:5px;margin-bottom:5px;">
+              <img src="https://www.google.com/s2/favicons?domain=${domain}&sz=32" width="11" height="11" style="border-radius:2px;opacity:0.85;vertical-align:middle;" />
+              <span style="font-size:9px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${domain}</span>
+              <span style="font-size:9px;color:#c4c9d4;">↗</span>
+            </div>
             <div style="font-size:12px;font-weight:600;color:#1e293b;line-height:1.35;">${s.title}</div>
-            <div style="font-size:10px;color:#6366f1;font-weight:600;margin-top:5px;">Read article ↗</div>
           </a>
         </td>`;
       }).join('');
       rows.push(`<tr>${cells}</tr>`);
     }
-    sourcesHtml = `<div style="margin-bottom:18px;">
+    sourcesHtml = `<div style="margin-top:4px;">
       <p style="margin:0 0 8px;font-size:10px;font-weight:700;color:#9ca3af;text-transform:uppercase;letter-spacing:0.07em;">Sources</p>
       <table width="100%" cellpadding="0" cellspacing="0" border="0">${rows.join('')}</table>
-      <div style="border-top:1px solid #f3f4f6;margin-top:14px;"></div>
     </div>`;
   }
 
-  // 5. Top note
+  // 8. Top note
   const topNoteHtml = topNote
     ? `<p style="font-style:italic;color:#9ca3af;font-size:12px;margin:0 0 14px;line-height:1.5;">${topNote.replace(/^_+|_+$/g, '').replace(/\*\*(.+?)\*\*/g, '<strong style="color:#6b7280;font-weight:700;">$1</strong>')}</p>`
     : '';
 
-  return topNoteHtml + sourcesHtml + bodyHtml;
+  return topNoteHtml + storiesHtml + sourcesHtml;
 }
 
 // Function to generate news using Claude API (with retry on 429)
