@@ -1644,6 +1644,19 @@ app.post('/admin/api/debug-generate', async (req, res) => {
   }
 });
 
+// Send digest emails for an existing slot/day without regenerating news
+app.post('/admin/api/send-digest', async (req, res) => {
+  const { timeSlot, day } = req.body;
+  if (!timeSlot) return res.status(400).json({ error: 'timeSlot is required (Morning or Evening)' });
+  const targetDay = day || getTodayDate();
+  try {
+    res.json({ ok: true, message: `Sending ${timeSlot} digest emails for ${targetDay}…` });
+    await sendNewsDigestEmails(timeSlot, targetDay);
+  } catch (err) {
+    console.error('Manual send-digest error:', err.message);
+  }
+});
+
 app.post('/admin/api/test-email', async (req, res) => {
   const { to } = req.body;
   if (!to) return res.status(400).json({ error: 'to is required' });
