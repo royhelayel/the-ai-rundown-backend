@@ -433,7 +433,7 @@ For each major story group, use this EXACT format — no introduction, no preamb
 - Another key detail — include numbers, names, and specifics where available
 - Additional relevant detail or background
 - For contested claims: "According to [source]..." or "[Party X] claims... while [Party Y] argues..."
-**Perspectives differ:** Include whenever different outlets, parties, or experts frame the story differently — one sentence describing the contrast. Omit only if all sources are fully aligned.
+**Perspectives differ:** Only include when at least two different outlets, parties, or experts genuinely frame the story differently — one sentence describing the contrast. Omit if only one source covers the story, or if all sources are fully aligned.
 **Why this matters:** One or two sentences on broader significance and implications.
 
 Write 5–7 grouped stories from the results above. Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories:
