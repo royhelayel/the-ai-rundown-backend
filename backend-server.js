@@ -733,26 +733,27 @@ async function pregenerateTTSForContent(content, label) {
 }
 
 // Function to generate all news for a time slot
-async function generateAllNewsForTimeSlot(timeSlot) {
-  console.log(`\n🚀 Starting news generation for ${timeSlot} time slot...`);
-  const today = getTodayDate();
+// day defaults to today (UAE) — pass an explicit YYYY-MM-DD to backfill a specific date
+async function generateAllNewsForTimeSlot(timeSlot, day = null) {
+  const targetDay = day || getTodayDate();
+  console.log(`\n🚀 Starting news generation for ${timeSlot} on ${targetDay}...`);
 
   for (const category of DEFAULT_CATEGORIES) {
     try {
       // Generate digest first (also retrieves source articles for audit)
-      const { summary: digestContent, sourceArticles } = await generateNews(category, today, timeSlot);
+      const { summary: digestContent, sourceArticles } = await generateNews(category, targetDay, timeSlot);
 
       // Generate stories by reformatting the digest — same headlines guaranteed, no extra search cost
       let storiesContent = null;
       if (GENERATE_STORIES_CONTENT) {
         try {
-          storiesContent = await generateStoriesContent(category, today, timeSlot, digestContent);
+          storiesContent = await generateStoriesContent(category, targetDay, timeSlot, digestContent);
         } catch (err) {
           console.warn(`Stories content generation failed for ${category}, falling back to digest:`, err.message);
         }
       }
 
-      await storeNews(category, today, timeSlot, digestContent, null, null, storiesContent, sourceArticles);
+      await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles);
 
       // Pre-generate TTS for both versions independently (different text = different cache keys)
       pregenerateTTSForContent(digestContent, `${category} / ${timeSlot} / digest`).catch(err =>
@@ -771,9 +772,14 @@ async function generateAllNewsForTimeSlot(timeSlot) {
     }
   }
 
-  console.log(`✨ Completed news generation for ${timeSlot} time slot\n`);
+  console.log(`✨ Completed news generation for ${timeSlot} on ${targetDay}\n`);
 
-  await sendNewsDigestEmails(timeSlot, today);
+  // Only send digest emails when generating for today (not backfilling past dates)
+  if (targetDay === getTodayDate()) {
+    await sendNewsDigestEmails(timeSlot, targetDay);
+  } else {
+    console.log(`⏭️  Skipping email send — ${targetDay} is not today`);
+  }
 }
 
 // Cloud Scheduler will trigger the /api/generate/:timeSlot endpoints
@@ -898,14 +904,17 @@ app.post('/api/generate/custom-category', async (req, res) => {
   })();
 });
 
-// Manual trigger endpoint — supports both GET (browser) and POST (Cloud Scheduler)
+// Manual trigger endpoint — supports both GET (browser/admin) and POST (Cloud Scheduler)
+// Optional: ?day=YYYY-MM-DD (GET) or { day: "YYYY-MM-DD" } (POST body) to target a specific date
 app.get('/api/generate/:timeSlot', async (req, res) => {
   try {
     const timeSlot = req.params.timeSlot;
+    const day = req.query.day || null; // e.g. ?day=2026-05-10
     const slot = TIME_SLOTS.find(s => s.label.toLowerCase() === timeSlot.toLowerCase());
     if (!slot) return res.status(400).json({ error: 'Invalid time slot' });
-    res.json({ status: 'accepted', message: `News generation started for ${slot.label}`, timestamp: new Date().toISOString() });
-    generateAllNewsForTimeSlot(slot.label).catch(err => console.error(`Background generation failed for ${slot.label}:`, err.message));
+    const targetDay = day || getTodayDate();
+    res.json({ status: 'accepted', message: `News generation started for ${slot.label} on ${targetDay}`, timestamp: new Date().toISOString() });
+    generateAllNewsForTimeSlot(slot.label, targetDay).catch(err => console.error(`Background generation failed for ${slot.label}:`, err.message));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -914,21 +923,24 @@ app.get('/api/generate/:timeSlot', async (req, res) => {
 app.post('/api/generate/:timeSlot', async (req, res) => {
   try {
     const timeSlot = req.params.timeSlot;
+    const day = req.body?.day || null;
     const slot = TIME_SLOTS.find(s => s.label.toLowerCase() === timeSlot.toLowerCase());
-    
+
     if (!slot) {
       return res.status(400).json({ error: 'Invalid time slot' });
     }
 
+    const targetDay = day || getTodayDate();
+
     // Respond immediately so Cloud Scheduler doesn't timeout
     res.json({
       status: 'accepted',
-      message: `News generation started for ${slot.label}`,
+      message: `News generation started for ${slot.label} on ${targetDay}`,
       timestamp: new Date().toISOString()
     });
 
     // Run generation in background
-    generateAllNewsForTimeSlot(slot.label).catch(err =>
+    generateAllNewsForTimeSlot(slot.label, targetDay).catch(err =>
       console.error(`Background generation failed for ${slot.label}:`, err.message)
     );
   } catch (error) {

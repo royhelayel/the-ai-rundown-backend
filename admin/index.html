@@ -159,7 +159,12 @@
 
   <div class="section" style="margin-bottom:1.5rem;">
     <div class="section-title"><span class="dot"></span>Generate News Now</div>
-    <p style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">Manually trigger news generation for a time slot. All 8 categories will be generated in the background (takes ~2 min).</p>
+    <p style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">Manually trigger news generation for a time slot and date. All 8 categories will be generated in the background (~2 min). Emails are only sent when generating for today.</p>
+    <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin-bottom:0.75rem;">
+      <span class="filter-label">Date</span>
+      <input type="date" id="gen-date" style="padding:0.4rem 0.7rem;border:1px solid #e2e8f0;border-radius:6px;font-size:0.82rem;color:#374151;background:white;outline:none;" />
+      <button onclick="setGenDateToday()" style="padding:0.38rem 0.75rem;background:none;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;font-size:0.78rem;color:#6b7280;font-weight:600;">Today</button>
+    </div>
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;">
       <button onclick="triggerGeneration('morning')" id="gen-btn-morning" style="padding:0.55rem 1.4rem;background:linear-gradient(135deg,#6366f1,#ec4899);color:white;border:none;border-radius:999px;cursor:pointer;font-weight:700;font-size:0.85rem;transition:opacity 0.15s;">
         ☀️ Generate Morning
@@ -311,18 +316,31 @@ let currentTab = 'overview';
 let usersData = [];
 
 // ── Generate Now ──
+function setGenDateToday() {
+  document.getElementById('gen-date').value = new Date().toISOString().split('T')[0];
+}
+
 async function triggerGeneration(slot) {
   const btn = document.getElementById('gen-btn-' + slot);
   const status = document.getElementById('gen-status');
+  const day = document.getElementById('gen-date').value; // YYYY-MM-DD or empty = today
+  const dayLabel = day || 'today';
+
   btn.disabled = true;
   btn.style.opacity = '0.55';
-  status.textContent = `⏳ Triggering ${slot} generation…`;
+  status.textContent = `⏳ Triggering ${slot} generation for ${dayLabel}…`;
   try {
-    const res = await fetch(`/api/generate/${slot}`, { method: 'GET' });
+    const body = day ? JSON.stringify({ day }) : '{}';
+    const res = await fetch(`/api/generate/${slot}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body
+    });
     const data = await res.json();
     if (res.ok) {
+      const isToday = !day || day === new Date().toISOString().split('T')[0];
       status.style.color = '#16a34a';
-      status.textContent = `✓ Generation started for ${slot}. All 8 categories generating in background (~2 min).`;
+      status.textContent = `✓ Generation started for ${slot} on ${dayLabel}. ~2 min to complete.${isToday ? ' Emails will be sent when done.' : ' (No emails — past date)'}`;
     } else {
       status.style.color = '#b91c1c';
       status.textContent = `✗ Error: ${data.error || 'Unknown error'}`;
@@ -333,7 +351,7 @@ async function triggerGeneration(slot) {
   } finally {
     btn.disabled = false;
     btn.style.opacity = '1';
-    setTimeout(() => { status.textContent = ''; status.style.color = '#64748b'; }, 8000);
+    setTimeout(() => { status.textContent = ''; status.style.color = '#64748b'; }, 10000);
   }
 }
 
@@ -724,6 +742,7 @@ async function loadCosts() {
 
 // ── Init ──
 window.addEventListener('load', () => {
+  setGenDateToday(); // pre-fill generate date picker with today
   loadOverview();
   setInterval(loadOverview, 60000); // auto-refresh overview every minute
 });
