@@ -287,6 +287,39 @@ function isTier1(url) {
   } catch { return false; }
 }
 
+// ── Multi-outlet echo scoring ────────────────────────────────────────────────
+// Counts how many UNIQUE sources cover the same story as a given article.
+// Two articles are considered "same story" if their titles share ≥ 2 significant words.
+// Returns an array of unique-outlet counts, one per article (in the same order).
+const STOP_WORDS = new Set([
+  'the','and','for','are','but','not','you','all','can','was','one','our','out',
+  'day','get','has','him','his','how','its','may','new','now','old','see','two',
+  'way','who','did','let','put','say','she','too','use','says','said','will',
+  'with','that','this','from','they','what','when','more','than','about','after',
+  'being','first','their','there','these','would','could','which','over','into',
+  'also','just','amid','amid','than','some','have','been','were','have','well',
+]);
+
+function computeEchoScores(articles) {
+  const tokenize = (title) =>
+    (title || '').toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 3 && !STOP_WORDS.has(w));
+
+  const tokenSets = articles.map(a => new Set(tokenize(a.title)));
+
+  return articles.map((article, i) => {
+    const uniqueSources = new Set([article.source]);
+    for (let j = 0; j < articles.length; j++) {
+      if (i === j) continue;
+      const sharedTokens = [...tokenSets[i]].filter(t => tokenSets[j].has(t)).length;
+      if (sharedTokens >= 2) uniqueSources.add(articles[j].source || `source_${j}`);
+    }
+    return uniqueSources.size; // includes the article itself → always ≥ 1
+  });
+}
+
 async function buildSearchContext(categoryQuery, day) {
   // Format day as human-readable for queries (e.g. "May 14 2026")
   const dateLabel = day
@@ -298,15 +331,13 @@ async function buildSearchContext(categoryQuery, day) {
     `${categoryQuery} latest breaking news`,
     `${categoryQuery} update ${dateLabel}`,
     `${categoryQuery} top stories today`,
+    `${categoryQuery} major developments`,
   ];
 
-  const results = await Promise.all(queries.map(q => serperSearch(q, 15, day).catch(() => ({ news: [] }))));
+  const results = await Promise.all(queries.map(q => serperSearch(q, 20, day).catch(() => ({ news: [] }))));
 
   // Merge results while preserving Google's ranking signal.
   // Each article gets a score = sum of (1 / position) across every query it appears in.
-  // This means an article at rank 1 in two queries scores higher than one that only
-  // appeared at rank 8 in one query — rather than the naive first-seen merge that
-  // previously destroyed Serper's ordering.
   const scoreMap = {};   // url → cumulative score
   const itemMap  = {};   // url → article object (first seen wins for metadata)
 
@@ -324,21 +355,37 @@ async function buildSearchContext(categoryQuery, day) {
     throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
   }
 
-  // Sort by score descending (preserves Google ranking signal across merged queries),
-  // then apply tier-1 boost on top: tier-1 articles get a +10 bonus so they always
-  // beat same-scored niche sources, but a genuinely top-ranked niche article (score ~3)
-  // can still appear above a tier-1 article that only appeared once at rank 10 (score ~0.1).
-  const sorted = Object.keys(scoreMap)
+  const urlList = Object.keys(scoreMap);
+  const articleList = urlList.map(url => itemMap[url]);
+
+  // Compute multi-outlet echo scores: how many unique sources cover the same story
+  const echoScores = computeEchoScores(articleList);
+  const echoMap = {};
+  urlList.forEach((url, i) => { echoMap[url] = echoScores[i]; });
+
+  // Final sort:
+  //   base score     = sum of (1/position) across queries (Google ranking signal)
+  //   tier-1 bonus   = +10 for major outlets (always beats niche at same base score)
+  //   echo bonus     = +8 × (unique outlet count - 1) — strongly surfaces stories
+  //                    covered by 3 outlets (+16) vs 1 outlet (+0)
+  const sorted = urlList
     .sort((a, b) => {
-      const scoreA = scoreMap[a] + (isTier1(a) ? 10 : 0);
-      const scoreB = scoreMap[b] + (isTier1(b) ? 10 : 0);
+      const scoreA = scoreMap[a] + (isTier1(a) ? 10 : 0) + (echoMap[a] - 1) * 8;
+      const scoreB = scoreMap[b] + (isTier1(b) ? 10 : 0) + (echoMap[b] - 1) * 8;
       return scoreB - scoreA;
     })
     .map(url => itemMap[url]);
 
-  const context = sorted.map((item, i) =>
-    `[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${item.link}\nSummary: ${item.snippet || ''}`
-  ).join('\n\n');
+  // Format context — annotate stories covered by multiple outlets so Claude
+  // immediately knows which events are widely reported (likely major news).
+  const context = sorted.map((item, i) => {
+    const url   = item.link;
+    const echo  = echoMap[url] || 1;
+    const label = echo >= 4 ? `[${echo} OUTLETS — MAJOR STORY] `
+                : echo >= 2 ? `[${echo} OUTLETS] `
+                : '';
+    return `${label}[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${url}\nSummary: ${item.snippet || ''}`;
+  }).join('\n\n');
 
   // Return both formatted context (for Claude) and raw article metadata (for audit storage)
   const articles = sorted.map(item => ({
@@ -435,7 +482,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     searchContext = context;
     sourceArticles = articles;
   }
-  const serper_searches = prebuiltContext ? 0 : 4;
+  const serper_searches = prebuiltContext ? 0 : 5;
   const serper_cost = serper_searches * 0.001;
 
   const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.
@@ -454,7 +501,11 @@ For each major story group, use this EXACT format — no introduction, no preamb
 **Perspectives differ:** Only include when at least two different outlets, parties, or experts genuinely frame the story differently — one sentence describing the contrast. Omit if only one source covers the story, or if all sources are fully aligned.
 **Why this matters:** One or two sentences on broader significance and implications.
 
-Write 5–7 grouped stories from the results above. Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories:
+Write 5–7 grouped stories from the results above. PRIORITISATION RULES:
+1. Articles labelled [4 OUTLETS — MAJOR STORY] or [3 OUTLETS] are widely reported — always include these, they are almost certainly significant events.
+2. Prefer stories covered by multiple outlets over single-source stories.
+3. Single-source stories should only be included if clearly significant and from a tier-1 outlet.
+Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories:
 
 ## Sources
 - [Article title](URL)
