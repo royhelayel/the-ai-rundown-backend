@@ -505,9 +505,12 @@ Write 5–7 grouped stories from the results above. PRIORITISATION RULES:
 1. Articles labelled [4 OUTLETS — MAJOR STORY] or [3 OUTLETS] are widely reported — always include these, they are almost certainly significant events.
 2. Prefer stories covered by multiple outlets over single-source stories.
 3. Single-source stories should only be included if clearly significant and from a tier-1 outlet.
-Group articles covering the same story together. Coverage must use real URLs from the search results provided.
+Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories, include a sources section:
 
-Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. CRITICAL: In **Coverage:**, list EVERY outlet from the search results that covers this story — do NOT truncate to 2 or 3. If 5 outlets covered it, list all 5. If 8 covered it, list all 8. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
+## Sources
+- [Full article headline](exact-article-url)
+
+Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. CRITICAL: In **Coverage:**, list EVERY outlet from the search results that covers this story — do NOT truncate to 2 or 3. If 5 outlets covered it, list all 5. If 8 covered it, list all 8. In **## Sources**, list every article URL used across all stories with its full headline as the link text. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
 
   const data = await callClaude(prompt, 4000);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
