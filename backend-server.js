@@ -207,14 +207,14 @@ function markdownToEmailHtml(content) {
 // Function to generate news using Claude API (with retry on 429)
 // Map broad category names to richer search queries that surface fresh results
 const CATEGORY_SEARCH_QUERIES = {
-  'Technology':    'latest technology news Apple Google Meta Microsoft AI gadgets announcements',
-  'Business':      'latest business markets economy finance corporate news',
-  'Politics':      'latest politics government elections policy legislation news',
-  'Sports':        'latest sports results scores transfers breaking news',
-  'Entertainment': 'latest entertainment movies music celebrity film television news',
-  'Science':       'latest science research discoveries space climate health news',
-  'Health':        'latest health medicine medical research pandemic wellness news',
-  'World News':    'top global breaking news world events today',
+  'Technology':    'latest technology news AI Apple Google Meta Microsoft startups gadgets announcements',
+  'Business':      'latest business markets economy finance stocks corporate earnings news',
+  'Politics':      'latest politics news US UK Europe government elections parliament congress policy',
+  'Sports':        'latest sports results scores transfers breaking news football basketball tennis',
+  'Entertainment': 'latest entertainment movies music celebrity film television streaming news',
+  'Science':       'latest science research discoveries space climate environment health news',
+  'Health':        'latest health medicine medical research treatment disease wellness news',
+  'World News':    'top breaking world news today US UK Europe Middle East Asia major stories',
   'UAE':           'UAE Dubai Abu Dhabi news today',
   'KSA':           'Saudi Arabia Riyadh news today',
   'QAT':           'Qatar Doha news today',
@@ -297,9 +297,10 @@ async function buildSearchContext(categoryQuery, day) {
     `${categoryQuery} news ${dateLabel}`,
     `${categoryQuery} latest breaking news`,
     `${categoryQuery} update ${dateLabel}`,
+    `${categoryQuery} top stories today`,
   ];
 
-  const results = await Promise.all(queries.map(q => serperSearch(q, 10, day).catch(() => ({ news: [] }))));
+  const results = await Promise.all(queries.map(q => serperSearch(q, 15, day).catch(() => ({ news: [] }))));
 
   // Merge results while preserving Google's ranking signal.
   // Each article gets a score = sum of (1 / position) across every query it appears in.
@@ -434,7 +435,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     searchContext = context;
     sourceArticles = articles;
   }
-  const serper_searches = prebuiltContext ? 0 : 3;
+  const serper_searches = prebuiltContext ? 0 : 4;
   const serper_cost = serper_searches * 0.001;
 
   const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.
