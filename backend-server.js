@@ -493,7 +493,7 @@ ${searchContext}
 For each major story group, use this EXACT format — no introduction, no preamble:
 
 ## Synthesized neutral headline (your own words, not copied from any single source)
-**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url)
+**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · ...
 - Key fact or development, with context and nuance
 - Another key detail — include numbers, names, and specifics where available
 - Additional relevant detail or background
@@ -510,7 +510,7 @@ Group articles covering the same story together. Coverage must use real URLs fro
 ## Sources
 - [Article title](URL)
 
-Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
+Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. CRITICAL: In **Coverage:**, list EVERY outlet from the search results that covers this story — do NOT truncate to 2 or 3. If 5 outlets covered it, list all 5. If 8 covered it, list all 8. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
 
   const data = await callClaude(prompt, 4000);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
