@@ -892,6 +892,14 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null) {
 
   console.log(`✨ Completed news generation for ${timeSlot} on ${targetDay}\n`);
 
+  // Write a completion marker so the frontend knows all categories are ready for this slot
+  try {
+    await storeNews('__completed__', targetDay, timeSlot, 'completed');
+    console.log(`✅ Completion marker written for ${timeSlot} on ${targetDay}`);
+  } catch (err) {
+    console.warn(`Could not write completion marker for ${timeSlot}:`, err.message);
+  }
+
   // Only send digest emails when generating for today (not backfilling past dates)
   if (targetDay === getTodayDate()) {
     await sendNewsDigestEmails(timeSlot, targetDay);
