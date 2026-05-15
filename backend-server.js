@@ -1,5 +1,4 @@
 import express from 'express';
-import cron from 'node-cron';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -1836,25 +1835,15 @@ app.post('/api/tts', async (req, res) => {
   }
 });
 
-// Schedule news generation for each time slot (Dubai timezone)
-TIME_SLOTS.forEach(slot => {
-  cron.schedule(slot.cronTime, () => {
-    console.log(`⏰ Cron triggered: ${slot.label}`);
-    generateAllNewsForTimeSlot(slot.label).catch(err =>
-      console.error(`Cron generation failed for ${slot.label}:`, err.message)
-    );
-  }, { timezone: 'Asia/Dubai' });
-});
+// News generation is triggered exclusively by GitHub Actions via the
+// /api/generate/:timeSlot HTTP endpoints — no in-process cron jobs.
+// This prevents duplicate runs if the server happens to be warm at schedule time.
 
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`\n🎉 Server running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`⏰ Timezone: Asia/Dubai (UAE)\n`);
-  console.log('📅 Scheduled cron jobs:');
-  TIME_SLOTS.forEach(slot => {
-    console.log(`   - ${slot.label}: ${slot.cronTime}`);
-  });
-  console.log('\n');
+  console.log(`⏰ Timezone: Asia/Dubai (UAE)`);
+  console.log(`📅 Scheduled via GitHub Actions (no in-process cron)\n`);
 });
