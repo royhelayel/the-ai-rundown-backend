@@ -1,0 +1,55 @@
+name: News Generation
+
+on:
+  schedule:
+    # 6:00 AM UAE (UTC+4) = 2:00 AM UTC
+    - cron: '0 2 * * *'
+    # 6:00 PM UAE (UTC+4) = 2:00 PM UTC
+    - cron: '0 14 * * *'
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      time_slot:
+        description: 'Time slot to generate (morning or evening)'
+        required: true
+        default: 'morning'
+        type: choice
+        options:
+          - morning
+          - evening
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Determine time slot
+        id: slot
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "slot=${{ github.event.inputs.time_slot }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H)
+            if [ "$HOUR" = "02" ]; then
+              echo "slot=morning" >> $GITHUB_OUTPUT
+            else
+              echo "slot=evening" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Trigger news generation
+        run: |
+          SLOT="${{ steps.slot.outputs.slot }}"
+          echo "Triggering $SLOT news generation..."
+          RESPONSE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            "${{ secrets.BACKEND_URL }}/api/generate/$SLOT")
+          echo "HTTP status: $RESPONSE"
+          cat /tmp/response.json
+          if [ "$RESPONSE" != "200" ]; then
+            echo "Error: backend returned $RESPONSE"
+            exit 1
+          fi
+          echo "Generation accepted by backend."
