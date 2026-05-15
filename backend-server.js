@@ -637,10 +637,10 @@ async function sendNewsDigestEmails(timeSlot, day) {
   try {
     const timeSlotKey = timeSlot.toLowerCase();
 
-    // Fetch all verified users
+    // Fetch all verified users (include feed_categories so My Rundown can be expanded)
     const { data: users, error: usersError } = await supabaseAdmin
       .from('users')
-      .select('id, email, email_preferences')
+      .select('id, email, email_preferences, feed_categories')
       .eq('verification_status', 'verified');
 
     if (usersError || !users?.length) return;
@@ -678,9 +678,18 @@ async function sendNewsDigestEmails(timeSlot, day) {
       try {
         // Determine which categories this user wants (new flat format stores categories at top level)
         const prefs = user.email_preferences || {};
-        const userCategories = Array.isArray(prefs.categories) && prefs.categories.length
+        let rawCategories = Array.isArray(prefs.categories) && prefs.categories.length
           ? prefs.categories
           : DEFAULT_CATEGORIES;
+
+        // Expand 'My Rundown' to the user's saved feed categories; remove it if no feed set
+        const feedCats = Array.isArray(user.feed_categories) && user.feed_categories.length
+          ? user.feed_categories
+          : [];
+        const userCategories = rawCategories.flatMap(cat => {
+          if (cat === 'My Rundown') return feedCats.length ? feedCats : [];
+          return [cat];
+        }).filter((cat, i, arr) => arr.indexOf(cat) === i); // dedupe
 
         // Filter and sort news to user's chosen categories
         const sorted = userCategories
