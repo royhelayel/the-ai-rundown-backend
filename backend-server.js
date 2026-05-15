@@ -505,10 +505,7 @@ Write 5–7 grouped stories from the results above. PRIORITISATION RULES:
 1. Articles labelled [4 OUTLETS — MAJOR STORY] or [3 OUTLETS] are widely reported — always include these, they are almost certainly significant events.
 2. Prefer stories covered by multiple outlets over single-source stories.
 3. Single-source stories should only be included if clearly significant and from a tier-1 outlet.
-Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories:
-
-## Sources
-- [Article title](URL)
+Group articles covering the same story together. Coverage must use real URLs from the search results provided.
 
 Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. CRITICAL: In **Coverage:**, list EVERY outlet from the search results that covers this story — do NOT truncate to 2 or 3. If 5 outlets covered it, list all 5. If 8 covered it, list all 8. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
 
