@@ -159,11 +159,23 @@
 
   <div class="section" style="margin-bottom:1.5rem;">
     <div class="section-title"><span class="dot"></span>Generate News Now</div>
-    <p style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">Manually trigger news generation for a time slot and date. All 12 categories will be generated in the background (~10 min). Emails are only sent when generating for today.</p>
+    <p style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">Manually trigger news generation. Emails are only sent for English news generated today. Arabic is Morning-only.</p>
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;margin-bottom:0.75rem;">
       <span class="filter-label">Date</span>
       <input type="date" id="gen-date" style="padding:0.4rem 0.7rem;border:1px solid #e2e8f0;border-radius:6px;font-size:0.82rem;color:#374151;background:white;outline:none;" />
       <button onclick="setGenDateToday()" style="padding:0.38rem 0.75rem;background:none;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;font-size:0.78rem;color:#6b7280;font-weight:600;">Today</button>
+      <span class="filter-label">Language</span>
+      <select id="gen-language" style="padding:0.4rem 0.7rem;border:1px solid #e2e8f0;border-radius:6px;font-size:0.82rem;color:#374151;background:white;outline:none;">
+        <option value="en">🇬🇧 English</option>
+        <option value="ar">🇸🇦 Arabic</option>
+      </select>
+      <span class="filter-label">Category</span>
+      <select id="gen-category" style="padding:0.4rem 0.7rem;border:1px solid #e2e8f0;border-radius:6px;font-size:0.82rem;color:#374151;background:white;outline:none;">
+        <option value="">All categories</option>
+        <option>World News</option><option>Technology</option><option>Business</option><option>Politics</option>
+        <option>Sports</option><option>Entertainment</option><option>Science</option><option>Health</option>
+        <option>UAE</option><option>KSA</option><option>QAT</option><option>LEB</option>
+      </select>
     </div>
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;">
       <button onclick="triggerGeneration('morning')" id="gen-btn-morning" style="padding:0.55rem 1.4rem;background:linear-gradient(135deg,#6366f1,#ec4899);color:white;border:none;border-radius:999px;cursor:pointer;font-weight:700;font-size:0.85rem;transition:opacity 0.15s;">
@@ -324,23 +336,36 @@ async function triggerGeneration(slot) {
   const btn = document.getElementById('gen-btn-' + slot);
   const status = document.getElementById('gen-status');
   const day = document.getElementById('gen-date').value; // YYYY-MM-DD or empty = today
+  const language = document.getElementById('gen-language').value || 'en';
+  const category = document.getElementById('gen-category').value || null; // null = all
   const dayLabel = day || 'today';
+  const langLabel = language === 'ar' ? ' [AR]' : ' [EN]';
+  const catLabel = category ? ` — ${category}` : ' — all categories';
+
+  // Arabic is Morning-only guard
+  if (language === 'ar' && slot === 'evening') {
+    status.style.color = '#b91c1c';
+    status.textContent = '✗ Arabic is Morning-only. Switch to Morning or English.';
+    setTimeout(() => { status.textContent = ''; status.style.color = '#64748b'; }, 6000);
+    return;
+  }
 
   btn.disabled = true;
   btn.style.opacity = '0.55';
-  status.textContent = `⏳ Triggering ${slot} generation for ${dayLabel}…`;
+  status.textContent = `⏳ Triggering ${slot}${langLabel}${catLabel} generation for ${dayLabel}…`;
   try {
-    const body = day ? JSON.stringify({ day }) : '{}';
+    const body = { ...(day && { day }), language, ...(category && { category }) };
     const res = await fetch(`/api/generate/${slot}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body
+      body: JSON.stringify(body)
     });
     const data = await res.json();
     if (res.ok) {
       const isToday = !day || day === new Date().toISOString().split('T')[0];
+      const catCount = category ? '1 category' : '12 categories';
       status.style.color = '#16a34a';
-      status.textContent = `✓ Generation started for ${slot} on ${dayLabel}. ~10 min to complete (12 categories).${isToday ? ' Emails will be sent when done.' : ' (No emails — past date)'}`;
+      status.textContent = `✓ Generation started for ${slot}${langLabel}${catLabel} on ${dayLabel}. ~${category ? '2' : '10'} min (${catCount}).${isToday && language === 'en' ? ' Emails when done.' : ''}`;
     } else {
       status.style.color = '#b91c1c';
       status.textContent = `✗ Error: ${data.error || 'Unknown error'}`;
@@ -351,7 +376,7 @@ async function triggerGeneration(slot) {
   } finally {
     btn.disabled = false;
     btn.style.opacity = '1';
-    setTimeout(() => { status.textContent = ''; status.style.color = '#64748b'; }, 10000);
+    setTimeout(() => { status.textContent = ''; status.style.color = '#64748b'; }, 12000);
   }
 }
 

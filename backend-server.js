@@ -239,7 +239,7 @@ async function generateEmbedding(text) {
 // unrelated content. The country name in the query is enough to surface local news.
 const REGIONAL_CATEGORIES_SET = new Set(['UAE', 'KSA', 'QAT', 'LEB']);
 
-async function serperSearch(query, num = 10, day = null, gl = 'us') {
+async function serperSearch(query, num = 10, day = null, gl = 'us', hl = 'en') {
   // Build day-pinned tbs: cover the target day plus the day before, so articles published
   // that day and any pieces filed just before midnight are both included.
   let tbs = 'qdr:2d'; // fallback when no day is provided
@@ -252,7 +252,7 @@ async function serperSearch(query, num = 10, day = null, gl = 'us') {
   const res = await fetch('https://google.serper.dev/news', {
     method: 'POST',
     headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ q: query, num, gl, hl: 'en', tbs })
+    body: JSON.stringify({ q: query, num, gl, hl, tbs })
   });
   if (!res.ok) return { news: [] };
   return res.json();
@@ -320,13 +320,22 @@ function computeEchoScores(articles) {
   });
 }
 
-async function buildSearchContext(categoryQuery, day) {
+async function buildSearchContext(categoryQuery, day, language = 'en') {
   // Format day as human-readable for queries (e.g. "May 14 2026")
   const dateLabel = day
     ? new Date(day + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
     : 'today';
 
-  const queries = [
+  const hl = language === 'ar' ? 'ar' : 'en';
+  const gl = language === 'ar' ? 'ae' : 'us'; // Use UAE geo for Arabic searches
+
+  const queries = language === 'ar' ? [
+    `${categoryQuery} أخبار ${dateLabel}`,
+    `${categoryQuery} آخر الأخبار`,
+    `${categoryQuery} تطورات ${dateLabel}`,
+    `${categoryQuery} أبرز الأخبار اليوم`,
+    `${categoryQuery} مستجدات`,
+  ] : [
     `${categoryQuery} news ${dateLabel}`,
     `${categoryQuery} latest breaking news`,
     `${categoryQuery} update ${dateLabel}`,
@@ -334,7 +343,7 @@ async function buildSearchContext(categoryQuery, day) {
     `${categoryQuery} major developments`,
   ];
 
-  const results = await Promise.all(queries.map(q => serperSearch(q, 20, day).catch(() => ({ news: [] }))));
+  const results = await Promise.all(queries.map(q => serperSearch(q, 20, day, gl, hl).catch(() => ({ news: [] }))));
 
   // Merge results while preserving Google's ranking signal.
   // Each article gets a score = sum of (1 / position) across every query it appears in.
@@ -468,25 +477,29 @@ function cleanRawSummary(rawSummary) {
   return (usefulSentence ? `_${usefulSentence}_\n\n` : '') + fixedHeadings;
 }
 
-async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null) {
+async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null, language = 'en') {
   const categoryQuery = searchQuery || CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category);
   const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
 
-  console.log(`Generating digest for ${category} on ${day} at ${timeSlot}`);
+  console.log(`Generating digest for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
   // Fetch search results — reuse prebuiltContext if provided (shared with stories)
   let searchContext, sourceArticles = [];
   if (prebuiltContext) {
     searchContext = prebuiltContext;
   } else {
-    const { context, articles } = await buildSearchContext(categoryQuery, day);
+    const { context, articles } = await buildSearchContext(categoryQuery, day, language);
     searchContext = context;
     sourceArticles = articles;
   }
   const serper_searches = prebuiltContext ? 0 : 5;
   const serper_cost = serper_searches * 0.001;
 
-  const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.
+  const arabicInstruction = language === 'ar'
+    ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullets, coverage lines, and the "Why this matters" section must be in Arabic. Keep source outlet names and URLs in their original form.`
+    : '';
+
+  const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.${arabicInstruction}
 
 SEARCH RESULTS:
 ${searchContext}
@@ -538,10 +551,14 @@ Rules: Start with the first ## heading — no preamble. Headline is plain text �
 
 // Generate shorter, punchier stories content by reformatting the already-generated digest.
 // Using the digest (not raw search results) guarantees stories covers the exact same headlines.
-async function generateStoriesContent(category, day, timeSlot, digestContent) {
-  console.log(`Generating stories content for ${category} on ${day} at ${timeSlot}`);
+async function generateStoriesContent(category, day, timeSlot, digestContent, language = 'en') {
+  console.log(`Generating stories content for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
-  const prompt = `You are a news editor. Below is a detailed news digest. Convert every story in it into a short, punchy card suitable for audio listening and mobile reading.
+  const arabicInstruction = language === 'ar'
+    ? `\n\nIMPORTANT: Write everything in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullets, and "Why this matters" must be in Arabic. Keep outlet names and URLs as-is.`
+    : '';
+
+  const prompt = `You are a news editor. Below is a detailed news digest. Convert every story in it into a short, punchy card suitable for audio listening and mobile reading.${arabicInstruction}
 
 DIGEST:
 ${digestContent}
@@ -580,7 +597,7 @@ Rules: Cover the same stories as the digest, in the same order. Start immediatel
 }
 
 // Function to store news in Supabase
-async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null) {
+async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en') {
   try {
     const generated_at = new Date().toISOString();
 
@@ -589,7 +606,8 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
       .select('id')
       .eq('category', category)
       .eq('day', day)
-      .eq('time_slot', timeSlot);
+      .eq('time_slot', timeSlot)
+      .eq('language', language);
 
     if (sharedKey) {
       query = query.eq('shared_key', sharedKey).is('user_id', null);
@@ -609,7 +627,7 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
       if (existing) {
         return supabaseAdmin.from('news_summaries').update(payload).eq('id', existing.id);
       } else {
-        const row = { category, day, time_slot: timeSlot, ...payload };
+        const row = { category, day, time_slot: timeSlot, language, ...payload };
         if (sharedKey) row.shared_key = sharedKey;
         else if (userId) row.user_id = userId;
         return supabaseAdmin.from('news_summaries').insert(row);
@@ -619,14 +637,14 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     let { error } = await runUpsert(updatePayload);
 
     // Graceful fallback: if optional columns don't exist yet, retry with just the core fields
-    if (error && (error.message?.includes('stories_content') || error.message?.includes('source_articles') || error.code === '42703')) {
-      console.warn(`⚠️  Optional column missing — retrying without optional columns. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS stories_content text;\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS source_articles jsonb;`);
+    if (error && (error.message?.includes('stories_content') || error.message?.includes('source_articles') || error.message?.includes('language') || error.code === '42703')) {
+      console.warn(`⚠️  Optional column missing — retrying without optional columns. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS stories_content text;\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS source_articles jsonb;\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS language text DEFAULT 'en';`);
       ({ error } = await runUpsert({ content, generated_at }));
     }
 
     if (error) throw new Error(`Supabase error: ${error.message}`);
 
-    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot}${storiesContent ? ' (+ stories)' : ''}${sourceArticles ? ` (+ ${sourceArticles.length} sources)` : ''}${userId ? ` (user ${userId})` : ''}${sharedKey ? ` (shared_key: ${sharedKey})` : ''}`);
+    console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot} [${language}]${storiesContent ? ' (+ stories)' : ''}${sourceArticles ? ` (+ ${sourceArticles.length} sources)` : ''}${userId ? ` (user ${userId})` : ''}${sharedKey ? ` (shared_key: ${sharedKey})` : ''}`);
   } catch (error) {
     console.error(`Error storing news in Supabase:`, error);
     throw error;
@@ -861,48 +879,62 @@ async function pregenerateTTSForContent(content, label) {
 }
 
 // Helper: generate and store one category, returns { storiesContent } on success, throws on failure
-async function generateAndStoreCategory(category, targetDay, timeSlot) {
-  const { summary: digestContent, sourceArticles } = await generateNews(category, targetDay, timeSlot);
+async function generateAndStoreCategory(category, targetDay, timeSlot, language = 'en') {
+  const { summary: digestContent, sourceArticles } = await generateNews(category, targetDay, timeSlot, 3, null, null, language);
 
   let storiesContent = null;
   if (GENERATE_STORIES_CONTENT) {
     try {
-      storiesContent = await generateStoriesContent(category, targetDay, timeSlot, digestContent);
+      storiesContent = await generateStoriesContent(category, targetDay, timeSlot, digestContent, language);
     } catch (err) {
       console.warn(`Stories generation failed for ${category}, falling back to digest:`, err.message);
     }
   }
 
-  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles);
+  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language);
 
-  pregenerateTTSForContent(digestContent, `${category} / ${timeSlot} / digest`).catch(err =>
-    console.warn(`TTS pre-gen (digest) failed for ${category}:`, err.message)
-  );
-  if (storiesContent) {
-    pregenerateTTSForContent(storiesContent, `${category} / ${timeSlot} / stories`).catch(err =>
-      console.warn(`TTS pre-gen (stories) failed for ${category}:`, err.message)
+  // Only pre-generate TTS for English (Arabic TTS not supported yet)
+  if (language === 'en') {
+    pregenerateTTSForContent(digestContent, `${category} / ${timeSlot} / digest`).catch(err =>
+      console.warn(`TTS pre-gen (digest) failed for ${category}:`, err.message)
     );
+    if (storiesContent) {
+      pregenerateTTSForContent(storiesContent, `${category} / ${timeSlot} / stories`).catch(err =>
+        console.warn(`TTS pre-gen (stories) failed for ${category}:`, err.message)
+      );
+    }
   }
 }
 
 // Function to generate all news for a time slot
 // day defaults to today (UAE) — pass an explicit YYYY-MM-DD to backfill a specific date
-async function generateAllNewsForTimeSlot(timeSlot, day = null) {
+// language: 'en' (default) or 'ar'. Arabic is only generated for Morning.
+// categories: optional array to generate only specific categories (defaults to DEFAULT_CATEGORIES)
+async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en', categories = null) {
   const targetDay = day || getTodayDate();
+  const targetCategories = categories || DEFAULT_CATEGORIES;
+  const langLabel = language === 'ar' ? ' [AR]' : '';
   const startedAt = new Date();
-  console.log(`\n🚀 Starting news generation for ${timeSlot} on ${targetDay}...`);
+
+  // Arabic is Morning-only
+  if (language === 'ar' && timeSlot !== 'Morning') {
+    console.log(`⏭️  Skipping Arabic generation for ${timeSlot} — Arabic is Morning-only`);
+    return;
+  }
+
+  console.log(`\n🚀 Starting news generation for ${timeSlot}${langLabel} on ${targetDay} (${targetCategories.length} categories)...`);
 
   const succeeded   = [];
   const failed      = []; // [{ category, error }]
 
   // ── Main generation pass ─────────────────────────────────────────────────
-  for (const category of DEFAULT_CATEGORIES) {
+  for (const category of targetCategories) {
     try {
-      await generateAndStoreCategory(category, targetDay, timeSlot);
+      await generateAndStoreCategory(category, targetDay, timeSlot, language);
       succeeded.push(category);
-      console.log(`  ✅ ${category}`);
+      console.log(`  ✅ ${category}${langLabel}`);
     } catch (error) {
-      console.error(`  ❌ ${category}: ${error.message}`);
+      console.error(`  ❌ ${category}${langLabel}: ${error.message}`);
       failed.push({ category, error: error.message });
     }
     // Delay between categories to stay within rate limits
@@ -917,28 +949,28 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null) {
     console.log(`\n🔄 Reconciliation: retrying ${failed.length} failed ${failed.length === 1 ? 'category' : 'categories'}...`);
     for (const { category } of failed) {
       try {
-        console.log(`  ↩️  Retrying ${category}...`);
+        console.log(`  ↩️  Retrying ${category}${langLabel}...`);
         await new Promise(resolve => setTimeout(resolve, 10000));
-        await generateAndStoreCategory(category, targetDay, timeSlot);
+        await generateAndStoreCategory(category, targetDay, timeSlot, language);
         retrySucceeded.push(category);
-        console.log(`  ✅ Retry succeeded: ${category}`);
+        console.log(`  ✅ Retry succeeded: ${category}${langLabel}`);
       } catch (error) {
-        console.error(`  ❌ Retry failed: ${category}: ${error.message}`);
+        console.error(`  ❌ Retry failed: ${category}${langLabel}: ${error.message}`);
         retryFailed.push({ category, error: error.message });
       }
     }
   }
 
   const totalSucceeded = succeeded.length + retrySucceeded.length;
-  console.log(`\n✨ Generation complete for ${timeSlot} on ${targetDay} — ${totalSucceeded}/${DEFAULT_CATEGORIES.length} categories succeeded`);
+  console.log(`\n✨ Generation complete for ${timeSlot}${langLabel} on ${targetDay} — ${totalSucceeded}/${targetCategories.length} categories succeeded`);
   if (retryFailed.length > 0) {
     console.warn(`⚠️  Permanently failed: ${retryFailed.map(f => f.category).join(', ')}`);
   }
 
-  // ── Completion marker ─────────────────────────────────────────────────────
+  // ── Completion marker (one per language per slot) ─────────────────────────
   try {
-    await storeNews('__completed__', targetDay, timeSlot, 'completed');
-    console.log(`✅ Completion marker written for ${timeSlot} on ${targetDay}`);
+    await storeNews('__completed__', targetDay, timeSlot, 'completed', null, null, null, null, language);
+    console.log(`✅ Completion marker written for ${timeSlot}${langLabel} on ${targetDay}`);
   } catch (err) {
     console.warn(`Could not write completion marker:`, err.message);
   }
@@ -950,6 +982,7 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null) {
     await supabaseAdmin.from('generation_logs').insert({
       day:                    targetDay,
       time_slot:              timeSlot,
+      language:               language,
       started_at:             startedAt.toISOString(),
       completed_at:           completedAt.toISOString(),
       total_duration_seconds: durationSeconds,
@@ -958,14 +991,16 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null) {
       retry_succeeded:        retrySucceeded,
       retry_failed:           retryFailed,
     });
-    console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${DEFAULT_CATEGORIES.length} ok)`);
+    console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${targetCategories.length} ok)`);
   } catch (err) {
     console.warn(`Could not save generation log:`, err.message);
   }
 
-  // ── Digest emails (today only, not backfills) ─────────────────────────────
-  if (targetDay === getTodayDate()) {
+  // ── Digest emails (today only, not backfills, English only) ───────────────
+  if (targetDay === getTodayDate() && language === 'en') {
     await sendNewsDigestEmails(timeSlot, targetDay);
+  } else if (language === 'ar') {
+    console.log(`⏭️  Skipping email send — Arabic digest emails not yet configured`);
   } else {
     console.log(`⏭️  Skipping email send — ${targetDay} is not today`);
   }
@@ -1113,24 +1148,34 @@ app.post('/api/generate/:timeSlot', async (req, res) => {
   try {
     const timeSlot = req.params.timeSlot;
     const day = req.body?.day || null;
+    const language = req.body?.language || 'en';
+    const category = req.body?.category || null; // optional: generate a single category
     const slot = TIME_SLOTS.find(s => s.label.toLowerCase() === timeSlot.toLowerCase());
 
     if (!slot) {
       return res.status(400).json({ error: 'Invalid time slot' });
     }
 
+    // Arabic is Morning-only
+    if (language === 'ar' && slot.label !== 'Morning') {
+      return res.status(400).json({ error: 'Arabic generation is only available for the Morning slot' });
+    }
+
     const targetDay = day || getTodayDate();
+    const categories = category ? [category] : null;
+    const langLabel = language === 'ar' ? ' [AR]' : '';
+    const catLabel = category ? ` (${category})` : ' (all categories)';
 
     // Respond immediately so Cloud Scheduler doesn't timeout
     res.json({
       status: 'accepted',
-      message: `News generation started for ${slot.label} on ${targetDay}`,
+      message: `News generation started for ${slot.label}${langLabel}${catLabel} on ${targetDay}`,
       timestamp: new Date().toISOString()
     });
 
     // Run generation in background
-    generateAllNewsForTimeSlot(slot.label, targetDay).catch(err =>
-      console.error(`Background generation failed for ${slot.label}:`, err.message)
+    generateAllNewsForTimeSlot(slot.label, targetDay, language, categories).catch(err =>
+      console.error(`Background generation failed for ${slot.label}${langLabel}:`, err.message)
     );
   } catch (error) {
     res.status(500).json({
@@ -1838,6 +1883,24 @@ app.put('/api/user/feed-categories', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Error saving feed categories:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/api/user/news-language', async (req, res) => {
+  try {
+    const { userId, language } = req.body;
+    if (!userId || !['en', 'ar'].includes(language)) {
+      return res.status(400).json({ error: "userId and language ('en' or 'ar') are required" });
+    }
+    const { error } = await supabaseAdmin
+      .from('users')
+      .update({ news_language: language })
+      .eq('id', userId);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error saving news language:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
