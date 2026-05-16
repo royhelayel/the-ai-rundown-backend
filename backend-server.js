@@ -345,7 +345,7 @@ function computeEchoScores(articles) {
   });
 }
 
-async function buildSearchContext(categoryQuery, day, language = 'en') {
+async function buildSearchContext(categoryQuery, day, language = 'en', isRegional = false) {
   // Format day as human-readable for queries (e.g. "May 14 2026")
   const dateLabel = day
     ? new Date(day + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
@@ -371,7 +371,9 @@ async function buildSearchContext(categoryQuery, day, language = 'en') {
     `${categoryQuery} major developments`,
   ];
 
-  const results = await Promise.all(queries.map(q => serperSearch(q, 20, day, gl, hl).catch(() => ({ news: [] }))));
+  // Regional categories have fewer outlets — fetch more results per query to compensate
+  const numPerQuery = isRegional ? 30 : 20;
+  const results = await Promise.all(queries.map(q => serperSearch(q, numPerQuery, day, gl, hl).catch(() => ({ news: [] }))));
 
   // Merge results while preserving Google's ranking signal.
   // Each article gets a score = sum of (1 / position) across every query it appears in.
@@ -508,6 +510,7 @@ function cleanRawSummary(rawSummary) {
 async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null, language = 'en') {
   const categoryQuery = searchQuery || (language === 'ar' ? (ARABIC_CATEGORY_QUERIES[category] || category) : (CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category)));
   const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
+  const isRegional = REGIONAL_CATEGORIES_SET.has(category);
 
   console.log(`Generating digest for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
@@ -516,7 +519,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   if (prebuiltContext) {
     searchContext = prebuiltContext;
   } else {
-    const { context, articles } = await buildSearchContext(categoryQuery, day, language);
+    const { context, articles } = await buildSearchContext(categoryQuery, day, language, isRegional);
     searchContext = context;
     sourceArticles = articles;
   }
@@ -526,6 +529,16 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   const arabicInstruction = language === 'ar'
     ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullets, coverage lines, and the "Why this matters" section must be in Arabic. Keep source outlet names and URLs in their original form.`
     : '';
+
+  // Regional categories (UAE/KSA/QAT/LEB) have a smaller media ecosystem — single-source
+  // stories from any outlet are acceptable, and we target more stories per digest.
+  const storyCountInstruction = isRegional
+    ? 'Write 7–10 grouped stories from the results above.'
+    : 'Write 5–8 grouped stories from the results above.';
+
+  const singleSourceRule = isRegional
+    ? '3. Single-source stories are acceptable for regional news — include any story that is newsworthy regardless of how many outlets covered it.'
+    : '3. Single-source stories should only be included if clearly significant and from a tier-1 outlet.';
 
   const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.${arabicInstruction}
 
@@ -543,10 +556,10 @@ For each major story group, use this EXACT format — no introduction, no preamb
 **Perspectives differ:** Only include when at least two different outlets, parties, or experts genuinely frame the story differently — one sentence describing the contrast. Omit if only one source covers the story, or if all sources are fully aligned.
 **Why this matters:** One or two sentences on broader significance and implications.
 
-Write 5–7 grouped stories from the results above. PRIORITISATION RULES:
+${storyCountInstruction} PRIORITISATION RULES:
 1. Articles labelled [4 OUTLETS — MAJOR STORY] or [3 OUTLETS] are widely reported — always include these, they are almost certainly significant events.
 2. Prefer stories covered by multiple outlets over single-source stories.
-3. Single-source stories should only be included if clearly significant and from a tier-1 outlet.
+${singleSourceRule}
 Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories, include a sources section:
 
 ## Sources
@@ -554,7 +567,7 @@ Group articles covering the same story together. Coverage must use real URLs fro
 
 Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. CRITICAL: In **Coverage:**, list EVERY outlet from the search results that covers this story — do NOT truncate to 2 or 3. If 5 outlets covered it, list all 5. If 8 covered it, list all 8. In **## Sources**, list every article URL used across all stories with its full headline as the link text. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
 
-  const data = await callClaude(prompt, 4000);
+  const data = await callClaude(prompt, 5000);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
   const summary = cleanRawSummary(rawSummary);
 
@@ -602,7 +615,7 @@ For each story in the digest, use this EXACT format — no preamble:
 
 Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence.`;
 
-  const data = await callClaude(prompt, 2500);
+  const data = await callClaude(prompt, 3500);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
   const summary = cleanRawSummary(rawSummary);
 
