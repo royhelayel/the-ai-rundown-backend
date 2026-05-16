@@ -942,6 +942,26 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
     return;
   }
 
+  // ── Delete existing rows for this slot before generating fresh content ──────
+  // This prevents stale data from a previous (possibly partial) run from showing
+  // alongside newly generated content.
+  try {
+    const toDelete = [...targetCategories, '__completed__'];
+    const { error: delError } = await supabaseAdmin
+      .from('news_summaries')
+      .delete()
+      .eq('day', targetDay)
+      .eq('time_slot', timeSlot)
+      .eq('language', language)
+      .in('category', toDelete)
+      .is('user_id', null)
+      .is('shared_key', null);
+    if (delError) console.warn(`⚠️  Could not delete existing rows before generation:`, delError.message);
+    else console.log(`🗑️  Cleared ${toDelete.length} existing rows for ${timeSlot}${langLabel} on ${targetDay}`);
+  } catch (err) {
+    console.warn(`⚠️  Delete step threw:`, err.message);
+  }
+
   console.log(`\n🚀 Starting news generation for ${timeSlot}${langLabel} on ${targetDay} (${targetCategories.length} categories)...`);
 
   const succeeded   = [];
