@@ -221,6 +221,23 @@ const CATEGORY_SEARCH_QUERIES = {
   'LEB':           'Lebanon Beirut news today',
 };
 
+// Arabic search queries — pure Arabic terms for each category, used when language='ar'.
+// These replace the English CATEGORY_SEARCH_QUERIES so Serper fetches Arabic-language articles.
+const ARABIC_CATEGORY_QUERIES = {
+  'World News':    'أخبار العالم اليوم',
+  'Technology':    'أخبار التكنولوجيا والتقنية',
+  'Business':      'أخبار الاقتصاد والأعمال والأسواق',
+  'Politics':      'أخبار السياسة والحكومات',
+  'Sports':        'أخبار الرياضة والكرة',
+  'Entertainment': 'أخبار الترفيه والفن والسينما',
+  'Science':       'أخبار العلوم والاكتشافات',
+  'Health':        'أخبار الصحة والطب',
+  'UAE':           'أخبار الإمارات دبي أبوظبي',
+  'KSA':           'أخبار السعودية الرياض',
+  'QAT':           'أخبار قطر الدوحة',
+  'LEB':           'أخبار لبنان بيروت',
+};
+
 async function generateEmbedding(text) {
   try {
     const res = await fetch('https://api.voyageai.com/v1/embeddings', {
@@ -327,14 +344,17 @@ async function buildSearchContext(categoryQuery, day, language = 'en') {
     : 'today';
 
   const hl = language === 'ar' ? 'ar' : 'en';
-  const gl = language === 'ar' ? 'ae' : 'us'; // Use UAE geo for Arabic searches
+  // Always use gl='us' so Serper hits the main Google index.
+  // For Arabic, hl='ar' is enough to surface Arabic-language sources (Al Jazeera, BBC Arabic, etc.).
+  // Using gl='ae' routes to a sparse UAE-only index and returns near-zero results for global topics.
+  const gl = 'us';
 
   const queries = language === 'ar' ? [
-    `${categoryQuery} أخبار ${dateLabel}`,
+    `${categoryQuery} ${dateLabel}`,
     `${categoryQuery} آخر الأخبار`,
-    `${categoryQuery} تطورات ${dateLabel}`,
-    `${categoryQuery} أبرز الأخبار اليوم`,
-    `${categoryQuery} مستجدات`,
+    `${categoryQuery} أبرز الأحداث`,
+    `${categoryQuery} تطورات اليوم`,
+    `${categoryQuery} عاجل`,
   ] : [
     `${categoryQuery} news ${dateLabel}`,
     `${categoryQuery} latest breaking news`,
@@ -478,7 +498,7 @@ function cleanRawSummary(rawSummary) {
 }
 
 async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null, language = 'en') {
-  const categoryQuery = searchQuery || CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category);
+  const categoryQuery = searchQuery || (language === 'ar' ? (ARABIC_CATEGORY_QUERIES[category] || category) : (CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category)));
   const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
 
   console.log(`Generating digest for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
