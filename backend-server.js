@@ -527,7 +527,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   const serper_cost = serper_searches * 0.001;
 
   const arabicInstruction = language === 'ar'
-    ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullets, coverage lines, and the "Why this matters" section must be in Arabic. Keep source outlet names and URLs in their original form.`
+    ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullet points, "Perspectives differ" text, and "Why this matters" text must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, **Perspectives differ:**, **Why this matters:**, ## Sources. Keep source outlet names and URLs in their original form.`
     : '';
 
   // Regional categories (UAE/KSA/QAT/LEB) have a smaller media ecosystem — single-source
@@ -596,7 +596,7 @@ async function generateStoriesContent(category, day, timeSlot, digestContent, la
   console.log(`Generating stories content for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
   const arabicInstruction = language === 'ar'
-    ? `\n\nIMPORTANT: Write everything in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullets, and "Why this matters" must be in Arabic. Keep outlet names and URLs as-is.`
+    ? `\n\nIMPORTANT: Write everything in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullet points, and "Why this matters" text must be in Arabic. HOWEVER, keep the structural marker **Why this matters:** in English exactly as shown — do NOT translate it. Keep outlet names and URLs as-is.`
     : '';
 
   const prompt = `You are a news editor. Below is a detailed news digest. Convert every story in it into a short, punchy card suitable for audio listening and mobile reading.${arabicInstruction}
