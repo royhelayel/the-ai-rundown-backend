@@ -860,57 +860,110 @@ async function pregenerateTTSForContent(content, label) {
   }
 }
 
+// Helper: generate and store one category, returns { storiesContent } on success, throws on failure
+async function generateAndStoreCategory(category, targetDay, timeSlot) {
+  const { summary: digestContent, sourceArticles } = await generateNews(category, targetDay, timeSlot);
+
+  let storiesContent = null;
+  if (GENERATE_STORIES_CONTENT) {
+    try {
+      storiesContent = await generateStoriesContent(category, targetDay, timeSlot, digestContent);
+    } catch (err) {
+      console.warn(`Stories generation failed for ${category}, falling back to digest:`, err.message);
+    }
+  }
+
+  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles);
+
+  pregenerateTTSForContent(digestContent, `${category} / ${timeSlot} / digest`).catch(err =>
+    console.warn(`TTS pre-gen (digest) failed for ${category}:`, err.message)
+  );
+  if (storiesContent) {
+    pregenerateTTSForContent(storiesContent, `${category} / ${timeSlot} / stories`).catch(err =>
+      console.warn(`TTS pre-gen (stories) failed for ${category}:`, err.message)
+    );
+  }
+}
+
 // Function to generate all news for a time slot
 // day defaults to today (UAE) — pass an explicit YYYY-MM-DD to backfill a specific date
 async function generateAllNewsForTimeSlot(timeSlot, day = null) {
   const targetDay = day || getTodayDate();
+  const startedAt = new Date();
   console.log(`\n🚀 Starting news generation for ${timeSlot} on ${targetDay}...`);
 
+  const succeeded   = [];
+  const failed      = []; // [{ category, error }]
+
+  // ── Main generation pass ─────────────────────────────────────────────────
   for (const category of DEFAULT_CATEGORIES) {
     try {
-      // Generate digest first (also retrieves source articles for audit)
-      const { summary: digestContent, sourceArticles } = await generateNews(category, targetDay, timeSlot);
-
-      // Generate stories by reformatting the digest — same headlines guaranteed, no extra search cost
-      let storiesContent = null;
-      if (GENERATE_STORIES_CONTENT) {
-        try {
-          storiesContent = await generateStoriesContent(category, targetDay, timeSlot, digestContent);
-        } catch (err) {
-          console.warn(`Stories content generation failed for ${category}, falling back to digest:`, err.message);
-        }
-      }
-
-      await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles);
-
-      // Pre-generate TTS for both versions independently (different text = different cache keys)
-      pregenerateTTSForContent(digestContent, `${category} / ${timeSlot} / digest`).catch(err =>
-        console.warn(`TTS pre-gen (digest) failed for ${category}:`, err.message)
-      );
-      if (storiesContent) {
-        pregenerateTTSForContent(storiesContent, `${category} / ${timeSlot} / stories`).catch(err =>
-          console.warn(`TTS pre-gen (stories) failed for ${category}:`, err.message)
-        );
-      }
-
-      // Delay between categories to stay within rate limits
-      await new Promise(resolve => setTimeout(resolve, 15000));
+      await generateAndStoreCategory(category, targetDay, timeSlot);
+      succeeded.push(category);
+      console.log(`  ✅ ${category}`);
     } catch (error) {
-      console.error(`Failed to generate/store news for ${category}:`, error.message);
+      console.error(`  ❌ ${category}: ${error.message}`);
+      failed.push({ category, error: error.message });
+    }
+    // Delay between categories to stay within rate limits
+    await new Promise(resolve => setTimeout(resolve, 15000));
+  }
+
+  // ── Reconciliation pass: retry each failed category once ─────────────────
+  const retrySucceeded = [];
+  const retryFailed    = [];
+
+  if (failed.length > 0) {
+    console.log(`\n🔄 Reconciliation: retrying ${failed.length} failed ${failed.length === 1 ? 'category' : 'categories'}...`);
+    for (const { category } of failed) {
+      try {
+        console.log(`  ↩️  Retrying ${category}...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        await generateAndStoreCategory(category, targetDay, timeSlot);
+        retrySucceeded.push(category);
+        console.log(`  ✅ Retry succeeded: ${category}`);
+      } catch (error) {
+        console.error(`  ❌ Retry failed: ${category}: ${error.message}`);
+        retryFailed.push({ category, error: error.message });
+      }
     }
   }
 
-  console.log(`✨ Completed news generation for ${timeSlot} on ${targetDay}\n`);
+  const totalSucceeded = succeeded.length + retrySucceeded.length;
+  console.log(`\n✨ Generation complete for ${timeSlot} on ${targetDay} — ${totalSucceeded}/${DEFAULT_CATEGORIES.length} categories succeeded`);
+  if (retryFailed.length > 0) {
+    console.warn(`⚠️  Permanently failed: ${retryFailed.map(f => f.category).join(', ')}`);
+  }
 
-  // Write a completion marker so the frontend knows all categories are ready for this slot
+  // ── Completion marker ─────────────────────────────────────────────────────
   try {
     await storeNews('__completed__', targetDay, timeSlot, 'completed');
     console.log(`✅ Completion marker written for ${timeSlot} on ${targetDay}`);
   } catch (err) {
-    console.warn(`Could not write completion marker for ${timeSlot}:`, err.message);
+    console.warn(`Could not write completion marker:`, err.message);
   }
 
-  // Only send digest emails when generating for today (not backfilling past dates)
+  // ── Generation log ────────────────────────────────────────────────────────
+  const completedAt       = new Date();
+  const durationSeconds   = Math.round((completedAt - startedAt) / 1000);
+  try {
+    await supabaseAdmin.from('generation_logs').insert({
+      day:                    targetDay,
+      time_slot:              timeSlot,
+      started_at:             startedAt.toISOString(),
+      completed_at:           completedAt.toISOString(),
+      total_duration_seconds: durationSeconds,
+      categories_succeeded:   succeeded,
+      categories_failed:      failed,
+      retry_succeeded:        retrySucceeded,
+      retry_failed:           retryFailed,
+    });
+    console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${DEFAULT_CATEGORIES.length} ok)`);
+  } catch (err) {
+    console.warn(`Could not save generation log:`, err.message);
+  }
+
+  // ── Digest emails (today only, not backfills) ─────────────────────────────
   if (targetDay === getTodayDate()) {
     await sendNewsDigestEmails(timeSlot, targetDay);
   } else {
