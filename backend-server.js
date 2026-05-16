@@ -224,18 +224,19 @@ const CATEGORY_SEARCH_QUERIES = {
 // Arabic search queries — pure Arabic terms for each category, used when language='ar'.
 // These replace the English CATEGORY_SEARCH_QUERIES so Serper fetches Arabic-language articles.
 const ARABIC_CATEGORY_QUERIES = {
-  'World News':    'أخبار العالم اليوم',
-  'Technology':    'أخبار التكنولوجيا والتقنية',
-  'Business':      'أخبار الاقتصاد والأعمال والأسواق',
-  'Politics':      'أخبار السياسة والحكومات',
-  'Sports':        'أخبار الرياضة والكرة',
-  'Entertainment': 'أخبار الترفيه والفن والسينما',
-  'Science':       'أخبار العلوم والاكتشافات',
-  'Health':        'أخبار الصحة والطب',
-  'UAE':           'أخبار الإمارات دبي أبوظبي',
-  'KSA':           'أخبار السعودية الرياض',
-  'QAT':           'أخبار قطر الدوحة',
-  'LEB':           'أخبار لبنان بيروت',
+  'World News':    'أبرز أخبار العالم اليوم عاجل',
+  'Technology':    'أخبار التكنولوجيا والذكاء الاصطناعي والتقنية',
+  'Business':      'أخبار الاقتصاد والأسواق المالية والأعمال',
+  'Politics':      'أخبار السياسة الدولية والحكومات والدبلوماسية',
+  'Sports':        'أخبار الرياضة والكرة والبطولات',
+  'Entertainment': 'أخبار الفن والترفيه والسينما والموسيقى',
+  'Science':       'أخبار العلوم والفضاء والاكتشافات',
+  'Health':        'أخبار الصحة والطب والأبحاث الطبية',
+  'UAE':           'أخبار الإمارات دبي أبوظبي اليوم',
+  'KSA':           'أخبار المملكة العربية السعودية الرياض اليوم',
+  'QAT':           'أخبار قطر الدوحة اليوم',
+  // LEB: broad enough to cover political, diplomatic, security, economy, and society stories
+  'LEB':           'أخبار لبنان السياسة الدبلوماسية الاقتصاد الأمن اليوم',
 };
 
 async function generateEmbedding(text) {
@@ -290,11 +291,18 @@ const TIER1_DOMAINS = new Set([
   'healthline.com', 'webmd.com', 'statnews.com',
   'variety.com', 'hollywoodreporter.com', 'deadline.com',
   'aljazeera.com', 'dw.com', 'france24.com',
-  // Regional — Gulf & Levant
+  // Pan-Arab
+  'alarabiya.net', 'skynewsarabia.com', 'rt.com/arabic',
+  // Regional — Gulf & Levant (English)
   'khaleejtimes.com', 'gulfnews.com', 'thenationalnews.com', 'arabianbusiness.com',
   'arabnews.com', 'saudigazette.com.sa', 'argaam.com',
   'gulf-times.com', 'thepeninsulaqatar.com',
   'dailystar.com.lb', 'lorientlejour.com', 'naharnet.com',
+  // Regional — Gulf & Levant (Arabic)
+  'al-akhbar.com', 'annahar.com', 'lbci.com.lb', 'mtv.com.lb', 'nna-leb.gov.lb',
+  'albayan.ae', 'alkhaleej.ae', 'emaratalyoum.com', 'wam.ae',
+  'alyaum.com', 'okaz.com.sa', 'sabq.org', 'aleqt.com',
+  'al-sharq.com', 'peninsulaqatar.com',
 ]);
 
 function isTier1(url) {
@@ -351,10 +359,10 @@ async function buildSearchContext(categoryQuery, day, language = 'en') {
 
   const queries = language === 'ar' ? [
     `${categoryQuery} ${dateLabel}`,
-    `${categoryQuery} آخر الأخبار`,
-    `${categoryQuery} أبرز الأحداث`,
-    `${categoryQuery} تطورات اليوم`,
-    `${categoryQuery} عاجل`,
+    `${categoryQuery} آخر الأخبار اليوم`,
+    `${categoryQuery} أبرز الأحداث عاجل`,
+    `${categoryQuery} تطورات مستجدات`,
+    `${categoryQuery} تقارير وتحليلات`,
   ] : [
     `${categoryQuery} news ${dateLabel}`,
     `${categoryQuery} latest breaking news`,
