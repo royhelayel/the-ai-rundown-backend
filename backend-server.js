@@ -224,18 +224,18 @@ const CATEGORY_SEARCH_QUERIES = {
 // Arabic search queries — pure Arabic terms for each category, used when language='ar'.
 // These replace the English CATEGORY_SEARCH_QUERIES so Serper fetches Arabic-language articles.
 const ARABIC_CATEGORY_QUERIES = {
-  'World News':    'أبرز أخبار العالم اليوم عاجل',
-  'Technology':    'أخبار التكنولوجيا والذكاء الاصطناعي والتقنية',
-  'Business':      'أخبار الاقتصاد والأسواق المالية والأعمال',
-  'Politics':      'أخبار السياسة الدولية والحكومات والدبلوماسية',
-  'Sports':        'أخبار الرياضة والكرة والبطولات',
-  'Entertainment': 'أخبار الفن والترفيه والسينما والموسيقى',
-  'Science':       'أخبار العلوم والفضاء والاكتشافات',
-  'Health':        'أخبار الصحة والطب والأبحاث الطبية',
-  'UAE':           'أخبار الإمارات دبي أبوظبي اليوم',
-  'KSA':           'أخبار المملكة العربية السعودية الرياض اليوم',
-  'QAT':           'أخبار قطر الدوحة اليوم',
-  // LEB: broad enough to cover political, diplomatic, security, economy, and society stories
+  'World News':    'أبرز أخبار العالم السياسة الاقتصاد الأمن اليوم عاجل',
+  'Technology':    'أخبار التكنولوجيا والذكاء الاصطناعي والتقنية والابتكار',
+  'Business':      'أخبار الاقتصاد والأسواق المالية والاستثمار والأعمال',
+  'Politics':      'أخبار السياسة الدولية والدبلوماسية والمفاوضات والحكومات',
+  'Sports':        'أخبار الرياضة والكرة والبطولات والنتائج',
+  'Entertainment': 'أخبار الفن والترفيه والسينما والموسيقى والمشاهير',
+  'Science':       'أخبار العلوم والفضاء والاكتشافات والتكنولوجيا الحيوية',
+  'Health':        'أخبار الصحة والطب والأبحاث الطبية والأوبئة',
+  // Regional: city names + political, diplomatic, economic, security — same breadth as LEB
+  'UAE':           'أخبار الإمارات السياسة الاقتصاد الدبلوماسية دبي أبوظبي اليوم',
+  'KSA':           'أخبار السعودية السياسة الاقتصاد الدبلوماسية الأمن الرياض اليوم',
+  'QAT':           'أخبار قطر السياسة الاقتصاد الدبلوماسية الدوحة اليوم',
   'LEB':           'أخبار لبنان السياسة الدبلوماسية الاقتصاد الأمن اليوم',
 };
 
