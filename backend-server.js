@@ -389,11 +389,12 @@ async function buildSearchContext(categoryQuery, day) {
 
   // Return both formatted context (for Claude) and raw article metadata (for audit storage)
   const articles = sorted.map(item => ({
-    title:   item.title   || '',
-    source:  item.source  || '',
-    date:    item.date    || '',
-    url:     item.link    || '',
-    snippet: item.snippet || '',
+    title:    item.title    || '',
+    source:   item.source   || '',
+    date:     item.date     || '',
+    url:      item.link     || '',
+    snippet:  item.snippet  || '',
+    imageUrl: item.imageUrl || '',
   }));
 
   return { context, articles };
