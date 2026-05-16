@@ -197,11 +197,18 @@
         <option value="">All</option>
         <option>Morning</option><option>Evening</option>
       </select>
+      <span class="filter-label">Language</span>
+      <select id="f-news-lang">
+        <option value="">All</option>
+        <option value="en">🇬🇧 English</option>
+        <option value="ar">🇸🇦 Arabic</option>
+      </select>
       <span class="filter-label">Category</span>
       <select id="f-news-cat">
         <option value="">All</option>
         <option>World News</option><option>Technology</option><option>Business</option><option>Politics</option>
         <option>Sports</option><option>Entertainment</option><option>Science</option><option>Health</option>
+        <option>UAE</option><option>KSA</option><option>QAT</option><option>LEB</option>
       </select>
       <button class="btn-apply" onclick="loadNews()">Apply</button>
     </div>
@@ -500,12 +507,14 @@ async function loadNews() {
 
   const day  = dateEl.value;
   const slot = document.getElementById('f-news-slot').value;
+  const lang = document.getElementById('f-news-lang').value;
   const cat  = document.getElementById('f-news-cat').value;
 
   document.getElementById('news-wrap').innerHTML = '<div class="loading">Loading…</div>';
   try {
     let qs = '?day=' + day;
-    if (slot) qs += '&timeSlot=' + encodeURIComponent(slot);
+    if (slot) qs += '&timeSlot='  + encodeURIComponent(slot);
+    if (lang) qs += '&language='  + encodeURIComponent(lang);
     if (cat)  qs += '&category='  + encodeURIComponent(cat);
 
     const data = await api('/news' + qs);
@@ -513,14 +522,19 @@ async function loadNews() {
 
     window._newsItems = data;
     let h = `<table class="data-table"><thead><tr>
-      <th>Category</th><th>Date</th><th>Slot</th><th>Generated</th><th></th>
+      <th>Category</th><th>Date</th><th>Slot</th><th>Language</th><th>Generated</th><th></th>
     </tr></thead><tbody>`;
     data.forEach((n, i) => {
-      const gen = n.generated_at ? new Date(n.generated_at).toLocaleString() : '—';
+      const gen  = n.generated_at ? new Date(n.generated_at).toLocaleString() : '—';
+      const langLabel = n.language === 'ar' ? '🇸🇦 AR' : '🇬🇧 EN';
+      const langStyle = n.language === 'ar'
+        ? 'background:#fef3c7;color:#92400e;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.72rem;font-weight:700;'
+        : 'background:#eff6ff;color:#1e40af;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.72rem;font-weight:700;';
       h += `<tr>
         <td><strong>${n.category}</strong></td>
         <td style="color:#6b7280;font-size:0.8rem;">${n.day}</td>
         <td><span class="badge bp">${n.time_slot}</span></td>
+        <td><span style="${langStyle}">${langLabel}</span></td>
         <td style="color:#6b7280;font-size:0.78rem;">${gen}</td>
         <td style="white-space:nowrap;">
           <button onclick="viewNews(${i})" style="padding:0.22rem 0.6rem;background:none;border:1px solid #e2e8f0;border-radius:5px;cursor:pointer;font-size:0.75rem;color:#6366f1;font-weight:700;">View</button>

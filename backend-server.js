@@ -1760,10 +1760,11 @@ app.get('/admin/api/overview', async (req, res) => {
 
 app.get('/admin/api/news', async (req, res) => {
   try {
-    const { day, timeSlot, category } = req.query;
+    const { day, timeSlot, language, category } = req.query;
     let query = supabaseAdmin.from('news_summaries').select('*').order('generated_at', { ascending: false }).limit(200);
     if (day)      query = query.eq('day', day);
     if (timeSlot) query = query.eq('time_slot', timeSlot);
+    if (language) query = query.eq('language', language);
     if (category) query = query.eq('category', category);
     const { data, error } = await query;
     if (error) throw error;
