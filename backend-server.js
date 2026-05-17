@@ -1022,10 +1022,55 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
     }
   }
 
+  // ── DB verification pass: confirm rows actually landed in Supabase ──────────
+  // generateAndStoreCategory() can succeed without throwing even when the stories
+  // sub-step fails silently, so throw-based reconciliation is insufficient.
+  // Query what's actually stored and retry any category that is still absent.
+  const dbVerifyFailed = [];
+  try {
+    const { data: storedRows, error: verifyErr } = await supabaseAdmin
+      .from('news_summaries')
+      .select('category')
+      .eq('day', targetDay)
+      .eq('time_slot', timeSlot)
+      .eq('language', language)
+      .is('user_id', null)
+      .is('shared_key', null)
+      .in('category', targetCategories);
+
+    if (verifyErr) {
+      console.warn(`⚠️  DB verification query failed: ${verifyErr.message}`);
+    } else {
+      const storedSet = new Set((storedRows || []).map(r => r.category));
+      const missingCategories = targetCategories.filter(c => !storedSet.has(c));
+
+      if (missingCategories.length > 0) {
+        console.log(`\n🔍 DB verification found ${missingCategories.length} missing ${missingCategories.length === 1 ? 'category' : 'categories'}: ${missingCategories.join(', ')}`);
+        for (const category of missingCategories) {
+          try {
+            console.log(`  🔁 Final retry: ${category}${langLabel}...`);
+            await new Promise(resolve => setTimeout(resolve, 10000));
+            await generateAndStoreCategory(category, targetDay, timeSlot, language);
+            retrySucceeded.push(category);
+            console.log(`  ✅ Final retry succeeded: ${category}${langLabel}`);
+          } catch (error) {
+            console.error(`  ❌ Final retry failed: ${category}${langLabel}: ${error.message}`);
+            dbVerifyFailed.push({ category, error: error.message });
+          }
+        }
+      } else {
+        console.log(`\n✅ DB verification: all ${targetCategories.length} categories confirmed in Supabase`);
+      }
+    }
+  } catch (err) {
+    console.warn(`⚠️  DB verification pass threw: ${err.message}`);
+  }
+
   const totalSucceeded = succeeded.length + retrySucceeded.length;
+  const allFailed = [...retryFailed, ...dbVerifyFailed];
   console.log(`\n✨ Generation complete for ${timeSlot}${langLabel} on ${targetDay} — ${totalSucceeded}/${targetCategories.length} categories succeeded`);
-  if (retryFailed.length > 0) {
-    console.warn(`⚠️  Permanently failed: ${retryFailed.map(f => f.category).join(', ')}`);
+  if (allFailed.length > 0) {
+    console.warn(`⚠️  Permanently failed: ${allFailed.map(f => f.category).join(', ')}`);
   }
 
   // ── Completion marker (one per language per slot) ─────────────────────────
@@ -1050,7 +1095,7 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
       categories_succeeded:   succeeded,
       categories_failed:      failed,
       retry_succeeded:        retrySucceeded,
-      retry_failed:           retryFailed,
+      retry_failed:           allFailed,
     });
     console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${targetCategories.length} ok)`);
   } catch (err) {
