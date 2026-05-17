@@ -272,7 +272,10 @@ async function serperSearch(query, num = 10, day = null, gl = 'us', hl = 'en') {
     headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({ q: query, num, gl, hl, tbs })
   });
-  if (!res.ok) return { news: [] };
+  if (!res.ok) {
+    console.warn(`⚠️  Serper non-OK for "${query}": HTTP ${res.status}`);
+    return { news: [] };
+  }
   return res.json();
 }
 
@@ -373,22 +376,34 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
 
   // Regional categories have fewer outlets — fetch more results per query to compensate
   const numPerQuery = isRegional ? 30 : 20;
-  const results = await Promise.all(queries.map(q => serperSearch(q, numPerQuery, day, gl, hl).catch(() => ({ news: [] }))));
+  let results = await Promise.all(queries.map(q => serperSearch(q, numPerQuery, day, gl, hl).catch(() => ({ news: [] }))));
 
   // Merge results while preserving Google's ranking signal.
   // Each article gets a score = sum of (1 / position) across every query it appears in.
+  const mergeIntoMaps = (rawResults, scoreMap, itemMap) => {
+    rawResults.forEach(r => {
+      (r.news || []).forEach((item, idx) => {
+        if (!item.link || item.link.includes('wikipedia.org')) return;
+        const url = item.link;
+        const positionScore = 1 / (idx + 1); // rank 1 → 1.0, rank 2 → 0.5, rank 10 → 0.1
+        scoreMap[url] = (scoreMap[url] || 0) + positionScore;
+        if (!itemMap[url]) itemMap[url] = item;
+      });
+    });
+  };
+
   const scoreMap = {};   // url → cumulative score
   const itemMap  = {};   // url → article object (first seen wins for metadata)
+  mergeIntoMaps(results, scoreMap, itemMap);
 
-  results.forEach(r => {
-    (r.news || []).forEach((item, idx) => {
-      if (!item.link || item.link.includes('wikipedia.org')) return;
-      const url = item.link;
-      const positionScore = 1 / (idx + 1); // rank 1 → 1.0, rank 2 → 0.5, rank 10 → 0.1
-      scoreMap[url] = (scoreMap[url] || 0) + positionScore;
-      if (!itemMap[url]) itemMap[url] = item;
-    });
-  });
+  // ── Fallback: if date-pinned search returned nothing, retry with a wider 7-day window ──
+  if (Object.keys(scoreMap).length === 0 && day) {
+    console.warn(`⚠️  Date-pinned search returned 0 results for "${categoryQuery}" — retrying with 7-day window`);
+    const fallbackResults = await Promise.all(
+      queries.slice(0, 3).map(q => serperSearch(q, numPerQuery, null, gl, hl).catch(() => ({ news: [] })))
+    );
+    mergeIntoMaps(fallbackResults, scoreMap, itemMap);
+  }
 
   if (Object.keys(scoreMap).length === 0) {
     throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
@@ -476,14 +491,25 @@ function isClaudeErrorResponse(text) {
   const errorPhrases = [
     'no search results',
     'search results.*empty',
+    'search results.*section is empty',
     'no articles.*provided',
     'haven\'t provided any',
     'i notice that no',
     'i appreciate.*but i notice',
+    'i appreciate.*however.*i notice',
     'i appreciate.*but i\'m unable',
     'unable to complete this task',
+    'no actual.*search results',
+    'articles.*provided in your message',
+    'actual content to synthesize',
+    'no content.*to.*synthesize',
+    'results section is empty',
+    'please provide.*articles',
+    'would need.*actual',
+    'i don\'t see any search',
+    'i notice.*no search',
   ];
-  const lower = text.toLowerCase().slice(0, 400);
+  const lower = text.toLowerCase().slice(0, 600);
   return errorPhrases.some(p => new RegExp(p).test(lower));
 }
 
