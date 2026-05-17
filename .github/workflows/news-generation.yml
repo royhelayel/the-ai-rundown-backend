@@ -35,13 +35,14 @@ jobs:
             echo "slot=evening" >> $GITHUB_OUTPUT
           fi
 
-      - name: Trigger news generation
+      - name: Trigger English news generation
         run: |
           SLOT="${{ steps.slot.outputs.slot }}"
-          echo "Triggering $SLOT news generation..."
+          echo "Triggering English $SLOT news generation..."
           RESPONSE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
             -X POST \
             -H "Content-Type: application/json" \
+            -d '{"language":"en"}' \
             "${{ secrets.BACKEND_URL }}/api/generate/$SLOT")
           echo "HTTP status: $RESPONSE"
           cat /tmp/response.json
@@ -49,4 +50,21 @@ jobs:
             echo "Error: backend returned $RESPONSE"
             exit 1
           fi
-          echo "Generation accepted by backend."
+          echo "English generation accepted by backend."
+
+      - name: Trigger Arabic news generation (morning only)
+        if: ${{ github.event.schedule == '0 2 * * *' || (github.event_name == 'workflow_dispatch' && github.event.inputs.time_slot == 'morning') }}
+        run: |
+          echo "Triggering Arabic morning news generation..."
+          RESPONSE=$(curl -s -o /tmp/response-ar.json -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"language":"ar"}' \
+            "${{ secrets.BACKEND_URL }}/api/generate/morning")
+          echo "HTTP status: $RESPONSE"
+          cat /tmp/response-ar.json
+          if [ "$RESPONSE" != "200" ]; then
+            echo "Error: Arabic generation returned $RESPONSE"
+            exit 1
+          fi
+          echo "Arabic generation accepted by backend."
