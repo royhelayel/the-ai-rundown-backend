@@ -885,14 +885,14 @@ function buildStoryScript(story) {
 }
 
 async function pregenerateTTSForContent(content, label) {
-  const apiKey = process.env.FISH_AUDIO_API_KEY;
-  if (!apiKey) { console.log('⚠️  FISH_AUDIO_API_KEY not set — skipping TTS pre-gen'); return; }
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) { console.log('⚠️  ELEVENLABS_API_KEY not set — skipping TTS pre-gen'); return; }
 
   const stories = parseStoriesForTTS(content);
   if (!stories.length) return;
 
   console.log(`🔊 Pre-generating TTS for ${stories.length} stories (${label})...`);
-  const voiceId = process.env.FISH_AUDIO_VOICE_ID;
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'; // default: Rachel
 
   for (const story of stories) {
     try {
@@ -908,28 +908,25 @@ async function pregenerateTTSForContent(content, label) {
         continue;
       }
 
-      const fishRes = await fetch('https://api.fish.audio/v1/tts', {
+      const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'xi-api-key': apiKey,
           'Content-Type': 'application/json',
-          'model': 's2-pro',
         },
         body: JSON.stringify({
           text: text.trim(),
-          ...(voiceId ? { reference_id: voiceId } : {}),
-          format: 'mp3',
-          mp3_bitrate: 128,
-          latency: 'balanced',
+          model_id: 'eleven_turbo_v2',
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
         }),
       });
 
-      if (!fishRes.ok) {
-        console.warn(`  ✗ Fish Audio ${fishRes.status} for: ${story.headline.slice(0, 50)}`);
+      if (!elRes.ok) {
+        console.warn(`  ✗ ElevenLabs ${elRes.status} for: ${story.headline.slice(0, 50)}`);
         continue;
       }
 
-      const audioBuffer = Buffer.from(await fishRes.arrayBuffer());
+      const audioBuffer = Buffer.from(await elRes.arrayBuffer());
       const { error: uploadErr } = await supabaseAdmin.storage
         .from('tts-cache')
         .upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false });
@@ -937,8 +934,8 @@ async function pregenerateTTSForContent(content, label) {
       if (uploadErr) console.warn(`  ✗ Upload failed: ${uploadErr.message}`);
       else console.log(`  ✅ TTS cached: ${story.headline.slice(0, 50)}`);
 
-      // Small delay to stay inside Fish Audio rate limits
-      await new Promise(r => setTimeout(r, 500));
+      // Small delay to stay inside ElevenLabs rate limits
+      await new Promise(r => setTimeout(r, 300));
     } catch (err) {
       console.warn(`  ✗ TTS error: ${err.message}`);
     }
@@ -2088,7 +2085,7 @@ app.post('/admin/api/test-email', async (req, res) => {
   }
 });
 
-// ── TTS endpoint (Fish Audio with Supabase Storage cache) ──
+// ── TTS endpoint (ElevenLabs with Supabase Storage cache) ──
 app.post('/api/tts', async (req, res) => {
   const { text } = req.body;
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
@@ -2110,35 +2107,32 @@ app.post('/api/tts', async (req, res) => {
     }
   } catch {}
 
-  const apiKey = process.env.FISH_AUDIO_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'Fish Audio not configured' });
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'ElevenLabs not configured' });
 
-  const voiceId = process.env.FISH_AUDIO_VOICE_ID;
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'; // default: Rachel
 
   try {
-    const fishRes = await fetch('https://api.fish.audio/v1/tts', {
+    const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'xi-api-key': apiKey,
         'Content-Type': 'application/json',
-        'model': 's2-pro',
       },
       body: JSON.stringify({
         text: text.trim(),
-        ...(voiceId ? { reference_id: voiceId } : {}),
-        format: 'mp3',
-        mp3_bitrate: 128,
-        latency: 'balanced',
+        model_id: 'eleven_turbo_v2',
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
       }),
     });
 
-    if (!fishRes.ok) {
-      const errText = await fishRes.text();
-      console.error('Fish Audio error:', fishRes.status, errText);
-      return res.status(502).json({ error: 'Fish Audio request failed', fishStatus: fishRes.status, fishError: errText });
+    if (!elRes.ok) {
+      const errText = await elRes.text();
+      console.error('ElevenLabs error:', elRes.status, errText);
+      return res.status(502).json({ error: 'ElevenLabs request failed', elStatus: elRes.status, elError: errText });
     }
 
-    const audioBuffer = Buffer.from(await fishRes.arrayBuffer());
+    const audioBuffer = Buffer.from(await elRes.arrayBuffer());
 
     // Cache in Supabase Storage (fire-and-forget)
     supabaseAdmin.storage.from('tts-cache')
