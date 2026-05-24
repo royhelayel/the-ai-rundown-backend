@@ -2085,6 +2085,66 @@ app.post('/admin/api/test-email', async (req, res) => {
   }
 });
 
+// ── TTS URL endpoint: returns a signed Supabase CDN URL so the browser streams audio
+//    directly (no Render bandwidth), and generates + caches audio if not yet cached. ──
+app.post('/api/tts-url', async (req, res) => {
+  const { text } = req.body;
+  if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
+
+  const key = crypto.createHash('md5').update(text.trim()).digest('hex');
+  const fileName = `${key}.mp3`;
+
+  try {
+    // Check existence via list (metadata only, no file download)
+    const { data: files } = await supabaseAdmin.storage
+      .from('tts-cache')
+      .list('', { limit: 1, search: key });
+    const cached = !!(files?.some(f => f.name === fileName));
+
+    if (!cached) {
+      // Not in cache — generate with ElevenLabs then upload
+      const apiKey = process.env.ELEVENLABS_API_KEY;
+      if (!apiKey) return res.status(500).json({ error: 'ElevenLabs not configured' });
+      const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
+
+      const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+        method: 'POST',
+        headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: text.trim(),
+          model_id: 'eleven_turbo_v2',
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        }),
+      });
+
+      if (!elRes.ok) {
+        const errText = await elRes.text();
+        console.error('ElevenLabs error (tts-url):', elRes.status, errText);
+        return res.status(502).json({ error: 'TTS generation failed', elStatus: elRes.status });
+      }
+
+      const audioBuffer = Buffer.from(await elRes.arrayBuffer());
+      await supabaseAdmin.storage.from('tts-cache')
+        .upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false })
+        .catch(() => {}); // ignore duplicate upload race
+    }
+
+    // Return a signed URL valid for 1 hour — browser fetches audio directly from CDN
+    const { data: signedData, error: signErr } = await supabaseAdmin.storage
+      .from('tts-cache')
+      .createSignedUrl(fileName, 3600);
+
+    if (signErr || !signedData?.signedUrl) {
+      return res.status(500).json({ error: 'Failed to create signed URL' });
+    }
+
+    res.json({ url: signedData.signedUrl, cached });
+  } catch (err) {
+    console.error('TTS-URL error:', err.message);
+    return res.status(500).json({ error: 'TTS URL failed' });
+  }
+});
+
 // ── TTS endpoint (ElevenLabs with Supabase Storage cache) ──
 app.post('/api/tts', async (req, res) => {
   const { text } = req.body;
