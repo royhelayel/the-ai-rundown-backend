@@ -316,9 +316,11 @@ function isTier1(url) {
 }
 
 // ── Multi-outlet echo scoring ────────────────────────────────────────────────
-// Counts how many UNIQUE sources cover the same story as a given article.
+// For each article, counts how many UNIQUE sources cover the same story,
+// split into tier-1 vs non-tier-1 outlets.
 // Two articles are considered "same story" if their titles share ≥ 2 significant words.
-// Returns an array of unique-outlet counts, one per article (in the same order).
+// Returns { tier1Count, totalCount } per article (tier1Count includes the article itself
+// if it is from a tier-1 outlet; totalCount always ≥ 1).
 const STOP_WORDS = new Set([
   'the','and','for','are','but','not','you','all','can','was','one','our','out',
   'day','get','has','him','his','how','its','may','new','now','old','see','two',
@@ -338,13 +340,26 @@ function computeEchoScores(articles) {
   const tokenSets = articles.map(a => new Set(tokenize(a.title)));
 
   return articles.map((article, i) => {
-    const uniqueSources = new Set([article.source]);
+    const tier1Sources = new Set();
+    const allSources   = new Set([article.source || `src_${i}`]);
+
+    // Count this article's own source as tier-1 if applicable
+    if (isTier1(article.link)) tier1Sources.add(article.source || `src_${i}`);
+
     for (let j = 0; j < articles.length; j++) {
       if (i === j) continue;
       const sharedTokens = [...tokenSets[i]].filter(t => tokenSets[j].has(t)).length;
-      if (sharedTokens >= 2) uniqueSources.add(articles[j].source || `source_${j}`);
+      if (sharedTokens >= 2) {
+        const src = articles[j].source || `source_${j}`;
+        allSources.add(src);
+        if (isTier1(articles[j].link)) tier1Sources.add(src);
+      }
     }
-    return uniqueSources.size; // includes the article itself → always ≥ 1
+
+    return {
+      tier1Count: tier1Sources.size,  // tier-1 outlets covering same story (≥ 0)
+      totalCount: allSources.size,    // all outlets covering same story (≥ 1)
+    };
   });
 }
 
@@ -412,32 +427,52 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
   const urlList = Object.keys(scoreMap);
   const articleList = urlList.map(url => itemMap[url]);
 
-  // Compute multi-outlet echo scores: how many unique sources cover the same story
+  // Compute tier-1-aware echo scores: splits outlets into tier-1 vs non-tier-1
   const echoScores = computeEchoScores(articleList);
   const echoMap = {};
   urlList.forEach((url, i) => { echoMap[url] = echoScores[i]; });
 
-  // Final sort:
-  //   base score     = sum of (1/position) across queries (Google ranking signal)
-  //   tier-1 bonus   = +10 for major outlets (always beats niche at same base score)
-  //   echo bonus     = +8 × (unique outlet count - 1) — strongly surfaces stories
-  //                    covered by 3 outlets (+16) vs 1 outlet (+0)
+  // Final sort — three signals in descending priority:
+  //
+  //   1. Tier-1 echo  (+15 per tier-1 outlet covering the same story)
+  //      The strongest signal: Reuters + BBC + Bloomberg covering the same event
+  //      means it's globally significant, regardless of Google's US-optimised rank.
+  //
+  //   2. Non-tier-1 echo  (+3 per additional outlet)
+  //      Supporting signal: broad coverage matters but niche blogs shouldn't dominate.
+  //
+  //   3. Article is from a tier-1 outlet  (+8)
+  //      Prefer the Reuters version of a story over a blog repost of the same story.
+  //
+  //   4. Google position score  (tiebreaker only — small values, US-biased so kept light)
+  //      Breaks ties between otherwise equal articles without reintroducing US bias.
   const sorted = urlList
     .sort((a, b) => {
-      const scoreA = scoreMap[a] + (isTier1(a) ? 10 : 0) + (echoMap[a] - 1) * 8;
-      const scoreB = scoreMap[b] + (isTier1(b) ? 10 : 0) + (echoMap[b] - 1) * 8;
+      const ea = echoMap[a], eb = echoMap[b];
+      const scoreA = ea.tier1Count * 15
+                   + (ea.totalCount - ea.tier1Count) * 3
+                   + (isTier1(a) ? 8 : 0)
+                   + scoreMap[a];
+      const scoreB = eb.tier1Count * 15
+                   + (eb.totalCount - eb.tier1Count) * 3
+                   + (isTier1(b) ? 8 : 0)
+                   + scoreMap[b];
       return scoreB - scoreA;
     })
     .map(url => itemMap[url]);
 
-  // Format context — annotate stories covered by multiple outlets so Claude
-  // immediately knows which events are widely reported (likely major news).
+  // Format context — annotate stories so Claude immediately knows coverage breadth.
+  // Labels now distinguish tier-1 coverage from generic multi-outlet coverage.
   const context = sorted.map((item, i) => {
-    const url   = item.link;
-    const echo  = echoMap[url] || 1;
-    const label = echo >= 4 ? `[${echo} OUTLETS — MAJOR STORY] `
-                : echo >= 2 ? `[${echo} OUTLETS] `
-                : '';
+    const url    = item.link;
+    const echo   = echoMap[url] || { tier1Count: 0, totalCount: 1 };
+    const t1     = echo.tier1Count;
+    const total  = echo.totalCount;
+    const label  = t1 >= 3   ? `[${total} OUTLETS — ${t1} TIER-1 — MAJOR STORY] `
+                 : t1 >= 1   ? `[${total} OUTLETS — ${t1} TIER-1] `
+                 : total >= 4 ? `[${total} OUTLETS — MAJOR STORY] `
+                 : total >= 2 ? `[${total} OUTLETS] `
+                 : '';
     return `${label}[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${url}\nSummary: ${item.snippet || ''}`;
   }).join('\n\n');
 
@@ -563,8 +598,8 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     : 'Write 5–8 grouped stories from the results above.';
 
   const singleSourceRule = isRegional
-    ? '3. Single-source stories are acceptable for regional news — include any story that is newsworthy regardless of how many outlets covered it.'
-    : '3. Single-source stories should only be included if clearly significant and from a tier-1 outlet.';
+    ? '4. Single-source stories are acceptable for regional news — include any story that is newsworthy regardless of how many outlets covered it.'
+    : '4. Single-source stories should only be included if clearly significant and from a tier-1 outlet.';
 
   const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.${arabicInstruction}
 
@@ -583,8 +618,9 @@ For each major story group, use this EXACT format — no introduction, no preamb
 **Why this matters:** One or two sentences on broader significance and implications.
 
 ${storyCountInstruction} PRIORITISATION RULES:
-1. Articles labelled [4 OUTLETS — MAJOR STORY] or [3 OUTLETS] are widely reported — always include these, they are almost certainly significant events.
-2. Prefer stories covered by multiple outlets over single-source stories.
+1. Articles labelled with TIER-1 outlets (e.g. [3 OUTLETS — 3 TIER-1 — MAJOR STORY]) are globally significant — always include these first.
+2. Articles with broad multi-outlet coverage (e.g. [4 OUTLETS — MAJOR STORY]) are widely reported — include these unless clearly less important than tier-1 stories.
+3. Prefer stories covered by multiple outlets over single-source stories.
 ${singleSourceRule}
 Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories, include a sources section:
 
