@@ -886,6 +886,21 @@ ${sorted.map(item => `
   }
 }
 
+// Mirrors frontend cleanForTTS exactly — must stay in sync so MD5 cache keys align
+function cleanForTTS(text) {
+  return text
+    .replace(/\*\*(?:Coverage|التغطية|المصادر):\*\*[^\n]*/g, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/_([^_]+)_/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/·/g, ', ')
+    .replace(/\.{2,}/g, '.')
+    .replace(/[#*`[\]()]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 // ── Unreal Speech TTS helper ──
 // Uses /stream for texts ≤1000 chars (returns binary directly, ~0.3s latency).
 // Uses /speech for longer texts (returns JSON with OutputUri, then downloads).
@@ -950,13 +965,14 @@ function parseStoriesForTTS(raw) {
   }).filter(Boolean);
 }
 
-// Mirrors narrateStoryFrom() in the frontend
+// Mirrors buildStoryScript() + cleanForTTS() in the frontend — must stay in sync so MD5 cache keys align
 function buildStoryScript(story) {
-  const parts = [story.headline + '.'];
-  story.bullets.forEach(b => parts.push(b + '.'));
-  if (story.perspectives) parts.push('On the other hand... ' + story.perspectives + '.');
-  if (story.why) parts.push('Here is why this matters. ' + story.why + '.');
-  return parts.join(' ');
+  const cl = cleanForTTS;
+  const parts = [cl(story.headline) + '.'];
+  story.bullets.forEach(b => parts.push(cl(b) + '.'));
+  if (story.perspectives) parts.push('On the other hand, ' + cl(story.perspectives) + '.');
+  if (story.why) parts.push('Here is why this matters. ' + cl(story.why) + '.');
+  return parts.filter(Boolean).join(' ');
 }
 
 async function pregenerateTTSForContent(content, label) {
@@ -2183,6 +2199,71 @@ app.post('/api/tts-url', async (req, res) => {
   } catch (err) {
     console.error('TTS-URL error:', err.message);
     return res.status(500).json({ error: 'TTS URL failed' });
+  }
+});
+
+// ── TTS stream endpoint — returns audio bytes directly, no Supabase CDN round-trip ──
+// Cache hit:  downloads from Supabase (~300ms), streams to client
+// Cache miss: pipes Unreal Speech /stream response chunk-by-chunk to client (~200ms to first byte),
+//             uploads to Supabase in the background so the next request is a fast cache hit
+app.post('/api/tts-stream', async (req, res) => {
+  const { text } = req.body;
+  if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
+
+  const key = crypto.createHash('md5').update(text.trim()).digest('hex');
+  const fileName = `${key}.mp3`;
+
+  res.set('Content-Type', 'audio/mpeg');
+  res.set('Cache-Control', 'public, max-age=604800');
+
+  // Check cache
+  try {
+    const { data: cached } = await supabaseAdmin.storage.from('tts-cache').download(fileName);
+    if (cached) {
+      const buf = Buffer.from(await cached.arrayBuffer());
+      return res.send(buf);
+    }
+  } catch {}
+
+  // Cache miss — stream Unreal Speech /stream directly (≤1000 chars only; falls back for longer)
+  const trimmed = text.trim();
+  const apiKey = process.env.UNREALSPEECH_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'UNREALSPEECH_API_KEY not set' });
+
+  try {
+    if (trimmed.length <= 1000) {
+      const unrealRes = await fetch('https://api.v7.unrealspeech.com/stream', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ Text: trimmed, VoiceId: process.env.UNREALSPEECH_VOICE_ID || 'Scarlett', Bitrate: '192k', Speed: '0', Pitch: '1' }),
+      });
+      if (!unrealRes.ok) throw new Error(`Unreal Speech ${unrealRes.status}`);
+
+      // Pipe stream to client while collecting bytes for Supabase cache
+      const chunks = [];
+      const reader = unrealRes.body.getReader();
+      const pump = async () => {
+        const { done, value } = await reader.read();
+        if (done) {
+          res.end();
+          const buf = Buffer.concat(chunks);
+          supabaseAdmin.storage.from('tts-cache').upload(fileName, buf, { contentType: 'audio/mpeg', upsert: false }).catch(() => {});
+          return;
+        }
+        chunks.push(Buffer.from(value));
+        res.write(value);
+        pump();
+      };
+      return pump();
+    }
+
+    // Long text: fall back to buffered approach
+    const audioBuffer = await callUnrealSpeech(trimmed);
+    supabaseAdmin.storage.from('tts-cache').upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false }).catch(() => {});
+    return res.send(audioBuffer);
+  } catch (err) {
+    console.error('TTS stream error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'TTS stream failed' });
   }
 });
 
