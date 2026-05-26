@@ -886,6 +886,45 @@ ${sorted.map(item => `
   }
 }
 
+// ── Unreal Speech TTS helper ──
+// Uses /stream for texts ≤1000 chars (returns binary directly, ~0.3s latency).
+// Uses /speech for longer texts (returns JSON with OutputUri, then downloads).
+async function callUnrealSpeech(text) {
+  const apiKey = process.env.UNREALSPEECH_API_KEY;
+  if (!apiKey) throw new Error('UNREALSPEECH_API_KEY not set');
+  const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
+  const trimmed = text.trim();
+
+  if (trimmed.length <= 1000) {
+    const res = await fetch('https://api.v7.unrealspeech.com/stream', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '192k', Speed: '0', Pitch: '1' }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Unreal Speech error: ${res.status} — ${err}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  // Longer text: /speech returns JSON { OutputUri } → download from CDN
+  const res = await fetch('https://api.v7.unrealspeech.com/speech', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '192k', Speed: '0', Pitch: '1' }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Unreal Speech error: ${res.status} — ${err}`);
+  }
+  const { OutputUri } = await res.json();
+  if (!OutputUri) throw new Error('Unreal Speech: no OutputUri in response');
+  const audioRes = await fetch(OutputUri);
+  if (!audioRes.ok) throw new Error('Unreal Speech: failed to download audio from OutputUri');
+  return Buffer.from(await audioRes.arrayBuffer());
+}
+
 // ── TTS pre-generation helpers ──
 
 // Mirrors the frontend parseStories() exactly so cache keys align
@@ -921,14 +960,12 @@ function buildStoryScript(story) {
 }
 
 async function pregenerateTTSForContent(content, label) {
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) { console.log('⚠️  ELEVENLABS_API_KEY not set — skipping TTS pre-gen'); return; }
+  if (!process.env.UNREALSPEECH_API_KEY) { console.log('⚠️  UNREALSPEECH_API_KEY not set — skipping TTS pre-gen'); return; }
 
   const stories = parseStoriesForTTS(content);
   if (!stories.length) return;
 
   console.log(`🔊 Pre-generating TTS for ${stories.length} stories (${label})...`);
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'; // default: Rachel
 
   for (const story of stories) {
     try {
@@ -944,25 +981,13 @@ async function pregenerateTTSForContent(content, label) {
         continue;
       }
 
-      const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-        method: 'POST',
-        headers: {
-          'xi-api-key': apiKey,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          text: text.trim(),
-          model_id: 'eleven_turbo_v2',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-        }),
-      });
-
-      if (!elRes.ok) {
-        console.warn(`  ✗ ElevenLabs ${elRes.status} for: ${story.headline.slice(0, 50)}`);
+      let audioBuffer;
+      try {
+        audioBuffer = await callUnrealSpeech(text);
+      } catch (ttsErr) {
+        console.warn(`  ✗ Unreal Speech error for: ${story.headline.slice(0, 50)} — ${ttsErr.message}`);
         continue;
       }
-
-      const audioBuffer = Buffer.from(await elRes.arrayBuffer());
       const { error: uploadErr } = await supabaseAdmin.storage
         .from('tts-cache')
         .upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false });
@@ -2138,28 +2163,8 @@ app.post('/api/tts-url', async (req, res) => {
     const cached = !!(files?.some(f => f.name === fileName));
 
     if (!cached) {
-      // Not in cache — generate with ElevenLabs then upload
-      const apiKey = process.env.ELEVENLABS_API_KEY;
-      if (!apiKey) return res.status(500).json({ error: 'ElevenLabs not configured' });
-      const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM';
-
-      const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-        method: 'POST',
-        headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: text.trim(),
-          model_id: 'eleven_turbo_v2',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-        }),
-      });
-
-      if (!elRes.ok) {
-        const errText = await elRes.text();
-        console.error('ElevenLabs error (tts-url):', elRes.status, errText);
-        return res.status(502).json({ error: 'TTS generation failed', elStatus: elRes.status });
-      }
-
-      const audioBuffer = Buffer.from(await elRes.arrayBuffer());
+      // Not in cache — generate with Unreal Speech then upload
+      const audioBuffer = await callUnrealSpeech(text.trim());
       await supabaseAdmin.storage.from('tts-cache')
         .upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false })
         .catch(() => {}); // ignore duplicate upload race
@@ -2181,7 +2186,7 @@ app.post('/api/tts-url', async (req, res) => {
   }
 });
 
-// ── TTS endpoint (ElevenLabs with Supabase Storage cache) ──
+// ── TTS endpoint (Unreal Speech with Supabase Storage cache) ──
 app.post('/api/tts', async (req, res) => {
   const { text } = req.body;
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
@@ -2203,32 +2208,8 @@ app.post('/api/tts', async (req, res) => {
     }
   } catch {}
 
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'ElevenLabs not configured' });
-
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM'; // default: Rachel
-
   try {
-    const elRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text: text.trim(),
-        model_id: 'eleven_turbo_v2',
-        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-      }),
-    });
-
-    if (!elRes.ok) {
-      const errText = await elRes.text();
-      console.error('ElevenLabs error:', elRes.status, errText);
-      return res.status(502).json({ error: 'ElevenLabs request failed', elStatus: elRes.status, elError: errText });
-    }
-
-    const audioBuffer = Buffer.from(await elRes.arrayBuffer());
+    const audioBuffer = await callUnrealSpeech(text.trim());
 
     // Cache in Supabase Storage (fire-and-forget)
     supabaseAdmin.storage.from('tts-cache')
