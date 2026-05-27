@@ -2239,7 +2239,10 @@ app.post('/api/tts-stream', async (req, res) => {
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '192k', Speed: '0', Pitch: '1' }),
       });
-      if (!unrealRes.ok) throw new Error(`Unreal Speech ${unrealRes.status}`);
+      if (!unrealRes.ok) {
+        const errBody = await unrealRes.text().catch(() => '');
+        throw new Error(`Unreal Speech ${unrealRes.status}: ${errBody}`);
+      }
 
       // Pipe stream to client while collecting bytes for Supabase cache
       const chunks = [];
@@ -2265,7 +2268,7 @@ app.post('/api/tts-stream', async (req, res) => {
     return res.send(audioBuffer);
   } catch (err) {
     console.error('TTS stream error:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: 'TTS stream failed' });
+    if (!res.headersSent) res.status(500).json({ error: 'TTS stream failed', detail: err.message });
   }
 });
 
