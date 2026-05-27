@@ -2168,7 +2168,8 @@ app.post('/api/tts-url', async (req, res) => {
   const { text } = req.body;
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
 
-  const key = crypto.createHash('md5').update(text.trim()).digest('hex');
+  const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
+  const key = crypto.createHash('md5').update(`${voiceId}:${text.trim()}`).digest('hex');
   const fileName = `${key}.mp3`;
 
   try {
@@ -2210,7 +2211,8 @@ app.post('/api/tts-stream', async (req, res) => {
   const { text } = req.body;
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
 
-  const key = crypto.createHash('md5').update(text.trim()).digest('hex');
+  const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
+  const key = crypto.createHash('md5').update(`${voiceId}:${text.trim()}`).digest('hex');
   const fileName = `${key}.mp3`;
 
   res.set('Content-Type', 'audio/mpeg');
@@ -2235,7 +2237,7 @@ app.post('/api/tts-stream', async (req, res) => {
       const unrealRes = await fetch('https://api.v7.unrealspeech.com/stream', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ Text: trimmed, VoiceId: process.env.UNREALSPEECH_VOICE_ID || 'Scarlett', Bitrate: '192k', Speed: '0', Pitch: '1' }),
+        body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '192k', Speed: '0', Pitch: '1' }),
       });
       if (!unrealRes.ok) throw new Error(`Unreal Speech ${unrealRes.status}`);
 
@@ -2272,7 +2274,8 @@ app.post('/api/tts', async (req, res) => {
   const { text } = req.body;
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
 
-  const key = crypto.createHash('md5').update(text.trim()).digest('hex');
+  const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
+  const key = crypto.createHash('md5').update(`${voiceId}:${text.trim()}`).digest('hex');
   const fileName = `${key}.mp3`;
 
   try {
