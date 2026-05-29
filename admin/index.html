@@ -131,12 +131,22 @@
 <!-- ── OVERVIEW ── -->
 <div id="page-overview" class="page active">
 
-  <!-- Active now hero card -->
+  <!-- Active now hero cards -->
   <div class="cards" style="margin-bottom:1.25rem;">
     <div class="card" style="border-left:4px solid #6366f1;">
       <div class="card-label">🟢 On the Website Right Now</div>
       <div class="card-value grad" id="s-active-now">—</div>
-      <div class="card-sub" id="s-active-sub">unique users · last 5 min · refreshes every 30s</div>
+      <div class="card-sub" id="s-active-sub">refreshes every 30s</div>
+    </div>
+    <div class="card" style="border-left:4px solid #16a34a;">
+      <div class="card-label">👤 Signed-In Users</div>
+      <div class="card-value" style="font-size:2rem;font-weight:900;color:#15803d;" id="s-active-signedin">—</div>
+      <div class="card-sub">active in last 90s</div>
+    </div>
+    <div class="card" style="border-left:4px solid #d97706;">
+      <div class="card-label">👻 Guest Users</div>
+      <div class="card-value" style="font-size:2rem;font-weight:900;color:#b45309;" id="s-active-guests">—</div>
+      <div class="card-sub">active in last 90s</div>
     </div>
   </div>
 
@@ -533,9 +543,11 @@ async function loadOverview() {
 async function refreshActiveNow() {
   try {
     const d = await api('/active-now');
-    document.getElementById('s-active-now').textContent = d.count ?? '—';
+    document.getElementById('s-active-now').textContent      = d.total ?? '—';
+    document.getElementById('s-active-signedin').textContent = d.signedIn ?? '—';
+    document.getElementById('s-active-guests').textContent   = d.guests ?? '—';
     document.getElementById('s-active-sub').textContent =
-      `unique users · last 5 min · refreshed ${new Date(d.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
+      `refreshed ${new Date(d.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
   } catch(e) { /* silent */ }
 }
 

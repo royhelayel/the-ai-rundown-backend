@@ -1878,6 +1878,27 @@ app.post('/api/auth/resend-verification', async (req, res) => {
   }
 });
 
+// ── In-memory active sessions ─────────────────────────────────────────────────
+// Map: sessionId → { userId: string|null, lastSeen: ms }
+// Sessions expire after 120s of silence; cleaned up every 2 minutes.
+// This is intentionally in-memory — no DB writes for heartbeats, restarts reset
+// to 0 but the counter rebuilds within one heartbeat cycle (60s).
+const _activeSessions = new Map();
+setInterval(() => {
+  const cutoff = Date.now() - 120_000;
+  for (const [sid, s] of _activeSessions) {
+    if (s.lastSeen < cutoff) _activeSessions.delete(sid);
+  }
+}, 120_000);
+
+// Heartbeat — called by every browser tab every 60s (guests + signed-in users)
+app.post('/api/metrics/heartbeat', (req, res) => {
+  const { sessionId, userId } = req.body || {};
+  if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
+  _activeSessions.set(sessionId, { userId: userId || null, lastSeen: Date.now() });
+  res.json({ ok: true });
+});
+
 // ==========================================
 // ENDPOINT 4: TRACK BEHAVIORAL METRICS
 // ==========================================
@@ -2120,14 +2141,16 @@ app.get('/admin/api/overview', async (req, res) => {
 });
 
 // Lightweight active-now endpoint — polled every 30s by the admin dashboard
-app.get('/admin/api/active-now', async (req, res) => {
-  try {
-    const { data } = await supabaseAdmin
-      .from('behavioral_metrics')
-      .select('user_id')
-      .gte('created_at', new Date(Date.now() - 5*60*1000).toISOString());
-    res.json({ count: new Set((data||[]).map(r => r.user_id)).size, ts: new Date().toISOString() });
-  } catch (error) { res.status(500).json({ count: 0, error: error.message }); }
+// Uses the in-memory _activeSessions map; no DB query needed.
+app.get('/admin/api/active-now', (req, res) => {
+  const cutoff = Date.now() - 90_000; // 90s window
+  let guests = 0, signedIn = 0;
+  for (const [, s] of _activeSessions) {
+    if (s.lastSeen >= cutoff) {
+      if (s.userId) signedIn++; else guests++;
+    }
+  }
+  res.json({ guests, signedIn, total: guests + signedIn, ts: new Date().toISOString() });
 });
 
 app.get('/admin/api/news', async (req, res) => {
