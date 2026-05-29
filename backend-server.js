@@ -2113,7 +2113,9 @@ app.get('/admin/api/overview', async (req, res) => {
     // ── Sources: count totals + rank outlets by citation frequency ───────────
     const buildSources = (rows) => {
       let en = 0, ar = 0;
-      const outletMap = {}; // { outletName: { en, ar } }
+      // outletMap: { name: { en, ar, domain } }
+      // domain is extracted from the first article URL seen for that outlet
+      const outletMap = {};
 
       (rows || []).forEach(s => {
         const articles = Array.isArray(s.source_articles) ? s.source_articles : [];
@@ -2122,13 +2124,17 @@ app.get('/admin/api/overview', async (req, res) => {
           const name = (a.source || '').trim();
           if (!name) return;
           if (isAr) ar++; else en++;
-          if (!outletMap[name]) outletMap[name] = { en: 0, ar: 0 };
+          if (!outletMap[name]) {
+            let domain = null;
+            try { domain = new URL(a.url || '').hostname.replace(/^www\./, ''); } catch {}
+            outletMap[name] = { en: 0, ar: 0, domain };
+          }
           if (isAr) outletMap[name].ar++; else outletMap[name].en++;
         });
       });
 
       const outlets = Object.entries(outletMap)
-        .map(([outlet, v]) => ({ outlet, en: v.en, ar: v.ar, total: v.en + v.ar }))
+        .map(([outlet, v]) => ({ outlet, en: v.en, ar: v.ar, total: v.en + v.ar, domain: v.domain || null }))
         .sort((a, b) => b.total - a.total)
         .slice(0, 50); // top 50 outlets
 

@@ -683,9 +683,14 @@ function renderOutlets() {
   </tr></thead><tbody>`;
   outlets.forEach((r, i) => {
     const pct = Math.round(r.total / max * 100);
+    const favicon = r.domain ? `<img src="https://www.google.com/s2/favicons?domain=${r.domain}&sz=32" width="16" height="16" style="border-radius:3px;flex-shrink:0;object-fit:contain;vertical-align:middle;" onerror="this.style.display='none'" />` : '';
+    const nameInner = `<span style="display:flex;align-items:center;gap:7px;">${favicon}<strong>${r.outlet}</strong></span>`;
+    const nameCell  = r.domain
+      ? `<a href="https://${r.domain}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;color:inherit;display:flex;align-items:center;gap:7px;">${favicon}<strong style="color:#111827;">${r.outlet}</strong><span style="font-size:0.68rem;color:#9ca3af;">↗</span></a>`
+      : nameInner;
     h += `<tr>
       <td style="color:#9ca3af;font-size:0.8rem;">${i+1}</td>
-      <td><strong>${r.outlet}</strong></td>
+      <td>${nameCell}</td>
       <td>
         <div style="display:flex;align-items:center;gap:0.5rem;">
           <div style="flex:1;background:#f1f5f9;border-radius:4px;height:6px;overflow:hidden;min-width:60px;">
