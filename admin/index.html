@@ -130,28 +130,83 @@
 
 <!-- ── OVERVIEW ── -->
 <div id="page-overview" class="page active">
-  <div class="cards">
-    <div class="card"><div class="card-label">Total Users</div><div class="card-value grad" id="s-users">—</div><div class="card-sub" id="s-users-sub"></div></div>
-    <div class="card"><div class="card-label">News Generated Today</div><div class="card-value grad" id="s-news">—</div><div class="card-sub" id="s-news-sub"></div></div>
-    <div class="card"><div class="card-label">Email Subscribers</div><div class="card-value grad" id="s-subs">—</div><div class="card-sub" id="s-subs-sub"></div></div>
-    <div class="card"><div class="card-label">Active Right Now</div><div class="card-value grad" id="s-active">—</div><div class="card-sub">last 10 minutes</div></div>
-  </div>
 
-  <div class="grid-2">
-    <div class="section">
-      <div class="section-title"><span class="dot"></span>Today's Generation Status</div>
-      <div id="status-grid" style="overflow-x:auto;"><div class="loading">Loading…</div></div>
-    </div>
-    <div class="section">
-      <div class="section-title"><span class="dot"></span>Email Subscriptions by Time Slot</div>
-      <div id="sub-bars" class="sub-bars"><div class="loading">Loading…</div></div>
+  <!-- Active now hero card -->
+  <div class="cards" style="margin-bottom:1.25rem;">
+    <div class="card" style="border-left:4px solid #6366f1;">
+      <div class="card-label">🟢 On the Website Right Now</div>
+      <div class="card-value grad" id="s-active-now">—</div>
+      <div class="card-sub" id="s-active-sub">unique users · last 5 min · refreshes every 30s</div>
     </div>
   </div>
 
+  <!-- Users table -->
   <div class="section">
-    <div class="section-title"><span class="dot"></span>Top Categories (All Time)</div>
-    <div class="chart-wrap"><canvas id="chart-cats"></canvas></div>
+    <div class="section-title"><span class="dot"></span>Users</div>
+    <div class="table-wrap">
+      <table class="data-table" id="users-period-table">
+        <thead><tr><th></th><th>Today</th><th>This Week</th><th>This Month</th><th>This Quarter</th><th>This Year</th><th>Since Inception</th></tr></thead>
+        <tbody>
+          <tr id="row-signups"><td style="font-weight:700;color:#374151;">📝 Signed Up</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+          <tr id="row-verified"><td style="font-weight:700;color:#374151;">✅ Verified</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
+
+  <!-- Generation status — 7 days -->
+  <div class="section">
+    <div class="section-title"><span class="dot"></span>Generation Status — Last 7 Days</div>
+    <div style="overflow-x:auto;" id="gen-grid-wrap"><div class="loading">Loading…</div></div>
+  </div>
+
+  <!-- Top categories -->
+  <div class="section">
+    <div class="section-title" style="justify-content:space-between;">
+      <span style="display:flex;align-items:center;gap:0.5rem;"><span class="dot"></span>Top Categories</span>
+      <select id="cats-period" onchange="renderTopCats()" style="padding:0.3rem 0.6rem;border:1px solid #e2e8f0;border-radius:6px;font-size:0.78rem;color:#374151;background:white;outline:none;font-weight:600;">
+        <option value="today">Today</option>
+        <option value="week">This Week</option>
+        <option value="month">This Month</option>
+        <option value="quarter">This Quarter</option>
+        <option value="year">This Year</option>
+        <option value="total" selected>Since Inception</option>
+      </select>
+    </div>
+    <div class="table-wrap" id="cats-wrap"><div class="loading">Loading…</div></div>
+  </div>
+
+  <!-- News generated per category -->
+  <div class="section">
+    <div class="section-title" style="justify-content:space-between;">
+      <span style="display:flex;align-items:center;gap:0.5rem;"><span class="dot"></span>News Generated per Category</span>
+      <select id="news-cat-period" onchange="renderNewsCats()" style="padding:0.3rem 0.6rem;border:1px solid #e2e8f0;border-radius:6px;font-size:0.78rem;color:#374151;background:white;outline:none;font-weight:600;">
+        <option value="today">Today</option>
+        <option value="week">This Week</option>
+        <option value="month">This Month</option>
+        <option value="quarter">This Quarter</option>
+        <option value="year">This Year</option>
+        <option value="total" selected>Since Inception</option>
+      </select>
+    </div>
+    <div class="table-wrap" id="news-cats-wrap"><div class="loading">Loading…</div></div>
+  </div>
+
+  <!-- Sources count -->
+  <div class="section">
+    <div class="section-title"><span class="dot"></span>Cited Sources Count</div>
+    <div class="table-wrap">
+      <table class="data-table" id="sources-period-table">
+        <thead><tr><th></th><th>Today</th><th>This Week</th><th>This Month</th><th>This Quarter</th><th>This Year</th><th>Since Inception</th></tr></thead>
+        <tbody>
+          <tr id="row-src-en"><td style="font-weight:700;color:#374151;">🇬🇧 English</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+          <tr id="row-src-ar"><td style="font-weight:700;color:#374151;">🇸🇦 Arabic</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+          <tr id="row-src-total" style="background:#f8fafc;"><td style="font-weight:800;color:#111827;">Total</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
 </div>
 
 <!-- ── NEWS ── -->
@@ -436,68 +491,156 @@ const CHART_OPTS = {
 };
 
 // ── OVERVIEW ──
+let _ovData = null;
+let _activeNowTimer = null;
+
 async function loadOverview() {
   try {
     const d = await api('/overview');
+    _ovData = d;
 
-    document.getElementById('s-users').textContent   = d.users.total;
-    document.getElementById('s-users-sub').textContent = `+${d.users.new_7d} this week · ${d.users.verified} verified`;
-    document.getElementById('s-news').textContent    = d.news.total_today + '/' + d.news.expected;
-    document.getElementById('s-news-sub').textContent = Math.round(d.news.total_today / d.news.expected * 100) + '% of daily target';
-    const totalSubs = Object.values(d.email_subs).reduce((a,b) => a+b, 0);
-    document.getElementById('s-subs').textContent    = totalSubs;
-    document.getElementById('s-subs-sub').textContent = 'across all time slots';
-    document.getElementById('s-active').textContent  = d.active_users;
+    // Users table
+    const PERIODS = ['today','week','month','quarter','year','total'];
+    const fillRow = (rowId, obj) => {
+      const tr = document.getElementById(rowId);
+      PERIODS.forEach((p, i) => { tr.cells[i+1].textContent = fmtNum(obj[p] ?? 0); });
+    };
+    fillRow('row-signups', d.signups);
+    fillRow('row-verified', d.verified);
 
-    renderStatusGrid(d.news.status);
-    renderSubBars(d.email_subs);
+    // Generation grid
+    renderGenGrid(d.genGrid, d.last7Days);
 
-    destroyChart('chart-cats');
-    if (d.top_categories?.length) {
-      new Chart('chart-cats', {
-        type: 'bar',
-        data: { labels: d.top_categories.map(c => c.category), datasets: [{ data: d.top_categories.map(c => c.views), backgroundColor: 'rgba(99,102,241,0.75)', borderRadius: 6, borderSkipped: false }] },
-        options: { ...CHART_OPTS }
-      });
-    }
+    // Top categories
+    renderTopCats();
+
+    // News per category
+    renderNewsCats();
+
+    // Sources table
+    const srcFillRow = (rowId, key) => {
+      const tr = document.getElementById(rowId);
+      PERIODS.forEach((p, i) => { tr.cells[i+1].textContent = fmtNum(d.sources[p]?.[key] ?? 0); });
+    };
+    srcFillRow('row-src-en',    'en');
+    srcFillRow('row-src-ar',    'ar');
+    srcFillRow('row-src-total', 'total');
+
     stamp();
   } catch(e) { console.error('overview', e); }
+
+  // Active-now: poll every 30s
+  if (_activeNowTimer) clearInterval(_activeNowTimer);
+  await refreshActiveNow();
+  _activeNowTimer = setInterval(refreshActiveNow, 30000);
 }
 
-function renderStatusGrid(status) {
-  const slots = ['Morning','Noon','Afternoon','Evening','Night'];
-  const cats  = ['World News','Technology','Business','Politics','Sports','Entertainment','Science','Health'];
-  let h = '<table class="status-table"><thead><tr><th>Category</th>';
-  slots.forEach(s => h += `<th>${s}</th>`);
-  h += '</tr></thead><tbody>';
+async function refreshActiveNow() {
+  try {
+    const d = await api('/active-now');
+    document.getElementById('s-active-now').textContent = d.count ?? '—';
+    document.getElementById('s-active-sub').textContent =
+      `unique users · last 5 min · refreshed ${new Date(d.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
+  } catch(e) { /* silent */ }
+}
+
+function renderGenGrid(genGrid, last7Days) {
+  if (!genGrid || !last7Days) { document.getElementById('gen-grid-wrap').innerHTML = '<div class="empty">No data</div>'; return; }
+
+  const cats = ['World News','Technology','Business','Politics','Sports','Entertainment','Science','Health','UAE','KSA','QAT','LEB'];
+  const fmtDay = (d) => { const dt = new Date(d + 'T12:00:00Z'); return dt.toLocaleDateString('en', {weekday:'short',month:'short',day:'numeric'}); };
+
+  // Column header: each day has 4 sub-cols (☀️EN ☀️AR 🌙EN 🌙AR)
+  let h = `<table class="status-table"><thead>
+    <tr>
+      <th rowspan="2" style="vertical-align:bottom;">Category</th>
+      ${last7Days.map(d => `<th colspan="4" style="border-left:2px solid #e2e8f0;">${fmtDay(d)}</th>`).join('')}
+    </tr>
+    <tr>
+      ${last7Days.map(() => `
+        <th style="font-size:0.6rem;border-left:2px solid #e2e8f0;">☀️EN</th>
+        <th style="font-size:0.6rem;">☀️AR</th>
+        <th style="font-size:0.6rem;">🌙EN</th>
+        <th style="font-size:0.6rem;">🌙AR</th>
+      `).join('')}
+    </tr>
+  </thead><tbody>`;
+
   cats.forEach(cat => {
     h += `<tr><td>${cat}</td>`;
-    slots.forEach(slot => {
-      const s = status?.[cat]?.[slot];
-      if (s?.generated) {
-        const t = s.at ? new Date(s.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '✓';
-        h += `<td><span class="s-ok">✓ ${t}</span></td>`;
-      } else {
-        h += `<td><span class="s-mis">—</span></td>`;
-      }
+    last7Days.forEach((day, di) => {
+      const g = genGrid[day] || {};
+      const bdr = di === 0 ? 'border-left:2px solid #e2e8f0;' : 'border-left:2px solid #e2e8f0;';
+      const cell = (ok) => ok ? `<td style="${di===0?bdr:''}"><span class="s-ok" style="font-size:1rem;">✓</span></td>` : `<td style="${di===0?bdr:''}"><span class="s-mis">—</span></td>`;
+      h += cell(g.Morning?.en);
+      h += `<td>${g.Morning?.ar ? '<span class="s-ok" style="font-size:1rem;">✓</span>' : '<span class="s-mis">—</span>'}</td>`;
+      h += `<td>${g.Evening?.en ? '<span class="s-ok" style="font-size:1rem;">✓</span>' : '<span class="s-mis">—</span>'}</td>`;
+      h += `<td>${g.Evening?.ar ? '<span class="s-ok" style="font-size:1rem;">✓</span>' : '<span class="s-mis">—</span>'}</td>`;
     });
     h += '</tr>';
   });
+
   h += '</tbody></table>';
-  document.getElementById('status-grid').innerHTML = h;
+  document.getElementById('gen-grid-wrap').innerHTML = h;
 }
 
-function renderSubBars(subs) {
-  const slots = [['morning','Morning'],['noon','Noon'],['afternoon','Afternoon'],['evening','Evening'],['night','Night']];
-  const max = Math.max(...Object.values(subs), 1);
-  document.getElementById('sub-bars').innerHTML = slots.map(([k, lbl]) => {
-    const n = subs[k] || 0;
-    return `<div class="sub-row">
-      <span class="sub-lbl">${lbl}</span>
-      <div class="sub-track"><div class="sub-fill" style="width:${Math.round(n/max*100)}%"></div></div>
-      <span class="sub-cnt">${n}</span>
-    </div>`;
-  }).join('');
+function renderTopCats() {
+  if (!_ovData) return;
+  const period = document.getElementById('cats-period').value;
+  const rows = _ovData.topCats?.[period] || [];
+  if (!rows.length) { document.getElementById('cats-wrap').innerHTML = '<div class="empty">No data for this period.</div>'; return; }
+  const max = rows[0].total || 1;
+  let h = `<table class="data-table"><thead><tr>
+    <th>#</th><th>Category</th><th>Total Views</th><th>Read</th><th>Audio</th><th>Share</th>
+  </tr></thead><tbody>`;
+  rows.forEach((r, i) => {
+    const pct = Math.round(r.total / max * 100);
+    const readPct  = r.total > 0 ? Math.round(r.read  / r.total * 100) : 0;
+    const audioPct = r.total > 0 ? Math.round(r.audio / r.total * 100) : 0;
+    h += `<tr>
+      <td style="color:#9ca3af;font-size:0.8rem;">${i+1}</td>
+      <td><strong>${r.category}</strong></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <div style="flex:1;background:#f1f5f9;border-radius:4px;height:6px;overflow:hidden;min-width:60px;">
+            <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#6366f1,#ec4899);border-radius:4px;"></div>
+          </div>
+          <span style="font-weight:700;font-size:0.82rem;min-width:30px;">${fmtNum(r.total)}</span>
+        </div>
+      </td>
+      <td style="font-size:0.8rem;color:#374151;">${fmtNum(r.read)} <span style="color:#9ca3af;">(${readPct}%)</span></td>
+      <td style="font-size:0.8rem;color:#374151;">${fmtNum(r.audio)} <span style="color:#9ca3af;">(${audioPct}%)</span></td>
+      <td style="font-size:0.78rem;color:#9ca3af;">${pct}%</td>
+    </tr>`;
+  });
+  h += '</tbody></table>';
+  document.getElementById('cats-wrap').innerHTML = h;
+}
+
+function renderNewsCats() {
+  if (!_ovData) return;
+  const period = document.getElementById('news-cat-period').value;
+  const rows = _ovData.newsPerCat?.[period] || [];
+  if (!rows.length) { document.getElementById('news-cats-wrap').innerHTML = '<div class="empty">No data for this period.</div>'; return; }
+  let h = `<table class="data-table"><thead><tr>
+    <th>Category</th><th>🇬🇧 English</th><th>🇸🇦 Arabic</th><th>Total</th>
+  </tr></thead><tbody>`;
+  rows.forEach(r => {
+    h += `<tr>
+      <td><strong>${r.category}</strong></td>
+      <td>${r.en}</td>
+      <td>${r.ar}</td>
+      <td style="font-weight:700;">${r.total}</td>
+    </tr>`;
+  });
+  // Totals row
+  const totEn = rows.reduce((s,r) => s+r.en, 0);
+  const totAr = rows.reduce((s,r) => s+r.ar, 0);
+  h += `<tr style="background:#f8fafc;font-weight:800;">
+    <td>Total</td><td>${totEn}</td><td>${totAr}</td><td>${totEn+totAr}</td>
+  </tr>`;
+  h += '</tbody></table>';
+  document.getElementById('news-cats-wrap').innerHTML = h;
 }
 
 // ── NEWS ──

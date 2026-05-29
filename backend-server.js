@@ -363,7 +363,52 @@ function computeEchoScores(articles) {
   });
 }
 
-async function buildSearchContext(categoryQuery, day, language = 'en', isRegional = false) {
+// ── World News / Politics: distinct topic-angle queries instead of near-identical suffixes ──
+// Each query targets a different news angle so Serper returns diverse, non-duplicate results.
+const WORLD_NEWS_ANGLE_QUERIES = (dateLabel) => [
+  `top breaking world news today major stories ${dateLabel}`,
+  `international conflict military war ceasefire security latest ${dateLabel}`,
+  `global diplomacy summit talks deal agreement ${dateLabel}`,
+  `world economy trade sanctions markets finance policy ${dateLabel}`,
+  `Europe Middle East Asia Africa Americas developments ${dateLabel}`,
+];
+
+const POLITICS_ANGLE_QUERIES = (base, dateLabel) => [
+  `${base} ${dateLabel}`,
+  `government legislation elections parliament policy ${dateLabel}`,
+  `political crisis opposition protest vote ${dateLabel}`,
+  `foreign policy diplomacy relations sanctions ${dateLabel}`,
+  `${base} latest breaking analysis`,
+];
+
+// ── Phase 2: ask Claude Haiku to generate targeted follow-up search queries ──
+// Takes the top headlines from Phase 1 and produces 3 queries aimed at stories
+// that the initial broad queries likely missed (niche angles, regional stories, fast-moving events).
+async function generateAdaptiveQueries(headlines, categoryQuery, dateLabel) {
+  try {
+    const headlineList = headlines.slice(0, 10).map((h, i) => `${i + 1}. ${h}`).join('\n');
+    const prompt = `You are a news search specialist. Here are the top stories already found for "${categoryQuery}" on ${dateLabel}:
+${headlineList}
+
+Generate exactly 3 targeted search queries to find ADDITIONAL important stories NOT already covered by the headlines above. Focus on:
+- Major stories that may have been missed (different regions, angles, or topics)
+- Fast-moving situations with new developments
+- Stories that are trending but not yet widely picked up
+
+Return ONLY 3 search queries, one per line, no numbering, no explanation, no preamble.`;
+
+    const data = await callClaude(prompt, 150);
+    const text = data.content?.filter(c => c.type === 'text').map(c => c.text).join('') || '';
+    const queries = text.trim().split('\n').map(l => l.trim()).filter(l => l.length > 5).slice(0, 3);
+    console.log(`🔍 Phase 2 adaptive queries for "${categoryQuery}": ${queries.join(' | ')}`);
+    return queries;
+  } catch (err) {
+    console.warn(`⚠️  Phase 2 query generation failed: ${err.message}`);
+    return [];
+  }
+}
+
+async function buildSearchContext(categoryQuery, day, language = 'en', isRegional = false, category = '') {
   // Format day as human-readable for queries (e.g. "May 14 2026")
   const dateLabel = day
     ? new Date(day + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
@@ -375,22 +420,35 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
   // Using gl='ae' routes to a sparse UAE-only index and returns near-zero results for global topics.
   const gl = 'us';
 
-  const queries = language === 'ar' ? [
-    `${categoryQuery} ${dateLabel}`,
-    `${categoryQuery} آخر الأخبار اليوم`,
-    `${categoryQuery} أبرز الأحداث عاجل`,
-    `${categoryQuery} تطورات مستجدات`,
-    `${categoryQuery} تقارير وتحليلات`,
-  ] : [
-    `${categoryQuery} news ${dateLabel}`,
-    `${categoryQuery} latest breaking news`,
-    `${categoryQuery} update ${dateLabel}`,
-    `${categoryQuery} top stories today`,
-    `${categoryQuery} major developments`,
-  ];
+  // ── Build Phase 1 queries ─────────────────────────────────────────────────
+  // World News and Politics get distinct topic-angle queries (avoids 75% duplicate results
+  // from near-identical suffix variants). All other categories get diversified suffixes.
+  let queries;
+  if (language === 'ar') {
+    queries = [
+      `${categoryQuery} ${dateLabel}`,
+      `${categoryQuery} آخر الأخبار اليوم`,
+      `${categoryQuery} أبرز الأحداث عاجل`,
+      `${categoryQuery} تطورات مستجدات`,
+      `${categoryQuery} تقارير وتحليلات`,
+    ];
+  } else if (category === 'World News') {
+    queries = WORLD_NEWS_ANGLE_QUERIES(dateLabel);
+  } else if (category === 'Politics') {
+    queries = POLITICS_ANGLE_QUERIES(categoryQuery, dateLabel);
+  } else {
+    // Diversified suffixes — each pulls a different slice of results vs. near-identical variants
+    queries = [
+      `${categoryQuery} news ${dateLabel}`,
+      `${categoryQuery} breaking update latest`,
+      `${categoryQuery} analysis reaction development`,
+      `${categoryQuery} top stories today ${dateLabel}`,
+      `${categoryQuery} major announcement impact`,
+    ];
+  }
 
-  // Regional categories have fewer outlets — fetch more results per query to compensate
-  const numPerQuery = isRegional ? 30 : 20;
+  // Unified 30 results per query for all categories (was 20 for non-regional)
+  const numPerQuery = 30;
   let results = await Promise.all(queries.map(q => serperSearch(q, numPerQuery, day, gl, hl).catch(() => ({ news: [] }))));
 
   // Merge results while preserving Google's ranking signal.
@@ -410,6 +468,25 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
   const scoreMap = {};   // url → cumulative score
   const itemMap  = {};   // url → article object (first seen wins for metadata)
   mergeIntoMaps(results, scoreMap, itemMap);
+
+  // ── Phase 2: Adaptive follow-up queries (English non-regional only) ───────
+  // Claude Haiku looks at Phase 1 headlines and generates 3 targeted follow-up
+  // queries aimed at important stories the initial broad queries likely missed.
+  if (!isRegional && language === 'en' && Object.keys(scoreMap).length > 0) {
+    const phase1Headlines = Object.values(itemMap).slice(0, 10).map(a => a.title).filter(Boolean);
+    if (phase1Headlines.length >= 3) {
+      const followUpQueries = await generateAdaptiveQueries(phase1Headlines, categoryQuery, dateLabel);
+      if (followUpQueries.length > 0) {
+        const followUpResults = await Promise.all(
+          followUpQueries.map(q => serperSearch(q, numPerQuery, day, gl, hl).catch(() => ({ news: [] })))
+        );
+        const beforeCount = Object.keys(scoreMap).length;
+        mergeIntoMaps(followUpResults, scoreMap, itemMap);
+        const afterCount = Object.keys(scoreMap).length;
+        console.log(`🔍 Phase 2 added ${afterCount - beforeCount} new unique articles (total: ${afterCount})`);
+      }
+    }
+  }
 
   // ── Fallback: if date-pinned search returned nothing, retry with a wider 7-day window ──
   if (Object.keys(scoreMap).length === 0 && day) {
@@ -580,7 +657,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   if (prebuiltContext) {
     searchContext = prebuiltContext;
   } else {
-    const { context, articles } = await buildSearchContext(categoryQuery, day, language, isRegional);
+    const { context, articles } = await buildSearchContext(categoryQuery, day, language, isRegional, category);
     searchContext = context;
     sourceArticles = articles;
   }
@@ -672,12 +749,13 @@ For each story in the digest, use this EXACT format — no preamble:
 - One key fact — short, direct sentence under 20 words.
 - Second key detail — short, direct sentence under 20 words.
 - Third point if critical — short, direct sentence under 20 words.
+**Summary:** Write 3–4 complete sentences here. Go deeper than the bullets — add context, background, and nuance from the digest. Cover additional angles or details the bullets omit. This is the paragraph a reader wants when they want the full story. (REQUIRED — always include for every story.)
 **Why this matters:** One sentence, maximum impact.
-**Perspectives differ:** Include this line if the digest includes it for this story — condense to one punchy sentence.
+**Perspectives differ:** Include this line only if the digest includes it for this story — condense to one punchy sentence. Omit entirely if not applicable.
 
-Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence.`;
+Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence. The **Summary:** field is mandatory for every single story — never skip it.`;
 
-  const data = await callClaude(prompt, 3500);
+  const data = await callClaude(prompt, 5000);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
   const summary = cleanRawSummary(rawSummary);
 
@@ -1869,59 +1947,172 @@ app.get('/admin', (req, res) => {
 app.get('/admin/api/overview', async (req, res) => {
   try {
     const today = getTodayDate();
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const now   = new Date();
 
+    // ── Period boundaries ─────────────────────────────────────────────────────
+    // "Today" uses UAE midnight (UTC+4). All others use UTC calendar boundaries.
+    const todayStart   = new Date(today + 'T00:00:00+04:00').toISOString();
+    const weekStartD   = new Date(); weekStartD.setUTCHours(0,0,0,0);
+    const dow          = weekStartD.getUTCDay(); // 0=Sun
+    weekStartD.setUTCDate(weekStartD.getUTCDate() - (dow === 0 ? 6 : dow - 1));
+    const weekStart    = weekStartD.toISOString();
+    const monthStart   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    const quarterStart = new Date(Date.UTC(now.getUTCFullYear(), Math.floor(now.getUTCMonth()/3)*3, 1)).toISOString();
+    const yearStart    = new Date(Date.UTC(now.getUTCFullYear(), 0, 1)).toISOString();
+
+    // Last 7 calendar days in UAE timezone
+    const last7Days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(); d.setDate(d.getDate() - (6 - i));
+      return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(d);
+    });
+
+    // ── Parallel queries ──────────────────────────────────────────────────────
     const [
-      { count: totalUsers },
-      { count: newUsers },
-      { count: verifiedUsers },
-      { data: todayNews },
-      { data: usersWithPrefs },
-      { data: recentActivity },
-      { data: catMetrics }
+      { count: totalSignups },
+      { count: todaySignups },
+      { count: weekSignups },
+      { count: monthSignups },
+      { count: quarterSignups },
+      { count: yearSignups },
+      { count: totalVerified },
+      { count: todayVerified },
+      { count: weekVerified },
+      { count: monthVerified },
+      { count: quarterVerified },
+      { count: yearVerified },
+      { data: activeNowData },
+      { data: genRows },
+      { data: metricRows },
+      { data: newsRows },
     ] = await Promise.all([
+      // Signups
       supabaseAdmin.from('users').select('*', { count: 'exact', head: true }),
-      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).gte('created_at', sevenDaysAgo.toISOString()),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).gte('created_at', todayStart),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).gte('created_at', weekStart),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).gte('created_at', monthStart),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).gte('created_at', quarterStart),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).gte('created_at', yearStart),
+      // Verified
       supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).eq('verification_status', 'verified'),
-      supabaseAdmin.from('news_summaries').select('category, time_slot, generated_at').eq('day', today),
-      supabaseAdmin.from('users').select('email_preferences').not('email_preferences', 'is', null),
-      supabaseAdmin.from('behavioral_metrics').select('user_id').gte('created_at', new Date(Date.now() - 10 * 60 * 1000).toISOString()),
-      supabaseAdmin.from('behavioral_metrics').select('category_selected').not('category_selected', 'is', null)
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).eq('verification_status', 'verified').gte('created_at', todayStart),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).eq('verification_status', 'verified').gte('created_at', weekStart),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).eq('verification_status', 'verified').gte('created_at', monthStart),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).eq('verification_status', 'verified').gte('created_at', quarterStart),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).eq('verification_status', 'verified').gte('created_at', yearStart),
+      // Active now (last 5 min)
+      supabaseAdmin.from('behavioral_metrics').select('user_id').gte('created_at', new Date(Date.now() - 5*60*1000).toISOString()),
+      // Generation status – last 7 days, no __completed__ rows
+      supabaseAdmin.from('news_summaries').select('category, day, time_slot, language, generated_at').in('day', last7Days).neq('category', '__completed__'),
+      // Behavioral metrics – category selections with event type
+      supabaseAdmin.from('behavioral_metrics').select('category_selected, event_type, created_at').not('category_selected', 'is', null),
+      // News summaries – for generated count + sources
+      supabaseAdmin.from('news_summaries').select('category, language, generated_at, source_articles').neq('category', '__completed__'),
     ]);
 
-    const emailSubs = { night: 0, morning: 0, noon: 0, afternoon: 0, evening: 0 };
-    usersWithPrefs?.forEach(u => {
-      Object.keys(emailSubs).forEach(slot => {
-        const pref = u.email_preferences?.[slot];
-        // handles: boolean true, { enabled: true }, or new flat format where slot key is boolean
-        if (pref === true || pref?.enabled === true) emailSubs[slot]++;
-      });
+    // ── Active now ────────────────────────────────────────────────────────────
+    const activeNow = new Set((activeNowData || []).map(r => r.user_id)).size;
+
+    // ── Generation grid (7 days × Morning/Evening × EN/AR) ───────────────────
+    const genGrid = {};
+    last7Days.forEach(day => {
+      genGrid[day] = {
+        Morning: { en: false, ar: false },
+        Evening: { en: false, ar: false },
+      };
+    });
+    (genRows || []).forEach(r => {
+      if (genGrid[r.day]?.[r.time_slot]) {
+        genGrid[r.day][r.time_slot][r.language === 'ar' ? 'ar' : 'en'] = true;
+      }
     });
 
-    const activeUsers = new Set(recentActivity?.map(r => r.user_id)).size;
-
-    const catCounts = {};
-    catMetrics?.forEach(m => { if (m.category_selected) catCounts[m.category_selected] = (catCounts[m.category_selected] || 0) + 1; });
-    const topCategories = Object.entries(catCounts).sort((a,b) => b[1]-a[1]).slice(0, 8).map(([category, views]) => ({ category, views }));
-
-    const newsStatus = {};
-    DEFAULT_CATEGORIES.forEach(cat => {
-      newsStatus[cat] = {};
-      TIME_SLOTS.forEach(slot => {
-        const item = todayNews?.find(n => n.category === cat && n.time_slot === slot.label);
-        newsStatus[cat][slot.label] = item ? { generated: true, at: item.generated_at } : { generated: false };
+    // ── Top categories helper ─────────────────────────────────────────────────
+    const buildTopCats = (rows) => {
+      const counts = {};
+      (rows || []).forEach(m => {
+        if (!m.category_selected) return;
+        if (!counts[m.category_selected]) counts[m.category_selected] = { total: 0, read: 0, audio: 0 };
+        counts[m.category_selected].total++;
+        const et = (m.event_type || '').toLowerCase();
+        if (et.includes('play') || et.includes('audio') || et.includes('narrat')) counts[m.category_selected].audio++;
+        else counts[m.category_selected].read++;
       });
-    });
+      return Object.entries(counts)
+        .sort((a, b) => b[1].total - a[1].total)
+        .slice(0, 15)
+        .map(([category, v]) => ({ category, total: v.total, read: v.read, audio: v.audio }));
+    };
+
+    const topCats = {
+      today:   buildTopCats((metricRows || []).filter(m => m.created_at >= todayStart)),
+      week:    buildTopCats((metricRows || []).filter(m => m.created_at >= weekStart)),
+      month:   buildTopCats((metricRows || []).filter(m => m.created_at >= monthStart)),
+      quarter: buildTopCats((metricRows || []).filter(m => m.created_at >= quarterStart)),
+      year:    buildTopCats((metricRows || []).filter(m => m.created_at >= yearStart)),
+      total:   buildTopCats(metricRows),
+    };
+
+    // ── News generated per category helper ───────────────────────────────────
+    const buildNewsPerCat = (rows) => {
+      const counts = {};
+      (rows || []).forEach(s => {
+        if (!counts[s.category]) counts[s.category] = { en: 0, ar: 0 };
+        if (s.language === 'ar') counts[s.category].ar++;
+        else counts[s.category].en++;
+      });
+      return Object.entries(counts)
+        .sort((a, b) => (b[1].en + b[1].ar) - (a[1].en + a[1].ar))
+        .map(([category, v]) => ({ category, en: v.en, ar: v.ar, total: v.en + v.ar }));
+    };
+
+    const newsPerCat = {
+      today:   buildNewsPerCat((newsRows || []).filter(s => s.generated_at >= todayStart)),
+      week:    buildNewsPerCat((newsRows || []).filter(s => s.generated_at >= weekStart)),
+      month:   buildNewsPerCat((newsRows || []).filter(s => s.generated_at >= monthStart)),
+      quarter: buildNewsPerCat((newsRows || []).filter(s => s.generated_at >= quarterStart)),
+      year:    buildNewsPerCat((newsRows || []).filter(s => s.generated_at >= yearStart)),
+      total:   buildNewsPerCat(newsRows),
+    };
+
+    // ── Sources count helper ──────────────────────────────────────────────────
+    const buildSources = (rows) => {
+      let en = 0, ar = 0;
+      (rows || []).forEach(s => {
+        const n = Array.isArray(s.source_articles) ? s.source_articles.length : 0;
+        if (s.language === 'ar') ar += n; else en += n;
+      });
+      return { en, ar, total: en + ar };
+    };
+
+    const sources = {
+      today:   buildSources((newsRows || []).filter(s => s.generated_at >= todayStart)),
+      week:    buildSources((newsRows || []).filter(s => s.generated_at >= weekStart)),
+      month:   buildSources((newsRows || []).filter(s => s.generated_at >= monthStart)),
+      quarter: buildSources((newsRows || []).filter(s => s.generated_at >= quarterStart)),
+      year:    buildSources((newsRows || []).filter(s => s.generated_at >= yearStart)),
+      total:   buildSources(newsRows),
+    };
 
     res.json({
-      users:          { total: totalUsers || 0, new_7d: newUsers || 0, verified: verifiedUsers || 0 },
-      news:           { total_today: todayNews?.length || 0, expected: DEFAULT_CATEGORIES.length * TIME_SLOTS.length, status: newsStatus },
-      email_subs:     emailSubs,
-      active_users:   activeUsers,
-      top_categories: topCategories
+      signups:  { today: todaySignups||0, week: weekSignups||0, month: monthSignups||0, quarter: quarterSignups||0, year: yearSignups||0, total: totalSignups||0 },
+      verified: { today: todayVerified||0, week: weekVerified||0, month: monthVerified||0, quarter: quarterVerified||0, year: yearVerified||0, total: totalVerified||0 },
+      activeNow, last7Days, genGrid, topCats, newsPerCat, sources,
+      // Legacy fields — used by other admin tabs
+      users: { total: totalSignups||0, new_7d: weekSignups||0, verified: totalVerified||0 },
+      active_users: activeNow,
     });
   } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// Lightweight active-now endpoint — polled every 30s by the admin dashboard
+app.get('/admin/api/active-now', async (req, res) => {
+  try {
+    const { data } = await supabaseAdmin
+      .from('behavioral_metrics')
+      .select('user_id')
+      .gte('created_at', new Date(Date.now() - 5*60*1000).toISOString());
+    res.json({ count: new Set((data||[]).map(r => r.user_id)).size, ts: new Date().toISOString() });
+  } catch (error) { res.status(500).json({ count: 0, error: error.message }); }
 });
 
 app.get('/admin/api/news', async (req, res) => {
