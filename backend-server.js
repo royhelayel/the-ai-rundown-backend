@@ -2223,10 +2223,39 @@ app.get('/admin/api/overview', async (req, res) => {
       total:   computeReadRate(storyReadRows,             storyCounts,                usersWithFeeds),
     };
 
+    // ── Feed category popularity ──────────────────────────────────────────────
+    // Count how many times each category appears across all users' custom feeds.
+    // Intentionally double-counts: if a user has "World News" in two separate
+    // feeds, World News is counted twice for that user.
+    // Sources: user_feeds (named custom feeds) + feed_categories (main feed slot).
+    const feedCatCounts = {};
+    (usersWithFeeds || []).forEach(u => {
+      // Named custom feeds (user_feeds): each feed is counted separately
+      if (Array.isArray(u.user_feeds)) {
+        u.user_feeds.forEach(feed => {
+          if (Array.isArray(feed.categories)) {
+            feed.categories.forEach(cat => {
+              feedCatCounts[cat] = (feedCatCounts[cat] || 0) + 1;
+            });
+          }
+        });
+      }
+      // Main feed slot (feed_categories): treated as one feed
+      if (Array.isArray(u.feed_categories) && u.feed_categories.length > 0) {
+        u.feed_categories.forEach(cat => {
+          feedCatCounts[cat] = (feedCatCounts[cat] || 0) + 1;
+        });
+      }
+    });
+
+    const feedCatRanked = Object.entries(feedCatCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([category, count]) => ({ category, count }));
+
     res.json({
       signups:  { today: todaySignups||0, week: weekSignups||0, month: monthSignups||0, quarter: quarterSignups||0, year: yearSignups||0, total: totalSignups||0 },
       verified: { today: todayVerified||0, week: weekVerified||0, month: monthVerified||0, quarter: quarterVerified||0, year: yearVerified||0, total: totalVerified||0 },
-      activeNow, last7Days, genGrid, topCats, newsPerCat, sources, readRate,
+      activeNow, last7Days, genGrid, topCats, newsPerCat, sources, readRate, feedCatRanked,
       // Legacy fields — used by other admin tabs
       users: { total: totalSignups||0, new_7d: weekSignups||0, verified: totalVerified||0 },
       active_users: activeNow,
