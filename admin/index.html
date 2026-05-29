@@ -192,19 +192,21 @@
     <div class="table-wrap" id="news-cats-wrap"><div class="loading">Loading…</div></div>
   </div>
 
-  <!-- Sources count -->
+  <!-- Sources / outlets -->
   <div class="section">
-    <div class="section-title"><span class="dot"></span>Cited Sources Count</div>
-    <div class="table-wrap">
-      <table class="data-table" id="sources-period-table">
-        <thead><tr><th></th><th>Today</th><th>This Week</th><th>This Month</th><th>This Quarter</th><th>This Year</th><th>Since Inception</th></tr></thead>
-        <tbody>
-          <tr id="row-src-en"><td style="font-weight:700;color:#374151;">🇬🇧 English</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-          <tr id="row-src-ar"><td style="font-weight:700;color:#374151;">🇸🇦 Arabic</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-          <tr id="row-src-total" style="background:#f8fafc;"><td style="font-weight:800;color:#111827;">Total</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
-        </tbody>
-      </table>
+    <div class="section-title" style="justify-content:space-between;">
+      <span style="display:flex;align-items:center;gap:0.5rem;"><span class="dot"></span>Cited News Outlets</span>
+      <select id="src-period" onchange="renderOutlets()" style="padding:0.3rem 0.6rem;border:1px solid #e2e8f0;border-radius:6px;font-size:0.78rem;color:#374151;background:white;outline:none;font-weight:600;">
+        <option value="today">Today</option>
+        <option value="week">This Week</option>
+        <option value="month">This Month</option>
+        <option value="quarter">This Quarter</option>
+        <option value="year">This Year</option>
+        <option value="total" selected>Since Inception</option>
+      </select>
     </div>
+    <div id="src-totals" style="display:flex;gap:1.5rem;margin-bottom:1rem;font-size:0.82rem;color:#374151;"></div>
+    <div class="table-wrap" id="outlets-wrap"><div class="loading">Loading…</div></div>
   </div>
 
 </div>
@@ -517,14 +519,7 @@ async function loadOverview() {
     // News per category
     renderNewsCats();
 
-    // Sources table
-    const srcFillRow = (rowId, key) => {
-      const tr = document.getElementById(rowId);
-      PERIODS.forEach((p, i) => { tr.cells[i+1].textContent = fmtNum(d.sources[p]?.[key] ?? 0); });
-    };
-    srcFillRow('row-src-en',    'en');
-    srcFillRow('row-src-ar',    'ar');
-    srcFillRow('row-src-total', 'total');
+    renderOutlets();
 
     stamp();
   } catch(e) { console.error('overview', e); }
@@ -615,6 +610,47 @@ function renderTopCats() {
   });
   h += '</tbody></table>';
   document.getElementById('cats-wrap').innerHTML = h;
+}
+
+function renderOutlets() {
+  if (!_ovData) return;
+  const period = document.getElementById('src-period').value;
+  const src = _ovData.sources?.[period] || {};
+  const outlets = src.outlets || [];
+
+  // Totals summary
+  document.getElementById('src-totals').innerHTML =
+    `<span>🇬🇧 <strong>${fmtNum(src.en||0)}</strong> EN citations</span>
+     <span>🇸🇦 <strong>${fmtNum(src.ar||0)}</strong> AR citations</span>
+     <span style="font-weight:800;color:#6366f1;">Total: ${fmtNum(src.total||0)}</span>
+     <span style="color:#9ca3af;">${outlets.length} unique outlets</span>`;
+
+  if (!outlets.length) { document.getElementById('outlets-wrap').innerHTML = '<div class="empty">No citation data for this period.</div>'; return; }
+
+  const max = outlets[0].total || 1;
+  let h = `<table class="data-table"><thead><tr>
+    <th>#</th><th>Outlet</th><th>Citations</th><th>🇬🇧 EN</th><th>🇸🇦 AR</th><th>Share</th>
+  </tr></thead><tbody>`;
+  outlets.forEach((r, i) => {
+    const pct = Math.round(r.total / max * 100);
+    h += `<tr>
+      <td style="color:#9ca3af;font-size:0.8rem;">${i+1}</td>
+      <td><strong>${r.outlet}</strong></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:0.5rem;">
+          <div style="flex:1;background:#f1f5f9;border-radius:4px;height:6px;overflow:hidden;min-width:60px;">
+            <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#6366f1,#ec4899);border-radius:4px;"></div>
+          </div>
+          <span style="font-weight:700;font-size:0.82rem;min-width:28px;">${r.total}</span>
+        </div>
+      </td>
+      <td style="font-size:0.8rem;color:#374151;">${r.en}</td>
+      <td style="font-size:0.8rem;color:#374151;">${r.ar}</td>
+      <td style="font-size:0.78rem;color:#9ca3af;">${pct}%</td>
+    </tr>`;
+  });
+  h += '</tbody></table>';
+  document.getElementById('outlets-wrap').innerHTML = h;
 }
 
 function renderNewsCats() {

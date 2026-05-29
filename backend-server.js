@@ -2074,14 +2074,29 @@ app.get('/admin/api/overview', async (req, res) => {
       total:   buildNewsPerCat(newsRows),
     };
 
-    // ── Sources count helper ──────────────────────────────────────────────────
+    // ── Sources: count totals + rank outlets by citation frequency ───────────
     const buildSources = (rows) => {
       let en = 0, ar = 0;
+      const outletMap = {}; // { outletName: { en, ar } }
+
       (rows || []).forEach(s => {
-        const n = Array.isArray(s.source_articles) ? s.source_articles.length : 0;
-        if (s.language === 'ar') ar += n; else en += n;
+        const articles = Array.isArray(s.source_articles) ? s.source_articles : [];
+        const isAr = s.language === 'ar';
+        articles.forEach(a => {
+          const name = (a.source || '').trim();
+          if (!name) return;
+          if (isAr) ar++; else en++;
+          if (!outletMap[name]) outletMap[name] = { en: 0, ar: 0 };
+          if (isAr) outletMap[name].ar++; else outletMap[name].en++;
+        });
       });
-      return { en, ar, total: en + ar };
+
+      const outlets = Object.entries(outletMap)
+        .map(([outlet, v]) => ({ outlet, en: v.en, ar: v.ar, total: v.en + v.ar }))
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 50); // top 50 outlets
+
+      return { en, ar, total: en + ar, outlets };
     };
 
     const sources = {
