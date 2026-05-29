@@ -164,6 +164,30 @@
     </div>
   </div>
 
+  <!-- Read rate -->
+  <div class="section">
+    <div class="section-title"><span class="dot"></span>Read Rate</div>
+    <p style="font-size:0.78rem;color:#64748b;margin:-0.4rem 0 1rem;">Stories read ÷ stories available in each user's custom feed (categories deduplicated across multiple feeds). Avg rate = mean per-user rate; Agg rate = total reads ÷ total available across all users.</p>
+    <div class="table-wrap">
+      <table class="data-table" id="read-rate-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Today</th><th>This Week</th><th>This Month</th><th>This Quarter</th><th>This Year</th><th>Since Inception</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr id="rr-avg"><td style="font-weight:700;color:#374151;">📊 Avg Rate (per user)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+          <tr id="rr-agg"><td style="font-weight:700;color:#374151;">📈 Aggregate Rate</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+          <tr id="rr-reads" style="background:#fafafa;"><td style="color:#64748b;">Stories Read</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+          <tr id="rr-avail" style="background:#fafafa;"><td style="color:#64748b;">Stories Available</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+          <tr id="rr-users" style="background:#fafafa;"><td style="color:#64748b;">Users w/ Custom Feed</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:0.72rem;color:#9ca3af;margin-top:0.65rem;">⚠️ Read rate requires the <code>story_count</code> column in <code>news_summaries</code>. Run: <code>ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS story_count integer;</code> — data will build up from the next generation run onwards.</p>
+  </div>
+
   <!-- Generation status — 7 days -->
   <div class="section">
     <div class="section-title"><span class="dot"></span>Generation Status — Last 7 Days</div>
@@ -528,6 +552,20 @@ async function loadOverview() {
 
     // News per category
     renderNewsCats();
+
+    // Read rate table
+    if (d.readRate) {
+      const PERIODS = ['today','week','month','quarter','year','total'];
+      const rrFill = (rowId, fn) => {
+        const tr = document.getElementById(rowId);
+        PERIODS.forEach((p, i) => { tr.cells[i+1].textContent = fn(d.readRate[p]); });
+      };
+      rrFill('rr-avg',   r => r.users > 0 ? r.avgRate + '%'  : '—');
+      rrFill('rr-agg',   r => r.users > 0 ? r.aggRate + '%'  : '—');
+      rrFill('rr-reads', r => r.users > 0 ? fmtNum(r.reads)  : '—');
+      rrFill('rr-avail', r => r.users > 0 ? fmtNum(r.available) : '—');
+      rrFill('rr-users', r => r.users > 0 ? r.users           : '—');
+    }
 
     renderOutlets();
 

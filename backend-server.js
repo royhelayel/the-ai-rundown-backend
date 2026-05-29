@@ -800,9 +800,15 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
 
     const { data: existing } = await query.maybeSingle();
 
+    // Count stories in the generated content (number of ## headings in stories_content)
+    const storyCount = storiesContent
+      ? (storiesContent.match(/^#{1,3} /mg) || []).length
+      : null;
+
     const updatePayload = { content, generated_at };
     if (storiesContent !== null) updatePayload.stories_content = storiesContent;
     if (sourceArticles !== null) updatePayload.source_articles = sourceArticles;
+    if (storyCount !== null)     updatePayload.story_count = storyCount;
 
     const runUpsert = async (payload) => {
       if (existing) {
@@ -818,8 +824,8 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     let { error } = await runUpsert(updatePayload);
 
     // Graceful fallback: if optional columns don't exist yet, retry with just the core fields
-    if (error && (error.message?.includes('stories_content') || error.message?.includes('source_articles') || error.message?.includes('language') || error.code === '42703')) {
-      console.warn(`⚠️  Optional column missing — retrying without optional columns. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS stories_content text;\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS source_articles jsonb;\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS language text DEFAULT 'en';`);
+    if (error && (error.message?.includes('stories_content') || error.message?.includes('source_articles') || error.message?.includes('language') || error.message?.includes('story_count') || error.code === '42703')) {
+      console.warn(`⚠️  Optional column missing — retrying without optional columns. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS stories_content text;\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS source_articles jsonb;\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS language text DEFAULT 'en';\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS story_count integer;`);
       ({ error } = await runUpsert({ content, generated_at }));
     }
 
@@ -2005,6 +2011,9 @@ app.get('/admin/api/overview', async (req, res) => {
       { data: genRows },
       { data: metricRows },
       { data: newsRows },
+      { data: storyReadRows },
+      { data: usersWithFeeds },
+      { data: storyCounts },
     ] = await Promise.all([
       // Signups
       supabaseAdmin.from('users').select('*', { count: 'exact', head: true }),
@@ -2028,6 +2037,12 @@ app.get('/admin/api/overview', async (req, res) => {
       supabaseAdmin.from('behavioral_metrics').select('category_selected, event_type, created_at').not('category_selected', 'is', null),
       // News summaries – for generated count + sources
       supabaseAdmin.from('news_summaries').select('category, language, generated_at, source_articles').neq('category', '__completed__'),
+      // Story reads – event_type='story_read' for read rate
+      supabaseAdmin.from('behavioral_metrics').select('user_id, category_selected, day_selected, metadata, created_at').eq('event_type', 'story_read'),
+      // Users with feed categories – for read rate denominator
+      supabaseAdmin.from('users').select('id, feed_categories, user_feeds').not('feed_categories', 'is', null),
+      // News summaries story counts – denominator for read rate
+      supabaseAdmin.from('news_summaries').select('category, day, story_count, language, generated_at').not('story_count', 'is', null).neq('category', '__completed__'),
     ]);
 
     // ── Active now ────────────────────────────────────────────────────────────
@@ -2129,10 +2144,83 @@ app.get('/admin/api/overview', async (req, res) => {
       total:   buildSources(newsRows),
     };
 
+    // ── Read rate ─────────────────────────────────────────────────────────────
+    // For each user with a custom feed, compute: unique stories read / total
+    // stories available in their deduplicated feed categories for the period.
+    // Dedup categories: if the same category appears in multiple feeds, count once.
+    // Story index stored in metadata.story_index (or page_name as fallback).
+    //
+    // Run in Supabase first: ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS story_count integer;
+    const computeReadRate = (readsInPeriod, countsInPeriod, users) => {
+      // Build: { 'category::day': story_count }
+      const availMap = {};
+      (countsInPeriod || []).forEach(n => {
+        const key = `${n.category}::${n.day}`;
+        // Take max across EN/AR (same category+day should have same count)
+        availMap[key] = Math.max(availMap[key] || 0, n.story_count || 0);
+      });
+
+      let totalReads = 0, totalAvail = 0, userCount = 0;
+      const userRates = [];
+
+      (users || []).forEach(u => {
+        // Deduplicate categories across all feeds for this user
+        const cats = new Set();
+        if (Array.isArray(u.feed_categories)) u.feed_categories.forEach(c => cats.add(c));
+        if (Array.isArray(u.user_feeds)) {
+          u.user_feeds.forEach(feed => {
+            if (Array.isArray(feed.categories)) feed.categories.forEach(c => cats.add(c));
+          });
+        }
+        if (cats.size === 0) return;
+
+        // Unique stories this user read (deduplicated by category+day+storyIndex)
+        const readSet = new Set();
+        (readsInPeriod || [])
+          .filter(r => r.user_id === u.id && cats.has(r.category_selected))
+          .forEach(r => {
+            const idx = r.metadata?.story_index ?? r.page_name ?? '?';
+            readSet.add(`${r.category_selected}::${r.day_selected}::${idx}`);
+          });
+
+        // Available stories: sum story_count for user's categories across days in period
+        let avail = 0;
+        for (const [key, count] of Object.entries(availMap)) {
+          const cat = key.split('::')[0];
+          if (cats.has(cat)) avail += count;
+        }
+
+        if (avail > 0) {
+          totalReads += readSet.size;
+          totalAvail += avail;
+          userCount++;
+          userRates.push(readSet.size / avail);
+        }
+      });
+
+      const avgRate = userRates.length > 0
+        ? Math.round((userRates.reduce((a, b) => a + b, 0) / userRates.length) * 10000) / 100
+        : 0;
+      const aggRate = totalAvail > 0 ? Math.round(totalReads / totalAvail * 10000) / 100 : 0;
+      return { avgRate, aggRate, reads: totalReads, available: totalAvail, users: userCount };
+    };
+
+    const filterReads   = (start) => (storyReadRows || []).filter(r => r.created_at >= start);
+    const filterCounts  = (start) => (storyCounts   || []).filter(n => n.generated_at >= start);
+
+    const readRate = {
+      today:   computeReadRate(filterReads(todayStart),   filterCounts(todayStart),   usersWithFeeds),
+      week:    computeReadRate(filterReads(weekStart),    filterCounts(weekStart),    usersWithFeeds),
+      month:   computeReadRate(filterReads(monthStart),   filterCounts(monthStart),   usersWithFeeds),
+      quarter: computeReadRate(filterReads(quarterStart), filterCounts(quarterStart), usersWithFeeds),
+      year:    computeReadRate(filterReads(yearStart),    filterCounts(yearStart),    usersWithFeeds),
+      total:   computeReadRate(storyReadRows,             storyCounts,                usersWithFeeds),
+    };
+
     res.json({
       signups:  { today: todaySignups||0, week: weekSignups||0, month: monthSignups||0, quarter: quarterSignups||0, year: yearSignups||0, total: totalSignups||0 },
       verified: { today: todayVerified||0, week: weekVerified||0, month: monthVerified||0, quarter: quarterVerified||0, year: yearVerified||0, total: totalVerified||0 },
-      activeNow, last7Days, genGrid, topCats, newsPerCat, sources,
+      activeNow, last7Days, genGrid, topCats, newsPerCat, sources, readRate,
       // Legacy fields — used by other admin tabs
       users: { total: totalSignups||0, new_7d: weekSignups||0, verified: totalVerified||0 },
       active_users: activeNow,
