@@ -1884,6 +1884,9 @@ app.post('/api/auth/resend-verification', async (req, res) => {
   }
 });
 
+// ── Metrics feature flag — set to true to re-enable ──────────────────────────
+const METRICS_ENABLED = false;
+
 // ── In-memory active sessions ─────────────────────────────────────────────────
 // Map: sessionId → { userId: string|null, lastSeen: ms }
 // Sessions expire after 120s of silence; cleaned up every 2 minutes.
@@ -1899,6 +1902,7 @@ setInterval(() => {
 
 // Heartbeat — called by every browser tab every 60s (guests + signed-in users)
 app.post('/api/metrics/heartbeat', (req, res) => {
+  if (!METRICS_ENABLED) return res.json({ ok: true, disabled: true });
   const { sessionId, userId } = req.body || {};
   if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
   _activeSessions.set(sessionId, { userId: userId || null, lastSeen: Date.now() });
@@ -1909,8 +1913,9 @@ app.post('/api/metrics/heartbeat', (req, res) => {
 // ENDPOINT 4: TRACK BEHAVIORAL METRICS
 // ==========================================
 app.post('/api/metrics/track', async (req, res) => {
+  if (!METRICS_ENABLED) return res.json({ success: true, disabled: true });
   try {
-    const { 
+    const {
       userId, 
       eventType, 
       pageName, 
@@ -2033,12 +2038,12 @@ app.get('/admin/api/overview', async (req, res) => {
       supabaseAdmin.from('behavioral_metrics').select('user_id').gte('created_at', new Date(Date.now() - 5*60*1000).toISOString()),
       // Generation status – last 7 days, no __completed__ rows
       supabaseAdmin.from('news_summaries').select('category, day, time_slot, language, generated_at').in('day', last7Days).neq('category', '__completed__'),
-      // Behavioral metrics – category selections with event type
-      supabaseAdmin.from('behavioral_metrics').select('category_selected, event_type, created_at').not('category_selected', 'is', null),
+      // Behavioral metrics – category selections with event type (last 30 days only)
+      supabaseAdmin.from('behavioral_metrics').select('category_selected, event_type, created_at').not('category_selected', 'is', null).gte('created_at', new Date(Date.now() - 30*24*60*60*1000).toISOString()),
       // News summaries – for generated count + sources
       supabaseAdmin.from('news_summaries').select('category, language, generated_at, source_articles').neq('category', '__completed__'),
-      // Story reads – event_type='story_read' for read rate
-      supabaseAdmin.from('behavioral_metrics').select('user_id, category_selected, day_selected, metadata, created_at').eq('event_type', 'story_read'),
+      // Story reads – event_type='story_read' for read rate (last 30 days only)
+      supabaseAdmin.from('behavioral_metrics').select('user_id, category_selected, day_selected, metadata, created_at').eq('event_type', 'story_read').gte('created_at', new Date(Date.now() - 30*24*60*60*1000).toISOString()),
       // Users with feed categories – for read rate denominator
       supabaseAdmin.from('users').select('id, feed_categories, user_feeds').not('feed_categories', 'is', null),
       // News summaries story counts – denominator for read rate
@@ -2299,7 +2304,8 @@ app.get('/admin/api/users', async (req, res) => {
     const catCount = {};
     cats?.forEach(c => { catCount[c.user_id] = (catCount[c.user_id] || 0) + 1; });
 
-    const { data: lastActivity } = await supabaseAdmin.from('behavioral_metrics').select('user_id, created_at').order('created_at', { ascending: false });
+    // Fetch only the most-recent event per user — limit to last 90 days to cap egress
+    const { data: lastActivity } = await supabaseAdmin.from('behavioral_metrics').select('user_id, created_at').gte('created_at', new Date(Date.now() - 90*24*60*60*1000).toISOString()).order('created_at', { ascending: false }).limit(5000);
     const lastSeen = {};
     lastActivity?.forEach(e => { if (!lastSeen[e.user_id]) lastSeen[e.user_id] = e.created_at; });
 
@@ -2319,7 +2325,8 @@ app.get('/admin/api/behavior', async (req, res) => {
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    const { data: allEvents } = await supabaseAdmin.from('behavioral_metrics').select('user_id, event_type, category_selected, day_selected, time_selected, created_at').order('created_at', { ascending: false });
+    // Limit to last 30 days — prevents full-table scan as the table grows
+    const { data: allEvents } = await supabaseAdmin.from('behavioral_metrics').select('user_id, event_type, category_selected, day_selected, time_selected, created_at').gte('created_at', new Date(Date.now() - 30*24*60*60*1000).toISOString()).order('created_at', { ascending: false });
 
     const total_events  = allEvents?.length || 0;
     const unique_users  = new Set(allEvents?.map(e => e.user_id)).size;
@@ -2667,6 +2674,241 @@ app.post('/api/tts', async (req, res) => {
 // News generation is triggered exclusively by GitHub Actions via the
 // /api/generate/:timeSlot HTTP endpoints — no in-process cron jobs.
 // This prevents duplicate runs if the server happens to be warm at schedule time.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SOCIAL FEATURES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Helper: normalize a headline to a stable short key (mirrors frontend headlineKey)
+function storyKey(headline) {
+  return (headline || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim().slice(0, 50);
+}
+
+// Helper: generate a unique username from an email address
+async function generateUsername(email) {
+  const base = (email || '').split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '') || 'user';
+  let username = base;
+  let attempt = 0;
+  while (attempt < 30) {
+    const { data } = await supabaseAdmin.from('users').select('id').eq('username', username).maybeSingle();
+    if (!data) return username; // available
+    attempt++;
+    username = attempt <= 9 ? `${base}${attempt}` : `${base}${Math.random().toString(36).slice(2, 5)}`;
+  }
+  return `${base}${Date.now().toString(36).slice(-4)}`;
+}
+
+// POST /api/social/setup-username
+// Called after signup / first sign-in if the user has no username yet.
+app.post('/api/social/setup-username', async (req, res) => {
+  const { user_id, email } = req.body;
+  if (!user_id || !email) return res.status(400).json({ error: 'Missing user_id or email' });
+  // Check if already has a username
+  const { data: existing } = await supabaseAdmin.from('users').select('username, display_name, avatar_color').eq('id', user_id).single();
+  if (existing?.username) return res.json({ username: existing.username, display_name: existing.display_name, avatar_color: existing.avatar_color });
+  const username = await generateUsername(email);
+  const display_name = (email.split('@')[0] || username).replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const colors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ef4444', '#14b8a6'];
+  const avatar_color = colors[Math.abs(username.charCodeAt(0) + (username.charCodeAt(1) || 0)) % colors.length];
+  await supabaseAdmin.from('users').update({ username, display_name, avatar_color }).eq('id', user_id);
+  res.json({ username, display_name, avatar_color });
+});
+
+// PUT /api/user/profile — update username / display_name
+app.put('/api/user/profile', async (req, res) => {
+  const { user_id, username, display_name } = req.body;
+  if (!user_id) return res.status(400).json({ error: 'Missing user_id' });
+  const update = {};
+  if (username) {
+    const cleaned = username.toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (cleaned.length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters' });
+    const { data: taken } = await supabaseAdmin.from('users').select('id').eq('username', cleaned).neq('id', user_id).maybeSingle();
+    if (taken) return res.status(409).json({ error: 'Username already taken' });
+    update.username = cleaned;
+  }
+  if (display_name !== undefined) update.display_name = display_name;
+  if (!Object.keys(update).length) return res.status(400).json({ error: 'Nothing to update' });
+  const { data, error } = await supabaseAdmin.from('users').update(update).eq('id', user_id).select('id, username, display_name, avatar_color').single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// GET /api/social/profile/:username — public profile with saves + counts
+app.get('/api/social/profile/:username', async (req, res) => {
+  const { username } = req.params;
+  const { requesterId } = req.query; // optional: caller's user_id to check if following
+  const { data: profile, error } = await supabaseAdmin.from('users')
+    .select('id, username, display_name, avatar_color')
+    .eq('username', username).eq('verification_status', 'verified').maybeSingle();
+  if (error || !profile) return res.status(404).json({ error: 'User not found' });
+
+  const [savesRes, followerRes, followingRes, isFollowingRes] = await Promise.all([
+    supabaseAdmin.from('user_saves').select('*').eq('user_id', profile.id).order('saved_at', { ascending: false }),
+    supabaseAdmin.from('user_follows').select('*', { count: 'exact', head: true }).eq('following_id', profile.id),
+    supabaseAdmin.from('user_follows').select('*', { count: 'exact', head: true }).eq('follower_id', profile.id),
+    requesterId
+      ? supabaseAdmin.from('user_follows').select('id').eq('follower_id', requesterId).eq('following_id', profile.id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+
+  res.json({
+    ...profile,
+    saves: savesRes.data || [],
+    followerCount: followerRes.count || 0,
+    followingCount: followingRes.count || 0,
+    isFollowing: !!isFollowingRes.data,
+  });
+});
+
+// GET /api/social/search?q=&userId=
+app.get('/api/social/search', async (req, res) => {
+  const { q, userId } = req.query;
+  if (!q || q.length < 2) return res.json([]);
+  const { data } = await supabaseAdmin.from('users')
+    .select('id, username, display_name, avatar_color')
+    .eq('verification_status', 'verified')
+    .or(`username.ilike.%${q}%,display_name.ilike.%${q}%`)
+    .neq('id', userId || '00000000-0000-0000-0000-000000000000')
+    .limit(10);
+  res.json(data || []);
+});
+
+// POST /api/social/follow
+app.post('/api/social/follow', async (req, res) => {
+  const { follower_id, following_id } = req.body;
+  if (!follower_id || !following_id || follower_id === following_id) return res.status(400).json({ error: 'Invalid' });
+  const { error } = await supabaseAdmin.from('user_follows')
+    .upsert({ follower_id, following_id }, { onConflict: 'follower_id,following_id', ignoreDuplicates: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true });
+});
+
+// DELETE /api/social/follow/:followingId  (body: { user_id })
+app.delete('/api/social/follow/:followingId', async (req, res) => {
+  const { followingId } = req.params;
+  const { user_id } = req.body;
+  if (!user_id) return res.status(400).json({ error: 'Missing user_id' });
+  await supabaseAdmin.from('user_follows').delete().eq('follower_id', user_id).eq('following_id', followingId);
+  res.json({ ok: true });
+});
+
+// GET /api/social/following?userId=
+app.get('/api/social/following', async (req, res) => {
+  const { userId } = req.query;
+  if (!userId) return res.json([]);
+  const { data } = await supabaseAdmin.from('user_follows')
+    .select('following_id, users!user_follows_following_id_fkey(id, username, display_name, avatar_color)')
+    .eq('follower_id', userId);
+  res.json((data || []).map(r => r.users).filter(Boolean));
+});
+
+// GET /api/social/followers?userId=
+app.get('/api/social/followers', async (req, res) => {
+  const { userId } = req.query;
+  if (!userId) return res.json([]);
+  const { data } = await supabaseAdmin.from('user_follows')
+    .select('follower_id, users!user_follows_follower_id_fkey(id, username, display_name, avatar_color)')
+    .eq('following_id', userId);
+  res.json((data || []).map(r => r.users).filter(Boolean));
+});
+
+// GET /api/social/circle/saves?userId=
+// Returns saves by people the user follows, grouped and sorted by recency.
+app.get('/api/social/circle/saves', async (req, res) => {
+  const { userId } = req.query;
+  if (!userId) return res.json([]);
+  const { data: follows } = await supabaseAdmin.from('user_follows').select('following_id').eq('follower_id', userId);
+  if (!follows?.length) return res.json([]);
+  const followingIds = follows.map(f => f.following_id);
+
+  const { data: saves } = await supabaseAdmin.from('user_saves')
+    .select('*, users!user_saves_user_id_fkey(id, username, display_name, avatar_color)')
+    .in('user_id', followingIds)
+    .order('saved_at', { ascending: false })
+    .limit(200);
+
+  if (!saves?.length) return res.json([]);
+
+  // Dedupe by story_key; attach list of who saved each
+  const storyMap = {};
+  saves.forEach(s => {
+    const key = s.story_key;
+    if (!storyMap[key]) storyMap[key] = { category: s.category, story_index: s.story_index, headline: s.headline, preview: s.preview, story_key: key, savers: [], latest_at: s.saved_at };
+    if (s.users) storyMap[key].savers.push(s.users);
+    if (s.saved_at > storyMap[key].latest_at) storyMap[key].latest_at = s.saved_at;
+  });
+
+  const result = Object.values(storyMap).sort((a, b) => new Date(b.latest_at) - new Date(a.latest_at));
+  res.json(result);
+});
+
+// GET /api/social/circle/popular?userId=
+// Returns reads by people the user follows, grouped by story_key, sorted by reader count.
+app.get('/api/social/circle/popular', async (req, res) => {
+  const { userId } = req.query;
+  if (!userId) return res.json([]);
+  const { data: follows } = await supabaseAdmin.from('user_follows').select('following_id').eq('follower_id', userId);
+  if (!follows?.length) return res.json([]);
+  const followingIds = follows.map(f => f.following_id);
+
+  const { data: reads } = await supabaseAdmin.from('user_reads')
+    .select('story_key, category, story_index, user_id')
+    .in('user_id', followingIds)
+    .limit(500);
+
+  if (!reads?.length) return res.json([]);
+
+  const countMap = {};
+  reads.forEach(r => {
+    if (!countMap[r.story_key]) countMap[r.story_key] = { story_key: r.story_key, category: r.category, story_index: r.story_index, readerIds: new Set() };
+    countMap[r.story_key].readerIds.add(r.user_id);
+  });
+
+  const result = Object.values(countMap)
+    .map(s => ({ story_key: s.story_key, category: s.category, story_index: s.story_index, circleCount: s.readerIds.size }))
+    .sort((a, b) => b.circleCount - a.circleCount);
+  res.json(result);
+});
+
+// POST /api/saves/sync — save a story to Supabase
+app.post('/api/saves/sync', async (req, res) => {
+  const { user_id, category, story_index, headline, preview } = req.body;
+  if (!user_id || !category || story_index === undefined || !headline) return res.status(400).json({ error: 'Missing required fields' });
+  const key = storyKey(headline);
+  const { data, error } = await supabaseAdmin.from('user_saves').upsert({
+    user_id, category, story_index, headline, preview: preview || '', story_key: key, saved_at: new Date().toISOString(),
+  }, { onConflict: 'user_id,story_key' }).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// POST /api/saves/remove — unsave a story from Supabase
+app.post('/api/saves/remove', async (req, res) => {
+  const { user_id, headline } = req.body;
+  if (!user_id || !headline) return res.status(400).json({ error: 'Missing user_id or headline' });
+  const key = storyKey(headline);
+  await supabaseAdmin.from('user_saves').delete().eq('user_id', user_id).eq('story_key', key);
+  res.json({ ok: true });
+});
+
+// GET /api/saves?userId= — fetch all saves for a user
+app.get('/api/saves', async (req, res) => {
+  const { userId } = req.query;
+  if (!userId) return res.json([]);
+  const { data } = await supabaseAdmin.from('user_saves').select('*').eq('user_id', userId).order('saved_at', { ascending: false });
+  res.json(data || []);
+});
+
+// POST /api/reads/sync — record that the user read a story
+app.post('/api/reads/sync', async (req, res) => {
+  const { user_id, category, story_index, headline } = req.body;
+  if (!user_id || !category || story_index === undefined || !headline) return res.status(400).json({ error: 'Missing required fields' });
+  const key = storyKey(headline);
+  await supabaseAdmin.from('user_reads').upsert({
+    user_id, story_key: key, category, story_index, read_at: new Date().toISOString(),
+  }, { onConflict: 'user_id,story_key', ignoreDuplicates: true });
+  res.json({ ok: true });
+});
 
 // Start server
 const PORT = process.env.PORT || 3001;
