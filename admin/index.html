@@ -470,7 +470,7 @@ async function triggerGeneration(slot) {
       const isToday = !day || day === new Date().toISOString().split('T')[0];
       const catCount = category ? '1 category' : '12 categories';
       status.style.color = '#16a34a';
-      status.textContent = `✓ Generation started for ${slot}${langLabel}${catLabel} on ${dayLabel}. ~${category ? '2' : '10'} min (${catCount}).${isToday && language === 'en' ? ' Emails when done.' : ''}`;
+      status.textContent = `✓ Running in background: ${slot}${langLabel}${catLabel} on ${dayLabel}. ~${category ? '2' : '19'} min — check the news grid below when done.${isToday && language === 'en' ? ' Emails sent on completion.' : ''}`;
     } else {
       status.style.color = '#b91c1c';
       status.textContent = `✗ Error: ${data.error || 'Unknown error'}`;

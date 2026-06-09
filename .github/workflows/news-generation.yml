@@ -21,7 +21,7 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 5
 
     steps:
       - name: Determine time slot
@@ -39,11 +39,11 @@ jobs:
         run: |
           SLOT="${{ steps.slot.outputs.slot }}"
           echo "Triggering English $SLOT news generation..."
-          # Generation is synchronous — connection stays open to keep Render dyno alive.
-          # --max-time 2400 (40 min) covers 12 categories + retries. Retries on connect only.
+          # Generation is fire-and-forget — endpoint returns immediately (200 started).
+          # The backend self-pings /health every 10 min to keep the Render dyno alive.
           RESPONSE=$(curl -s -o /tmp/response.json -w "%{http_code}" \
-            --retry 3 --retry-delay 10 --retry-connrefused \
-            --max-time 2400 --connect-timeout 60 \
+            --retry 3 --retry-delay 15 --retry-connrefused \
+            --max-time 60 --connect-timeout 30 \
             -X POST \
             -H "Content-Type: application/json" \
             -d '{"language":"en"}' \
@@ -61,8 +61,8 @@ jobs:
         run: |
           echo "Triggering Arabic morning news generation..."
           RESPONSE=$(curl -s -o /tmp/response-ar.json -w "%{http_code}" \
-            --retry 3 --retry-delay 10 --retry-connrefused \
-            --max-time 2400 --connect-timeout 60 \
+            --retry 3 --retry-delay 15 --retry-connrefused \
+            --max-time 60 --connect-timeout 30 \
             -X POST \
             -H "Content-Type: application/json" \
             -d '{"language":"ar"}' \

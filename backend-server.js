@@ -1169,6 +1169,17 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
 
   console.log(`\n🚀 Starting news generation for ${timeSlot}${langLabel} on ${targetDay} (${targetCategories.length} categories)...`);
 
+  // ── Keep-alive self-ping ─────────────────────────────────────────────────
+  // Render free tier spins down after 15 min of no incoming requests.
+  // Pinging our own /health every 10 min resets that timer so the full
+  // ~19-min sequential generation run completes without being killed.
+  const RENDER_URL = process.env.RENDER_EXTERNAL_URL || process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 3001}`;
+  const keepAliveTimer = setInterval(() => {
+    fetch(`${RENDER_URL}/health`)
+      .then(() => console.log('🔁 Keep-alive ping sent'))
+      .catch(err => console.warn('⚠️  Keep-alive ping failed:', err.message));
+  }, 10 * 60 * 1000); // every 10 minutes
+
   const succeeded   = [];
   const failed      = []; // [{ category, error }]
 
@@ -1296,6 +1307,8 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   } else {
     console.log(`⏭️  Skipping email send — ${targetDay} is not today`);
   }
+
+  clearInterval(keepAliveTimer);
 }
 
 // Cloud Scheduler will trigger the /api/generate/:timeSlot endpoints
@@ -1458,14 +1471,16 @@ app.post('/api/generate/:timeSlot', async (req, res) => {
     const langLabel = language === 'ar' ? ' [AR]' : '';
     const catLabel = category ? ` (${category})` : ' (all categories)';
 
-    // Run generation synchronously — keeps the HTTP connection (and Render dyno) alive
-    // for the full duration so the job isn't killed mid-way on free-tier hosts.
-    await generateAllNewsForTimeSlot(slot.label, targetDay, language, categories);
+    // Fire-and-forget — respond immediately so Render's proxy doesn't time out the
+    // connection (it closes connections with no response after ~60-90 s).
+    // The generation loop self-pings /health every 10 min to keep the dyno alive.
     res.json({
-      status: 'completed',
-      message: `News generation completed for ${slot.label}${langLabel}${catLabel} on ${targetDay}`,
+      status: 'started',
+      message: `News generation started for ${slot.label}${langLabel}${catLabel} on ${targetDay}`,
       timestamp: new Date().toISOString()
     });
+    generateAllNewsForTimeSlot(slot.label, targetDay, language, categories)
+      .catch(err => console.error(`Generation failed for ${slot.label}${langLabel}:`, err.message));
   } catch (error) {
     res.status(500).json({
       error: error.message,
