@@ -580,7 +580,7 @@ async function callClaude(prompt, maxTokens = 4000, retries = 3) {
       "anthropic-version": "2023-06-01"
     },
     body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-3-5-haiku-20241022",
       max_tokens: maxTokens,
       messages: [{ role: "user", content: prompt }]
     })
@@ -716,7 +716,7 @@ Rules: Start with the first ## heading â€” no preamble. Headline is plain text â
     const token_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
     const estimated_cost_usd = token_cost_usd + serper_cost;
     supabaseAdmin.from('api_usage').insert({
-      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+      service: 'anthropic', model: 'claude-3-5-haiku-20241022',
       input_tokens, output_tokens,
       web_searches: serper_searches, search_cost_usd: serper_cost, token_cost_usd, estimated_cost_usd,
       category, time_slot: timeSlot, content_type: 'digest',
@@ -764,7 +764,7 @@ Rules: Cover the same stories as the digest, in the same order. Start immediatel
     const { input_tokens, output_tokens } = data.usage;
     const token_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
     supabaseAdmin.from('api_usage').insert({
-      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+      service: 'anthropic', model: 'claude-3-5-haiku-20241022',
       input_tokens, output_tokens,
       web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
       category, time_slot: timeSlot, content_type: 'stories',
