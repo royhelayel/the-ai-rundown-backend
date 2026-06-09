@@ -2496,6 +2496,15 @@ app.get('/admin/api/raw-content', async (req, res) => {
   res.json({ content: data?.content || null });
 });
 
+app.get('/admin/api/test-claude', async (req, res) => {
+  try {
+    const result = await callClaude('Say "ok" and nothing else.', 10, 0);
+    res.json({ ok: true, model: 'claude-3-5-haiku-20241022', response: result?.content?.[0]?.text });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 app.post('/admin/api/debug-generate', async (req, res) => {
   const { category, day, timeSlot } = req.body;
   try {
