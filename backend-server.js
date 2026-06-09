@@ -469,10 +469,11 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
   const itemMap  = {};   // url → article object (first seen wins for metadata)
   mergeIntoMaps(results, scoreMap, itemMap);
 
-  // ── Phase 2: Adaptive follow-up queries (English non-regional only) ───────
+  // ── Phase 2: Adaptive follow-up queries (English only) ──────────────────
   // Claude Haiku looks at Phase 1 headlines and generates 3 targeted follow-up
   // queries aimed at important stories the initial broad queries likely missed.
-  if (!isRegional && language === 'en' && Object.keys(scoreMap).length > 0) {
+  // Now runs for regional categories too — same echo-priority logic applies.
+  if (language === 'en' && Object.keys(scoreMap).length > 0) {
     const phase1Headlines = Object.values(itemMap).slice(0, 10).map(a => a.title).filter(Boolean);
     if (phase1Headlines.length >= 3) {
       const followUpQueries = await generateAdaptiveQueries(phase1Headlines, categoryQuery, dateLabel);
@@ -668,15 +669,14 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullet points, "Perspectives differ" text, and "Why this matters" text must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, **Perspectives differ:**, **Why this matters:**, ## Sources. Keep source outlet names and URLs in their original form.`
     : '';
 
-  // Regional categories (UAE/KSA/QAT/LEB) have a smaller media ecosystem — single-source
-  // stories from any outlet are acceptable, and we target more stories per digest.
+  // Regional categories get a higher story ceiling (more niche events worth covering).
+  // Both regional and non-regional now apply the same tier-1 echo prioritisation —
+  // single-source stories are only included when clearly significant AND from a tier-1 outlet.
   const storyCountInstruction = isRegional
-    ? 'Write 7–10 grouped stories from the results above.'
-    : 'Write 5–8 grouped stories from the results above.';
+    ? 'Write 10–14 grouped stories from the results above.'
+    : 'Write 7–10 grouped stories from the results above.';
 
-  const singleSourceRule = isRegional
-    ? '4. Single-source stories are acceptable for regional news — include any story that is newsworthy regardless of how many outlets covered it.'
-    : '4. Single-source stories should only be included if clearly significant and from a tier-1 outlet.';
+  const singleSourceRule = '4. Single-source stories should only be included if clearly significant and from a tier-1 outlet.';
 
   const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.${arabicInstruction}
 
@@ -1172,18 +1172,30 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   const succeeded   = [];
   const failed      = []; // [{ category, error }]
 
-  // ── Main generation pass ─────────────────────────────────────────────────
-  for (const category of targetCategories) {
-    try {
-      await generateAndStoreCategory(category, targetDay, timeSlot, language);
-      succeeded.push(category);
-      console.log(`  ✅ ${category}${langLabel}`);
-    } catch (error) {
-      console.error(`  ❌ ${category}${langLabel}: ${error.message}`);
-      failed.push({ category, error: error.message });
+  // ── Main generation pass — parallel batches of 3 ────────────────────────
+  // Running all categories sequentially with 15s delays takes ~21 min which
+  // exceeds free-tier dyno lifetime. Batches of 3 in parallel cut this to ~6 min.
+  const BATCH_SIZE = 3;
+  for (let batchStart = 0; batchStart < targetCategories.length; batchStart += BATCH_SIZE) {
+    const batch = targetCategories.slice(batchStart, batchStart + BATCH_SIZE);
+    console.log(`\n📦 Batch ${Math.floor(batchStart / BATCH_SIZE) + 1}: ${batch.join(', ')}`);
+    const results = await Promise.allSettled(
+      batch.map(category => generateAndStoreCategory(category, targetDay, timeSlot, language))
+    );
+    results.forEach((result, i) => {
+      const category = batch[i];
+      if (result.status === 'fulfilled') {
+        succeeded.push(category);
+        console.log(`  ✅ ${category}${langLabel}`);
+      } else {
+        console.error(`  ❌ ${category}${langLabel}: ${result.reason?.message || result.reason}`);
+        failed.push({ category, error: result.reason?.message || String(result.reason) });
+      }
+    });
+    // Small delay between batches to avoid rate-limit spikes
+    if (batchStart + BATCH_SIZE < targetCategories.length) {
+      await new Promise(resolve => setTimeout(resolve, 4000));
     }
-    // Delay between categories to stay within rate limits
-    await new Promise(resolve => setTimeout(resolve, 15000));
   }
 
   // ── Reconciliation pass: retry each failed category once ─────────────────
@@ -1456,17 +1468,14 @@ app.post('/api/generate/:timeSlot', async (req, res) => {
     const langLabel = language === 'ar' ? ' [AR]' : '';
     const catLabel = category ? ` (${category})` : ' (all categories)';
 
-    // Respond immediately so Cloud Scheduler doesn't timeout
+    // Run generation synchronously — keeps the HTTP connection (and Render dyno) alive
+    // for the full duration so the job isn't killed mid-way on free-tier hosts.
+    await generateAllNewsForTimeSlot(slot.label, targetDay, language, categories);
     res.json({
-      status: 'accepted',
-      message: `News generation started for ${slot.label}${langLabel}${catLabel} on ${targetDay}`,
+      status: 'completed',
+      message: `News generation completed for ${slot.label}${langLabel}${catLabel} on ${targetDay}`,
       timestamp: new Date().toISOString()
     });
-
-    // Run generation in background
-    generateAllNewsForTimeSlot(slot.label, targetDay, language, categories).catch(err =>
-      console.error(`Background generation failed for ${slot.label}${langLabel}:`, err.message)
-    );
   } catch (error) {
     res.status(500).json({
       error: error.message,
