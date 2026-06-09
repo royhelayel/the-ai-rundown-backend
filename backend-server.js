@@ -1172,30 +1172,20 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   const succeeded   = [];
   const failed      = []; // [{ category, error }]
 
-  // ── Main generation pass — parallel batches of 3 ────────────────────────
-  // Running all categories sequentially with 15s delays takes ~21 min which
-  // exceeds free-tier dyno lifetime. Batches of 3 in parallel cut this to ~6 min.
-  const BATCH_SIZE = 3;
-  for (let batchStart = 0; batchStart < targetCategories.length; batchStart += BATCH_SIZE) {
-    const batch = targetCategories.slice(batchStart, batchStart + BATCH_SIZE);
-    console.log(`\n📦 Batch ${Math.floor(batchStart / BATCH_SIZE) + 1}: ${batch.join(', ')}`);
-    const results = await Promise.allSettled(
-      batch.map(category => generateAndStoreCategory(category, targetDay, timeSlot, language))
-    );
-    results.forEach((result, i) => {
-      const category = batch[i];
-      if (result.status === 'fulfilled') {
-        succeeded.push(category);
-        console.log(`  ✅ ${category}${langLabel}`);
-      } else {
-        console.error(`  ❌ ${category}${langLabel}: ${result.reason?.message || result.reason}`);
-        failed.push({ category, error: result.reason?.message || String(result.reason) });
-      }
-    });
-    // Small delay between batches to avoid rate-limit spikes
-    if (batchStart + BATCH_SIZE < targetCategories.length) {
-      await new Promise(resolve => setTimeout(resolve, 4000));
+  // ── Main generation pass ─────────────────────────────────────────────────
+  // Sequential with a short inter-category delay to stay within Serper/Claude
+  // rate limits. The curl connection (--max-time 2400) keeps the Render dyno
+  // alive for the full ~19 min this takes; no need for parallelism.
+  for (const category of targetCategories) {
+    try {
+      await generateAndStoreCategory(category, targetDay, timeSlot, language);
+      succeeded.push(category);
+      console.log(`  ✅ ${category}${langLabel}`);
+    } catch (error) {
+      console.error(`  ❌ ${category}${langLabel}: ${error.message}`);
+      failed.push({ category, error: error.message });
     }
+    await new Promise(resolve => setTimeout(resolve, 5000));
   }
 
   // ── Reconciliation pass: retry each failed category once ─────────────────
