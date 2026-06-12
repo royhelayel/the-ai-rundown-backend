@@ -2894,12 +2894,16 @@ app.get('/api/social/circle/popular', async (req, res) => {
 });
 
 // POST /api/saves/sync — save a story to Supabase
+// day + content_snapshot let saved stories render as their own feed (My Saves)
+// and power the global Interesting feed, independent of the current day's news.
 app.post('/api/saves/sync', async (req, res) => {
-  const { user_id, category, story_index, headline, preview } = req.body;
+  const { user_id, category, story_index, headline, preview, day, content_snapshot } = req.body;
   if (!user_id || !category || story_index === undefined || !headline) return res.status(400).json({ error: 'Missing required fields' });
   const key = storyKey(headline);
   const { data, error } = await supabaseAdmin.from('user_saves').upsert({
-    user_id, category, story_index, headline, preview: preview || '', story_key: key, saved_at: new Date().toISOString(),
+    user_id, category, story_index, headline, preview: preview || '', story_key: key,
+    day: day || null, content_snapshot: content_snapshot || null,
+    saved_at: new Date().toISOString(),
   }, { onConflict: 'user_id,story_key' }).select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -2920,6 +2924,42 @@ app.get('/api/saves', async (req, res) => {
   if (!userId) return res.json([]);
   const { data } = await supabaseAdmin.from('user_saves').select('*').eq('user_id', userId).order('saved_at', { ascending: false });
   res.json(data || []);
+});
+
+// GET /api/saves/interesting — global "most interesting" stories across ALL users.
+// Grouped by story_key, counted by distinct savers, sorted by count desc.
+// Returns one content_snapshot per story so it can render as a feed.
+app.get('/api/saves/interesting', async (req, res) => {
+  const { data, error } = await supabaseAdmin.from('user_saves')
+    .select('story_key, category, story_index, headline, preview, day, content_snapshot, user_id')
+    .order('saved_at', { ascending: false })
+    .limit(3000);
+  if (error) return res.status(500).json({ error: error.message });
+
+  const map = {};
+  (data || []).forEach(s => {
+    if (!map[s.story_key]) {
+      map[s.story_key] = {
+        story_key: s.story_key, category: s.category, story_index: s.story_index,
+        headline: s.headline, preview: s.preview, day: s.day,
+        content_snapshot: s.content_snapshot, savers: new Set(),
+      };
+    }
+    const e = map[s.story_key];
+    e.savers.add(s.user_id);
+    // Backfill snapshot/day from any saver that has it
+    if (!e.content_snapshot && s.content_snapshot) e.content_snapshot = s.content_snapshot;
+    if (!e.day && s.day) e.day = s.day;
+  });
+
+  const result = Object.values(map)
+    .map(e => ({
+      story_key: e.story_key, category: e.category, story_index: e.story_index,
+      headline: e.headline, preview: e.preview, day: e.day,
+      content_snapshot: e.content_snapshot, count: e.savers.size,
+    }))
+    .sort((a, b) => b.count - a.count);
+  res.json(result);
 });
 
 // POST /api/reads/sync — record that the user read a story
