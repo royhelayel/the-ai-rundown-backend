@@ -485,11 +485,16 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     // coverage is actually present in the pool for the local-first ranking to use.
     const h  = REGIONAL_QUERY_HINTS[category] || { agency: '', outlets: '' };
     const rs = REGION_SUBJECT[category] || categoryQuery;
+    // site:-restricted query forces the national wire + top local outlets into the
+    // pool even when they don't rank on the US Google index (e.g. Lebanon's French/
+    // Arabic press). One query ORs the region's key local domains.
+    const sites = [...(NATIONAL_AGENCIES[category] || []), ...(LOCAL_TIER1[category] || [])].slice(0, 6);
+    const siteFilter = sites.map(d => `site:${d}`).join(' OR ');
     queries = [
       `${categoryQuery} ${dateLabel}`,
       `${categoryQuery} breaking latest`,
       `${rs} news ${h.outlets} ${dateLabel}`,
-      `${rs} ${h.agency} ${dateLabel}`,
+      siteFilter ? `${rs} (${siteFilter})` : `${rs} ${h.agency} ${dateLabel}`,
       `${categoryQuery} politics economy diplomacy security`,
     ];
   } else {
