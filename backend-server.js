@@ -1010,8 +1010,43 @@ Rules: Cover the same stories as the digest, in the same order. Start immediatel
   return summary;
 }
 
+// Generate a short spoken "category briefing" — a synthesis of the whole category's
+// top stories (~90-120 words) for a quick read or ~90s listen at the category level.
+async function generateBriefing(category, day, timeSlot, digestContent, language = 'en') {
+  console.log(`Generating briefing for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
+
+  const arabicInstruction = language === 'ar'
+    ? `\n\nWrite the entire briefing in Modern Standard Arabic (اللغة العربية الفصحى).`
+    : '';
+
+  const prompt = `You are a news anchor writing a short spoken briefing that catches a listener up on the "${category}" section.${arabicInstruction}
+
+Below is today's full digest for this section:
+
+${digestContent}
+
+Write ONE cohesive briefing of about 90–120 words that ties together the most important stories — what is happening and why it matters — as if delivering a quick on-air catch-up.
+Rules: Flowing prose in one or two short paragraphs. NO headings, NO bullet points, NO markdown, NO source names or URLs. Lead with the single biggest story, then weave in the other top themes. Do not enumerate every story — synthesise. Conversational and clear, meant to be read aloud. Start immediately with the briefing text — no preamble, no title.`;
+
+  const data = await callClaude(prompt, 600);
+  const text = data.content.filter(item => item.type === 'text').map(item => item.text).join('\n').trim();
+
+  if (data.usage) {
+    const { input_tokens, output_tokens } = data.usage;
+    const token_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
+    supabaseAdmin.from('api_usage').insert({
+      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+      input_tokens, output_tokens,
+      web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
+      category, time_slot: timeSlot, content_type: 'briefing', created_at: new Date().toISOString()
+    }).then(({ error }) => { if (error) console.warn('Could not track briefing API usage:', error.message); }, () => {});
+  }
+
+  return text;
+}
+
 // Function to store news in Supabase
-async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en') {
+async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en', briefing = null) {
   try {
     const generated_at = new Date().toISOString();
 
@@ -1042,6 +1077,7 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     if (storiesContent !== null) updatePayload.stories_content = storiesContent;
     if (sourceArticles !== null) updatePayload.source_articles = sourceArticles;
     if (storyCount !== null)     updatePayload.story_count = storyCount;
+    if (briefing !== null)       updatePayload.briefing = briefing;
 
     const runUpsert = async (payload) => {
       if (existing) {
@@ -1055,6 +1091,14 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     };
 
     let { error } = await runUpsert(updatePayload);
+
+    // If only the `briefing` column is missing, drop just briefing and keep the rest
+    // (don't lose stories_content/source_articles to the broad fallback below).
+    if (error && error.message?.includes('briefing')) {
+      const { briefing: _omit, ...withoutBriefing } = updatePayload;
+      console.warn(`⚠️  'briefing' column missing — storing without it. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS briefing text;`);
+      ({ error } = await runUpsert(withoutBriefing));
+    }
 
     // Graceful fallback: if optional columns don't exist yet, retry with just the core fields
     if (error && (error.message?.includes('stories_content') || error.message?.includes('source_articles') || error.message?.includes('language') || error.message?.includes('story_count') || error.code === '42703')) {
@@ -1349,7 +1393,15 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     }
   }
 
-  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language);
+  // Category-level briefing — a short synthesis of the whole category (for category Read/Play)
+  let briefing = null;
+  try {
+    briefing = await generateBriefing(category, targetDay, timeSlot, digestContent, language);
+  } catch (err) {
+    console.warn(`Briefing generation failed for ${category}:`, err.message);
+  }
+
+  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing);
 
   // Only pre-generate TTS for English (Arabic TTS not supported yet)
   if (language === 'en') {
