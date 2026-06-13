@@ -327,26 +327,28 @@ const NATIONAL_AGENCIES = {
   QAT: ['qna.org.qa'],
   LEB: ['nna-leb.gov.lb'],
 };
-// Local tier-1 outlets split by language so the English run only ever treats
-// English-edition outlets as local (and vice-versa) — otherwise Arabic-only
-// outlets (e.g. Al Akhbar, Annahar) would surface Arabic headlines in the
-// English feed. Bilingual national wires (NATIONAL_AGENCIES) count for both.
+// Local tier-1 outlets per region. An outlet counts as local regardless of the
+// language it publishes in — the per-article language gate (titleIsArabic) keeps
+// Arabic articles out of the English feed, so a bilingual outlet's ENGLISH pieces
+// (e.g. Al Akhbar's english.al-akhbar.com) still get full local priority.
+//   `en`  — English-edition domains, used to site:-target the English run.
+//   `all` — every local domain (any language), used for is-local classification.
 const LOCAL_TIER1 = {
   UAE: {
-    en: ['thenationalnews.com', 'thenational.ae', 'gulfnews.com', 'khaleejtimes.com', 'arabianbusiness.com'],
-    ar: ['albayan.ae', 'alkhaleej.ae', 'emaratalyoum.com'],
+    en:  ['thenationalnews.com', 'thenational.ae', 'gulfnews.com', 'khaleejtimes.com', 'arabianbusiness.com'],
+    all: ['thenationalnews.com', 'thenational.ae', 'gulfnews.com', 'khaleejtimes.com', 'arabianbusiness.com', 'albayan.ae', 'alkhaleej.ae', 'emaratalyoum.com'],
   },
   KSA: {
-    en: ['arabnews.com', 'saudigazette.com.sa', 'english.alarabiya.net', 'english.aawsat.com'],
-    ar: ['alarabiya.net', 'aawsat.com', 'asharqalawsat.com', 'alyaum.com', 'okaz.com.sa', 'sabq.org', 'aleqt.com', 'argaam.com'],
+    en:  ['arabnews.com', 'saudigazette.com.sa', 'english.alarabiya.net', 'english.aawsat.com'],
+    all: ['arabnews.com', 'saudigazette.com.sa', 'alarabiya.net', 'aawsat.com', 'asharqalawsat.com', 'alyaum.com', 'okaz.com.sa', 'sabq.org', 'aleqt.com', 'argaam.com'],
   },
   QAT: {
-    en: ['gulf-times.com', 'thepeninsulaqatar.com', 'peninsulaqatar.com', 'dohanews.co', 'aljazeera.com'],
-    ar: ['al-sharq.com'],
+    en:  ['gulf-times.com', 'thepeninsulaqatar.com', 'peninsulaqatar.com', 'dohanews.co', 'aljazeera.com'],
+    all: ['gulf-times.com', 'thepeninsulaqatar.com', 'peninsulaqatar.com', 'dohanews.co', 'aljazeera.com', 'al-sharq.com'],
   },
   LEB: {
-    en: ['today.lorientlejour.com', 'lorientlejour.com', 'naharnet.com', 'dailystar.com.lb'],
-    ar: ['annahar.com', 'al-akhbar.com', 'lbci.com.lb', 'lbcgroup.tv', 'mtv.com.lb'],
+    en:  ['today.lorientlejour.com', 'lorientlejour.com', 'naharnet.com', 'dailystar.com.lb', 'english.al-akhbar.com', 'annahar.com'],
+    all: ['lorientlejour.com', 'naharnet.com', 'dailystar.com.lb', 'al-akhbar.com', 'annahar.com', 'lbci.com.lb', 'lbcgroup.tv', 'mtv.com.lb'],
   },
 };
 // Human-readable region subject for the prompt's region-relevance gate.
@@ -367,14 +369,16 @@ function hostMatches(url, domains) {
   } catch { return false; }
 }
 function isNationalAgency(url, region) { return hostMatches(url, NATIONAL_AGENCIES[region]); }
-// Local tier-1 domains for the given run language (en/ar).
-function localTier1Domains(region, language) {
-  const set = LOCAL_TIER1[region];
-  if (!set) return [];
-  return set[language === 'ar' ? 'ar' : 'en'] || [];
+// English-edition local domains — used to site:-target the English run.
+function localTier1En(region) { return LOCAL_TIER1[region]?.en || []; }
+// An outlet is "local" regardless of the language it publishes in.
+function isLocalSource(url, region) {
+  return hostMatches(url, NATIONAL_AGENCIES[region]) || hostMatches(url, LOCAL_TIER1[region]?.all || []);
 }
-function isLocalSource(url, region, language) {
-  return hostMatches(url, NATIONAL_AGENCIES[region]) || hostMatches(url, localTier1Domains(region, language));
+// True when a title is written in Arabic script (≥ 2 Arabic letters).
+// Used to drop Arabic-language articles from the English feed.
+function titleIsArabic(s) {
+  return ((s || '').match(/[؀-ۿ]/g) || []).length >= 2;
 }
 
 // ── Multi-outlet echo scoring ────────────────────────────────────────────────
@@ -392,7 +396,7 @@ const STOP_WORDS = new Set([
   'also','just','amid','amid','than','some','have','been','were','have','well',
 ]);
 
-function computeEchoScores(articles, region = null, language = 'en') {
+function computeEchoScores(articles, region = null) {
   const tokenize = (title) =>
     (title || '').toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
@@ -408,7 +412,7 @@ function computeEchoScores(articles, region = null, language = 'en') {
 
     // Count this article's own source as tier-1 / local if applicable
     if (isTier1(article.link)) tier1Sources.add(article.source || `src_${i}`);
-    if (region && isLocalSource(article.link, region, language)) localSources.add(article.source || `src_${i}`);
+    if (region && isLocalSource(article.link, region)) localSources.add(article.source || `src_${i}`);
 
     for (let j = 0; j < articles.length; j++) {
       if (i === j) continue;
@@ -417,7 +421,7 @@ function computeEchoScores(articles, region = null, language = 'en') {
         const src = articles[j].source || `source_${j}`;
         allSources.add(src);
         if (isTier1(articles[j].link)) tier1Sources.add(src);
-        if (region && isLocalSource(articles[j].link, region, language)) localSources.add(src);
+        if (region && isLocalSource(articles[j].link, region)) localSources.add(src);
       }
     }
 
@@ -510,7 +514,7 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     // site:-restricted query forces the national wire + top local outlets into the
     // pool even when they don't rank on the US Google index (e.g. Lebanon's French/
     // Arabic press). One query ORs the region's key local domains.
-    const sites = [...(NATIONAL_AGENCIES[category] || []), ...localTier1Domains(category, language)].slice(0, 6);
+    const sites = [...(NATIONAL_AGENCIES[category] || []), ...localTier1En(category)].slice(0, 6);
     const siteFilter = sites.map(d => `site:${d}`).join(' OR ');
     queries = [
       `${categoryQuery} ${dateLabel}`,
@@ -585,14 +589,22 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
   }
 
-  const urlList = Object.keys(scoreMap);
+  // Language gate: keep the English feed English. Drop Arabic-script articles
+  // from English runs (a bilingual local outlet's Arabic pieces are excluded,
+  // but its English pieces stay and still get local priority). Falls back to the
+  // unfiltered list if filtering would empty the pool.
+  let urlList = Object.keys(scoreMap);
+  if (language !== 'ar') {
+    const filtered = urlList.filter(u => !titleIsArabic(itemMap[u].title));
+    if (filtered.length > 0) urlList = filtered;
+  }
   const articleList = urlList.map(url => itemMap[url]);
 
   // Regional categories rank LOCAL coverage above international coverage.
   const region = isRegional ? category : null;
 
   // Compute echo scores: tier-1 vs non-tier-1 (and local outlets when regional).
-  const echoScores = computeEchoScores(articleList, region, language);
+  const echoScores = computeEchoScores(articleList, region);
   const echoMap = {};
   urlList.forEach((url, i) => { echoMap[url] = echoScores[i]; });
 
@@ -607,7 +619,7 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
   const scoreFor = (url) => {
     const e = echoMap[url];
     if (region) {
-      if (isLocalSource(url, region, language)) {
+      if (isLocalSource(url, region)) {
         return 1000 + (e.localCount || 0) * 30 + (isNationalAgency(url, region) ? 40 : 0) + scoreMap[url];
       }
       if (isTier1(url)) return 200 + e.tier1Count * 10 + scoreMap[url];
@@ -626,7 +638,7 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     let label;
     if (region) {
       const lc = echo.localCount || 0;
-      if (isLocalSource(url, region, language)) {
+      if (isLocalSource(url, region)) {
         label = isNationalAgency(url, region)
           ? (lc >= 2 ? `[NATIONAL AGENCY — ${lc} LOCAL OUTLETS — TOP LOCAL STORY] ` : `[NATIONAL AGENCY] `)
           : (lc >= 2 ? `[${lc} LOCAL OUTLETS — TOP LOCAL STORY] ` : `[LOCAL OUTLET] `);
@@ -2623,7 +2635,7 @@ app.get('/admin/api/debug-context', async (req, res) => {
     const region = isRegional ? category : null;
     const classify = (url) => {
       if (region && isNationalAgency(url, region))            return 'NATIONAL_AGENCY';
-      if (region && isLocalSource(url, region, language))     return 'LOCAL_TIER1';
+      if (region && isLocalSource(url, region))               return 'LOCAL_TIER1';
       if (isTier1(url))                                       return 'INTL_TIER1';
       return 'other';
     };
