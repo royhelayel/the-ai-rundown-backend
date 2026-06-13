@@ -347,8 +347,10 @@ const LOCAL_TIER1 = {
     all: ['gulf-times.com', 'thepeninsulaqatar.com', 'peninsulaqatar.com', 'dohanews.co', 'aljazeera.com', 'al-sharq.com'],
   },
   LEB: {
-    en:  ['today.lorientlejour.com', 'lorientlejour.com', 'naharnet.com', 'dailystar.com.lb', 'english.al-akhbar.com', 'annahar.com'],
-    all: ['lorientlejour.com', 'naharnet.com', 'dailystar.com.lb', 'al-akhbar.com', 'annahar.com', 'lbci.com.lb', 'lbcgroup.tv', 'mtv.com.lb'],
+    // `en` = English-edition domains to site:-target (avoid French lorientlejour.com
+    // and Arabic-serving en.annahar.com so non-English doesn't enter the English run).
+    en:  ['today.lorientlejour.com', 'naharnet.com', 'dailystar.com.lb', 'english.al-akhbar.com'],
+    all: ['today.lorientlejour.com', 'lorientlejour.com', 'naharnet.com', 'dailystar.com.lb', 'al-akhbar.com', 'english.al-akhbar.com', 'annahar.com', 'en.annahar.com', 'lbci.com.lb', 'lbcgroup.tv', 'mtv.com.lb'],
   },
 };
 // Human-readable region subject for the prompt's region-relevance gate.
@@ -514,7 +516,7 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     // site:-restricted query forces the national wire + top local outlets into the
     // pool even when they don't rank on the US Google index (e.g. Lebanon's French/
     // Arabic press). One query ORs the region's key local domains.
-    const sites = [...(NATIONAL_AGENCIES[category] || []), ...localTier1En(category)].slice(0, 6);
+    const sites = [...(NATIONAL_AGENCIES[category] || []), ...localTier1En(category)].slice(0, 9);
     const siteFilter = sites.map(d => `site:${d}`).join(' OR ');
     queries = [
       `${categoryQuery} ${dateLabel}`,
