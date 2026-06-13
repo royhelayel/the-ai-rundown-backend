@@ -302,10 +302,12 @@ const TIER1_DOMAINS = new Set([
   'gulf-times.com', 'thepeninsulaqatar.com',
   'dailystar.com.lb', 'lorientlejour.com', 'naharnet.com',
   // Regional — Gulf & Levant (Arabic)
-  'al-akhbar.com', 'annahar.com', 'lbci.com.lb', 'mtv.com.lb', 'nna-leb.gov.lb',
+  'al-akhbar.com', 'annahar.com', 'lbci.com.lb', 'lbcgroup.tv', 'mtv.com.lb', 'nna-leb.gov.lb',
   'albayan.ae', 'alkhaleej.ae', 'emaratalyoum.com', 'wam.ae',
   'alyaum.com', 'okaz.com.sa', 'sabq.org', 'aleqt.com',
   'al-sharq.com', 'peninsulaqatar.com',
+  // National news agencies
+  'spa.gov.sa', 'qna.org.qa',
 ]);
 
 function isTier1(url) {
@@ -313,6 +315,44 @@ function isTier1(url) {
     const host = new URL(url).hostname.replace(/^www\./, '');
     return TIER1_DOMAINS.has(host) || [...TIER1_DOMAINS].some(d => host.endsWith('.' + d));
   } catch { return false; }
+}
+
+// ── Regional local-source layer ──────────────────────────────────────────────
+// Used ONLY for regional categories (UAE/KSA/QAT/LEB) to rank local coverage
+// above international coverage. These domains stay in TIER1_DOMAINS as well, so
+// non-regional categories still treat them (and Al Jazeera) as international tier-1.
+const NATIONAL_AGENCIES = {
+  UAE: ['wam.ae'],
+  KSA: ['spa.gov.sa'],
+  QAT: ['qna.org.qa'],
+  LEB: ['nna-leb.gov.lb'],
+};
+const LOCAL_TIER1 = {
+  UAE: ['thenationalnews.com', 'thenational.ae', 'gulfnews.com', 'khaleejtimes.com', 'arabianbusiness.com', 'albayan.ae', 'alkhaleej.ae', 'emaratalyoum.com'],
+  KSA: ['arabnews.com', 'alarabiya.net', 'saudigazette.com.sa', 'aawsat.com', 'asharqalawsat.com', 'alyaum.com', 'okaz.com.sa', 'sabq.org', 'aleqt.com', 'argaam.com'],
+  QAT: ['gulf-times.com', 'thepeninsulaqatar.com', 'peninsulaqatar.com', 'dohanews.co', 'aljazeera.com', 'al-sharq.com'],
+  LEB: ['lorientlejour.com', 'naharnet.com', 'annahar.com', 'al-akhbar.com', 'lbci.com.lb', 'lbcgroup.tv', 'mtv.com.lb', 'dailystar.com.lb'],
+};
+// Human-readable region subject for the prompt's region-relevance gate.
+const REGION_SUBJECT = { UAE: 'the UAE', KSA: 'Saudi Arabia', QAT: 'Qatar', LEB: 'Lebanon' };
+// Outlet-name hints used to bias Serper queries toward local coverage (English regional).
+const REGIONAL_QUERY_HINTS = {
+  UAE: { agency: 'WAM Emirates News Agency', outlets: 'The National Gulf News Khaleej Times' },
+  KSA: { agency: 'SPA Saudi Press Agency',   outlets: 'Arab News Al Arabiya Saudi Gazette' },
+  QAT: { agency: 'QNA Qatar News Agency',    outlets: 'Gulf Times The Peninsula Al Jazeera' },
+  LEB: { agency: 'NNA National News Agency', outlets: "L'Orient Today Naharnet Annahar" },
+};
+
+function hostMatches(url, domains) {
+  if (!domains || !domains.length) return false;
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    return domains.some(d => host === d || host.endsWith('.' + d));
+  } catch { return false; }
+}
+function isNationalAgency(url, region) { return hostMatches(url, NATIONAL_AGENCIES[region]); }
+function isLocalSource(url, region) {
+  return hostMatches(url, NATIONAL_AGENCIES[region]) || hostMatches(url, LOCAL_TIER1[region]);
 }
 
 // ── Multi-outlet echo scoring ────────────────────────────────────────────────
@@ -330,7 +370,7 @@ const STOP_WORDS = new Set([
   'also','just','amid','amid','than','some','have','been','were','have','well',
 ]);
 
-function computeEchoScores(articles) {
+function computeEchoScores(articles, region = null) {
   const tokenize = (title) =>
     (title || '').toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
@@ -341,10 +381,12 @@ function computeEchoScores(articles) {
 
   return articles.map((article, i) => {
     const tier1Sources = new Set();
+    const localSources = new Set();
     const allSources   = new Set([article.source || `src_${i}`]);
 
-    // Count this article's own source as tier-1 if applicable
+    // Count this article's own source as tier-1 / local if applicable
     if (isTier1(article.link)) tier1Sources.add(article.source || `src_${i}`);
+    if (region && isLocalSource(article.link, region)) localSources.add(article.source || `src_${i}`);
 
     for (let j = 0; j < articles.length; j++) {
       if (i === j) continue;
@@ -353,12 +395,14 @@ function computeEchoScores(articles) {
         const src = articles[j].source || `source_${j}`;
         allSources.add(src);
         if (isTier1(articles[j].link)) tier1Sources.add(src);
+        if (region && isLocalSource(articles[j].link, region)) localSources.add(src);
       }
     }
 
     return {
       tier1Count: tier1Sources.size,  // tier-1 outlets covering same story (≥ 0)
       totalCount: allSources.size,    // all outlets covering same story (≥ 1)
+      localCount: localSources.size,  // local outlets covering same story (regional only, ≥ 0)
     };
   });
 }
@@ -436,6 +480,18 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     queries = WORLD_NEWS_ANGLE_QUERIES(dateLabel);
   } else if (category === 'Politics') {
     queries = POLITICS_ANGLE_QUERIES(categoryQuery, dateLabel);
+  } else if (REGIONAL_CATEGORIES_SET.has(category)) {
+    // Regional (English): bias toward local outlets + the national wire so local
+    // coverage is actually present in the pool for the local-first ranking to use.
+    const h  = REGIONAL_QUERY_HINTS[category] || { agency: '', outlets: '' };
+    const rs = REGION_SUBJECT[category] || categoryQuery;
+    queries = [
+      `${categoryQuery} ${dateLabel}`,
+      `${categoryQuery} breaking latest`,
+      `${rs} news ${h.outlets} ${dateLabel}`,
+      `${rs} ${h.agency} ${dateLabel}`,
+      `${categoryQuery} politics economy diplomacy security`,
+    ];
   } else {
     // Diversified suffixes — each pulls a different slice of results vs. near-identical variants
     queries = [
@@ -505,52 +561,60 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
   const urlList = Object.keys(scoreMap);
   const articleList = urlList.map(url => itemMap[url]);
 
-  // Compute tier-1-aware echo scores: splits outlets into tier-1 vs non-tier-1
-  const echoScores = computeEchoScores(articleList);
+  // Regional categories rank LOCAL coverage above international coverage.
+  const region = isRegional ? category : null;
+
+  // Compute echo scores: tier-1 vs non-tier-1 (and local outlets when regional).
+  const echoScores = computeEchoScores(articleList, region);
   const echoMap = {};
   urlList.forEach((url, i) => { echoMap[url] = echoScores[i]; });
 
-  // Final sort — three signals in descending priority:
-  //
-  //   1. Tier-1 echo  (+15 per tier-1 outlet covering the same story)
-  //      The strongest signal: Reuters + BBC + Bloomberg covering the same event
-  //      means it's globally significant, regardless of Google's US-optimised rank.
-  //
-  //   2. Non-tier-1 echo  (+3 per additional outlet)
-  //      Supporting signal: broad coverage matters but niche blogs shouldn't dominate.
-  //
-  //   3. Article is from a tier-1 outlet  (+8)
-  //      Prefer the Reuters version of a story over a blog repost of the same story.
-  //
-  //   4. Google position score  (tiebreaker only — small values, US-biased so kept light)
-  //      Breaks ties between otherwise equal articles without reintroducing US bias.
-  const sorted = urlList
-    .sort((a, b) => {
-      const ea = echoMap[a], eb = echoMap[b];
-      const scoreA = ea.tier1Count * 15
-                   + (ea.totalCount - ea.tier1Count) * 3
-                   + (isTier1(a) ? 8 : 0)
-                   + scoreMap[a];
-      const scoreB = eb.tier1Count * 15
-                   + (eb.totalCount - eb.tier1Count) * 3
-                   + (isTier1(b) ? 8 : 0)
-                   + scoreMap[b];
-      return scoreB - scoreA;
-    })
-    .map(url => itemMap[url]);
+  // ── Ranking ────────────────────────────────────────────────────────────────
+  // Non-regional: tier-1 echo (×15) + other echo (×3) + own-tier-1 (+8) + position.
+  // Regional (local-first): local sources outrank ALL international coverage, then
+  // echo orders within each band — producing the desired order:
+  //   1. national agency / local tier-1, most echoed
+  //   2. national agency / local tier-1, less echoed
+  //   3. international tier-1, most echoed
+  //   4. international tier-1, less echoed
+  const scoreFor = (url) => {
+    const e = echoMap[url];
+    if (region) {
+      if (isLocalSource(url, region)) {
+        return 1000 + (e.localCount || 0) * 30 + (isNationalAgency(url, region) ? 40 : 0) + scoreMap[url];
+      }
+      if (isTier1(url)) return 200 + e.tier1Count * 10 + scoreMap[url];
+      return (e.totalCount - 1) * 3 + scoreMap[url]; // non-local, non-tier-1 — filler
+    }
+    return e.tier1Count * 15 + (e.totalCount - e.tier1Count) * 3 + (isTier1(url) ? 8 : 0) + scoreMap[url];
+  };
+  const sorted = urlList.sort((a, b) => scoreFor(b) - scoreFor(a)).map(url => itemMap[url]);
 
   // Format context — annotate stories so Claude immediately knows coverage breadth.
-  // Labels now distinguish tier-1 coverage from generic multi-outlet coverage.
   const context = sorted.map((item, i) => {
     const url    = item.link;
-    const echo   = echoMap[url] || { tier1Count: 0, totalCount: 1 };
+    const echo   = echoMap[url] || { tier1Count: 0, totalCount: 1, localCount: 0 };
     const t1     = echo.tier1Count;
     const total  = echo.totalCount;
-    const label  = t1 >= 3   ? `[${total} OUTLETS — ${t1} TIER-1 — MAJOR STORY] `
-                 : t1 >= 1   ? `[${total} OUTLETS — ${t1} TIER-1] `
-                 : total >= 4 ? `[${total} OUTLETS — MAJOR STORY] `
-                 : total >= 2 ? `[${total} OUTLETS] `
-                 : '';
+    let label;
+    if (region) {
+      const lc = echo.localCount || 0;
+      if (isLocalSource(url, region)) {
+        label = isNationalAgency(url, region)
+          ? (lc >= 2 ? `[NATIONAL AGENCY — ${lc} LOCAL OUTLETS — TOP LOCAL STORY] ` : `[NATIONAL AGENCY] `)
+          : (lc >= 2 ? `[${lc} LOCAL OUTLETS — TOP LOCAL STORY] ` : `[LOCAL OUTLET] `);
+      } else if (t1 >= 1) {
+        label = `[INTERNATIONAL TIER-1${t1 >= 2 ? ` — ${t1} OUTLETS` : ''}] `;
+      } else {
+        label = total >= 3 ? `[${total} OUTLETS] ` : '';
+      }
+    } else {
+      label = t1 >= 3   ? `[${total} OUTLETS — ${t1} TIER-1 — MAJOR STORY] `
+            : t1 >= 1   ? `[${total} OUTLETS — ${t1} TIER-1] `
+            : total >= 4 ? `[${total} OUTLETS — MAJOR STORY] `
+            : total >= 2 ? `[${total} OUTLETS] `
+            : '';
+    }
     return `${label}[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${url}\nSummary: ${item.snippet || ''}`;
   }).join('\n\n');
 
@@ -670,15 +734,30 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     : '';
 
   // Regional categories get a higher story ceiling (more niche events worth covering).
-  // Both regional and non-regional now apply the same tier-1 echo prioritisation —
-  // single-source stories are only included when clearly significant AND from a tier-1 outlet.
   const storyCountInstruction = isRegional
     ? 'Write 10–14 grouped stories from the results above.'
     : 'Write 7–10 grouped stories from the results above.';
 
-  const singleSourceRule = '4. Single-source stories should only be included if clearly significant and from a tier-1 outlet.';
+  // ── Prioritisation rules + region gate ─────────────────────────────────────
+  // Regional categories rank LOCAL coverage first and drop off-region stories;
+  // non-regional categories use the global tier-1 echo prioritisation.
+  const regionSubject = REGION_SUBJECT[category];
+  const regionGate = isRegional && regionSubject
+    ? `\n\nREGION FILTER (CRITICAL): Only include stories specifically about ${regionSubject} — its government, economy, society, security, diplomacy, or people. DISCARD any story that is not centrally about ${regionSubject}, even if it comes from a major international outlet or is widely covered globally.`
+    : '';
+  const prioritisationRules = isRegional
+    ? `PRIORITISATION RULES (LOCAL NEWS):
+1. Articles labelled [NATIONAL AGENCY], [N LOCAL OUTLETS — TOP LOCAL STORY], or [LOCAL OUTLET] are LOCAL coverage — include these FIRST, prioritising stories covered by the most local outlets.
+2. Then include [INTERNATIONAL TIER-1] stories, but ONLY when they are specifically about ${regionSubject || 'the region'}.
+3. Prefer stories covered by multiple outlets over single-source stories.
+4. Single-source stories should only be included if clearly significant and from a national agency or local tier-1 outlet.`
+    : `PRIORITISATION RULES:
+1. Articles labelled with TIER-1 outlets (e.g. [3 OUTLETS — 3 TIER-1 — MAJOR STORY]) are globally significant — always include these first.
+2. Articles with broad multi-outlet coverage (e.g. [4 OUTLETS — MAJOR STORY]) are widely reported — include these unless clearly less important than tier-1 stories.
+3. Prefer stories covered by multiple outlets over single-source stories.
+4. Single-source stories should only be included if clearly significant and from a tier-1 outlet.`;
 
-  const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.${arabicInstruction}
+  const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.${regionGate}${arabicInstruction}
 
 SEARCH RESULTS:
 ${searchContext}
@@ -694,11 +773,7 @@ For each major story group, use this EXACT format — no introduction, no preamb
 **Perspectives differ:** Only include when at least two different outlets, parties, or experts genuinely frame the story differently — one sentence describing the contrast. Omit if only one source covers the story, or if all sources are fully aligned.
 **Why this matters:** One or two sentences on broader significance and implications.
 
-${storyCountInstruction} PRIORITISATION RULES:
-1. Articles labelled with TIER-1 outlets (e.g. [3 OUTLETS — 3 TIER-1 — MAJOR STORY]) are globally significant — always include these first.
-2. Articles with broad multi-outlet coverage (e.g. [4 OUTLETS — MAJOR STORY]) are widely reported — include these unless clearly less important than tier-1 stories.
-3. Prefer stories covered by multiple outlets over single-source stories.
-${singleSourceRule}
+${storyCountInstruction} ${prioritisationRules}
 Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories, include a sources section:
 
 ## Sources
@@ -2500,6 +2575,38 @@ app.get('/admin/api/test-claude', async (req, res) => {
   try {
     const result = await callClaude('Say "ok" and nothing else.', 10, 0);
     res.json({ ok: true, model: 'claude-haiku-4-5-20251001', response: result?.content?.[0]?.text });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// GET /admin/api/debug-context?category=UAE — runs Serper + ranking (NO Claude),
+// returns the top-ranked articles with their tier/local classification so the
+// regional local-first ordering can be verified cheaply.
+app.get('/admin/api/debug-context', async (req, res) => {
+  try {
+    const category = req.query.category || 'UAE';
+    const day = req.query.day || getTodayDate();
+    const language = req.query.language || 'en';
+    const isRegional = REGIONAL_CATEGORIES_SET.has(category);
+    const categoryQuery = language === 'ar'
+      ? (ARABIC_CATEGORY_QUERIES[category] || category)
+      : (CATEGORY_SEARCH_QUERIES[category] || category);
+    const { articles } = await buildSearchContext(categoryQuery, day, language, isRegional, category);
+    const region = isRegional ? category : null;
+    const classify = (url) => {
+      if (region && isNationalAgency(url, region)) return 'NATIONAL_AGENCY';
+      if (region && isLocalSource(url, region))    return 'LOCAL_TIER1';
+      if (isTier1(url))                            return 'INTL_TIER1';
+      return 'other';
+    };
+    res.json({
+      category, day, region,
+      count: articles.length,
+      ranked: articles.slice(0, 20).map((a, i) => ({
+        rank: i + 1, source: a.source, class: classify(a.url), title: a.title, url: a.url,
+      })),
+    });
   } catch (err) {
     res.json({ ok: false, error: err.message });
   }
