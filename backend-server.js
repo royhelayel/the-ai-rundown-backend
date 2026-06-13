@@ -2622,6 +2622,36 @@ app.get('/admin/api/test-claude', async (req, res) => {
 // GET /admin/api/debug-context?category=UAE — runs Serper + ranking (NO Claude),
 // returns the top-ranked articles with their tier/local classification so the
 // regional local-first ordering can be verified cheaply.
+// GET /admin/api/debug-serper?q=...&day=YYYY-MM-DD — runs the SAME query against
+// Serper's /news and /search endpoints so we can see what each returns (e.g.
+// whether a small English edition shows in web search but not Google News).
+app.get('/admin/api/debug-serper', async (req, res) => {
+  try {
+    const q = req.query.q || 'Lebanon news';
+    const day = req.query.day || null;
+    let tbs = 'qdr:2d';
+    if (day) {
+      const d  = new Date(day + 'T12:00:00Z');
+      const d1 = new Date(d); d1.setUTCDate(d1.getUTCDate() - 1);
+      const fmt = x => `${String(x.getUTCMonth()+1).padStart(2,'0')}/${String(x.getUTCDate()).padStart(2,'0')}/${x.getUTCFullYear()}`;
+      tbs = `cdr:1,cd_min:${fmt(d1)},cd_max:${fmt(d)}`;
+    }
+    const call = async (path) => {
+      const r = await fetch(`https://google.serper.dev/${path}`, {
+        method: 'POST',
+        headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ q, num: 20, gl: 'us', hl: 'en', tbs }),
+      });
+      if (!r.ok) return { httpError: r.status };
+      const j = await r.json();
+      const items = j.news || j.organic || [];
+      return { count: items.length, sample: items.slice(0, 8).map(it => ({ title: it.title, link: it.link, date: it.date || '' })) };
+    };
+    const [news, search] = await Promise.all([call('news'), call('search')]);
+    res.json({ q, day, tbs, news, search });
+  } catch (err) { res.json({ ok: false, error: err.message }); }
+});
+
 app.get('/admin/api/debug-context', async (req, res) => {
   try {
     const category = req.query.category || 'UAE';
