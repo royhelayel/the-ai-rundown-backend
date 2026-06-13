@@ -418,6 +418,70 @@ async function discoverRssFeed(siteDomainOrUrl) {
   return null;
 }
 
+// ── Regional RSS feeds ───────────────────────────────────────────────────────
+// English-edition feeds for local outlets whose fresh coverage Google indexes
+// unreliably. Pulled directly so we get guaranteed-fresh items with REAL publish
+// timestamps (so we can hard-filter to the last 24h). Discovered via audit-region.
+const RSS_MAX_AGE_HOURS = 28; // keep only items published within this window
+const REGIONAL_RSS = {
+  LEB: [
+    { name: 'Naharnet',    url: 'https://www.naharnet.com/tags/lebanon/en/feed.atom' },
+    { name: 'NOW Lebanon', url: 'https://nowlebanon.com/feed/' },
+    // Annahar excluded: its only feed (en.annahar.com/rss) serves Arabic, which
+    // the language gate would drop — its English isn't available via RSS.
+  ],
+  // UAE / KSA / QAT / EGY / KWT / BHR / OMN / JOR added as each audit completes.
+};
+
+function decodeXmlEntities(s) {
+  return (s || '')
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'").replace(/&amp;/g, '&')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n));
+}
+
+// Minimal RSS 2.0 / Atom parser — returns [{ title, link, date(Date|null), snippet }].
+function parseRssFeed(xml) {
+  const out = [];
+  const blocks = xml.match(/<(item|entry)\b[\s\S]*?<\/\1>/gi) || [];
+  for (const b of blocks) {
+    const pick = (tag) => {
+      const m = b.match(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+      return m ? decodeXmlEntities(m[1]).trim() : '';
+    };
+    const title = pick('title');
+    let link = pick('link');
+    if (!link || /^\s*$/.test(link)) {
+      const m = b.match(/<link\b[^>]*href=["']([^"']+)["']/i);
+      if (m) link = m[1];
+    }
+    const dateStr = pick('pubDate') || pick('published') || pick('updated') || pick('dc:date');
+    const d = dateStr ? new Date(dateStr) : null;
+    const snippet = (pick('description') || pick('summary') || pick('content'))
+      .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+    out.push({ title, link, date: (d && !isNaN(d)) ? d : null, snippet });
+  }
+  return out;
+}
+
+// Fetch one feed and return fresh items (within maxAgeHours) shaped like Serper articles.
+async function fetchRssItems(feed, maxAgeHours = RSS_MAX_AGE_HOURS) {
+  try {
+    const r = await fetch(feed.url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RadioNewsBot/1.0)' },
+      redirect: 'follow', signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return [];
+    const items = parseRssFeed(await r.text());
+    const cutoff = Date.now() - maxAgeHours * 3600 * 1000;
+    return items
+      .filter(it => it.title && it.link)
+      .filter(it => it.date && it.date.getTime() >= cutoff) // hard 24h-ish freshness
+      .map(it => ({ title: it.title, link: it.link, source: feed.name, date: it.date.toISOString(), snippet: it.snippet }));
+  } catch { return []; }
+}
+
 // ── Multi-outlet echo scoring ────────────────────────────────────────────────
 // For each article, counts how many UNIQUE sources cover the same story,
 // split into tier-1 vs non-tier-1 outlets.
@@ -611,6 +675,24 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
         console.log(`🔍 Phase 2 added ${afterCount - beforeCount} new unique articles (total: ${afterCount})`);
       }
     }
+  }
+
+  // ── Regional RSS: pull guaranteed-fresh local English coverage straight from
+  // the outlets' own feeds, bypassing Google News' indexing/date gaps. Only for
+  // today's English regional runs (feeds only carry recent items).
+  if (isRegional && language === 'en' && day === getTodayDate() && (REGIONAL_RSS[category] || []).length) {
+    const rssResults = await Promise.all(
+      REGIONAL_RSS[category].map(f => fetchRssItems(f).catch(() => []))
+    );
+    const rssItems = rssResults.flat();
+    let added = 0;
+    rssItems.forEach(item => {
+      if (!item.link) return;
+      const url = item.link;
+      scoreMap[url] = (scoreMap[url] || 0) + 0.7; // ensure it's retained in the pool
+      if (!itemMap[url]) { itemMap[url] = item; added++; }
+    });
+    console.log(`📡 RSS added ${added} fresh local items for ${category} (last ${RSS_MAX_AGE_HOURS}h)`);
   }
 
   // ── Fallback: if date-pinned search returned nothing, retry with a wider 7-day window ──
