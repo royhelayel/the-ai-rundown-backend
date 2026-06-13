@@ -383,6 +383,41 @@ function titleIsArabic(s) {
   return ((s || '').match(/[؀-ۿ]/g) || []).length >= 2;
 }
 
+// Auto-discover an outlet's RSS/Atom feed: read the homepage's
+// <link rel="alternate" type="application/rss+xml"> tag, then fall back to
+// common feed paths. Returns the absolute feed URL or null.
+async function discoverRssFeed(siteDomainOrUrl) {
+  if (!siteDomainOrUrl) return null;
+  const base = siteDomainOrUrl.startsWith('http') ? siteDomainOrUrl : `https://${siteDomainOrUrl}`;
+  const UA = { 'User-Agent': 'Mozilla/5.0 (compatible; RadioNewsBot/1.0)' };
+  const tryFetch = (u) => fetch(u, { headers: UA, redirect: 'follow', signal: AbortSignal.timeout(8000) });
+  try {
+    const r = await tryFetch(base);
+    if (r.ok) {
+      const html = await r.text();
+      const tags = html.match(/<link[^>]+>/gi) || [];
+      for (const tag of tags) {
+        if (/type=["']application\/(?:rss|atom)\+xml["']/i.test(tag)) {
+          const href = (tag.match(/href=["']([^"']+)["']/i) || [])[1];
+          if (href) { try { return new URL(href, base).href; } catch {} }
+        }
+      }
+    }
+  } catch {}
+  for (const p of ['/rss', '/feed', '/rss.xml', '/feed.xml', '/en/rss', '/en/feed']) {
+    try {
+      const u = new URL(p, base).href;
+      const r = await tryFetch(u);
+      if (r.ok) {
+        const ct = r.headers.get('content-type') || '';
+        const txt = (await r.text()).slice(0, 400);
+        if (ct.includes('xml') || /<rss|<feed|<rdf/i.test(txt)) return u;
+      }
+    } catch {}
+  }
+  return null;
+}
+
 // ── Multi-outlet echo scoring ────────────────────────────────────────────────
 // For each article, counts how many UNIQUE sources cover the same story,
 // split into tier-1 vs non-tier-1 outlets.
@@ -2624,6 +2659,62 @@ app.get('/admin/api/test-claude', async (req, res) => {
 // GET /admin/api/debug-context?category=UAE — runs Serper + ranking (NO Claude),
 // returns the top-ranked articles with their tier/local classification so the
 // regional local-first ordering can be verified cheaply.
+// GET /admin/api/audit-region?country=Lebanon — discovers a country's tier-1
+// outlets (via Claude), classifies each by whether Serper/Google returns its
+// fresh ENGLISH coverage, and auto-detects each one's RSS feed. Produces the
+// report used to decide which outlets need direct-RSS vs Serper site: targeting.
+// Costs ~1 Serper call per outlet (one-off audit, not per generation).
+app.get('/admin/api/audit-region', async (req, res) => {
+  try {
+    const country = req.query.country || 'Lebanon';
+    const day = req.query.day || null; // null → recent window (lenient indexing test)
+
+    // 1. Claude enumerates the tier-1 outlet roster.
+    const rosterPrompt = `List the most important tier-1 news outlets for ${country} — national news agencies, major newspapers, and major news websites (include both English and Arabic-primary outlets). For each, give the primary domain, the English-edition domain or subdomain if one exists (else null), whether it is the national news agency, and its primary language.
+Respond with ONLY a JSON array (no markdown, no prose), max 18 items:
+[{"name":"Annahar","domain":"annahar.com","english_domain":"en.annahar.com","is_agency":false,"primary_language":"ar"}]`;
+    const cl = await callClaude(rosterPrompt, 1500, 1);
+    let txt = (cl.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
+    txt = txt.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    let roster;
+    try { roster = JSON.parse(txt); } catch { return res.json({ ok: false, error: 'Claude did not return valid JSON', raw: txt.slice(0, 500) }); }
+    if (!Array.isArray(roster)) return res.json({ ok: false, error: 'roster not an array', raw: txt.slice(0, 500) });
+
+    // 2 + 3. Classify each outlet via Serper, then auto-detect its RSS feed.
+    const outlets = [];
+    for (const o of roster.slice(0, 18)) {
+      const testDomain = o.english_domain || o.domain;
+      const serper = { count: 0, en_titles: 0, ar_titles: 0, sample: [] };
+      try {
+        const r = await serperSearch(`site:${testDomain}`, 10, day, 'us', 'en');
+        const items = r.news || [];
+        serper.count = items.length;
+        for (const it of items) (titleIsArabic(it.title) ? serper.ar_titles++ : serper.en_titles++);
+        serper.sample = items.slice(0, 3).map(it => ({ t: (it.title || '').slice(0, 48), d: it.date || '' }));
+      } catch {}
+
+      const hasEnglish = !!o.english_domain || o.primary_language === 'en';
+      let classification;
+      if (serper.en_titles >= 2)      classification = 'serper_ok';   // Google indexes its English coverage
+      else if (hasEnglish)            classification = 'rss_needed';  // has English, but Serper can't retrieve it
+      else                            classification = 'arabic_only'; // no English edition → Arabic run only
+
+      // Discover RSS for anything English-capable or the national agency.
+      const rss = (hasEnglish || o.is_agency) ? await discoverRssFeed(o.english_domain || o.domain) : null;
+
+      outlets.push({
+        name: o.name, domain: o.domain, english_domain: o.english_domain || null,
+        is_agency: !!o.is_agency, primary_language: o.primary_language || '',
+        classification, serper, rss_feed: rss,
+      });
+      await new Promise(r => setTimeout(r, 250)); // gentle pacing
+    }
+
+    const summary = outlets.reduce((m, o) => { m[o.classification] = (m[o.classification] || 0) + 1; return m; }, {});
+    res.json({ country, day: day || 'recent', count: outlets.length, summary, outlets });
+  } catch (err) { res.json({ ok: false, error: err.message }); }
+});
+
 // GET /admin/api/debug-serper?q=...&day=YYYY-MM-DD — runs the SAME query against
 // Serper's /news and /search endpoints so we can see what each returns (e.g.
 // whether a small English edition shows in web search but not Google News).
