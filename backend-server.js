@@ -363,6 +363,59 @@ const REGIONAL_QUERY_HINTS = {
   LEB: { agency: 'NNA National News Agency', outlets: "L'Orient Today Naharnet Annahar" },
 };
 
+// Domain → clean English outlet name. Serper labels outlets inconsistently — sometimes
+// in Arabic/Farsi script, sometimes as a raw domain — so we normalise every source to one
+// consistent English display name keyed off its domain (language-independent).
+const OUTLET_NAMES = {
+  // Lebanon
+  'nna-leb.gov.lb': 'NNA', 'naharnet.com': 'Naharnet', 'nowlebanon.com': 'NOW Lebanon',
+  'lorientlejour.com': "L'Orient-Le Jour", 'today.lorientlejour.com': "L'Orient Today",
+  'dailystar.com.lb': 'The Daily Star', 'al-akhbar.com': 'Al Akhbar', 'english.al-akhbar.com': 'Al Akhbar',
+  'annahar.com': 'Annahar', 'en.annahar.com': 'Annahar', 'lbci.com.lb': 'LBCI', 'lbcgroup.tv': 'LBCI', 'mtv.com.lb': 'MTV Lebanon',
+  // UAE
+  'wam.ae': 'WAM', 'thenationalnews.com': 'The National', 'thenational.ae': 'The National', 'gulfnews.com': 'Gulf News',
+  'khaleejtimes.com': 'Khaleej Times', 'arabianbusiness.com': 'Arabian Business', 'albayan.ae': 'Al Bayan',
+  'alkhaleej.ae': 'Al Khaleej', 'emaratalyoum.com': 'Emarat Al Youm',
+  // Saudi
+  'spa.gov.sa': 'SPA', 'arabnews.com': 'Arab News', 'saudigazette.com.sa': 'Saudi Gazette',
+  'aawsat.com': 'Asharq Al-Awsat', 'english.aawsat.com': 'Asharq Al-Awsat', 'asharqalawsat.com': 'Asharq Al-Awsat',
+  'alyaum.com': 'Al Yaum', 'okaz.com.sa': 'Okaz', 'sabq.org': 'Sabq', 'aleqt.com': 'Al Eqtisadiah', 'argaam.com': 'Argaam',
+  // Qatar
+  'qna.org.qa': 'QNA', 'gulf-times.com': 'Gulf Times', 'thepeninsulaqatar.com': 'The Peninsula',
+  'peninsulaqatar.com': 'The Peninsula', 'dohanews.co': 'Doha News', 'al-sharq.com': 'Al Sharq',
+  // Pan-Arab / regional
+  'aljazeera.com': 'Al Jazeera', 'alarabiya.net': 'Al Arabiya', 'english.alarabiya.net': 'Al Arabiya',
+  'skynewsarabia.com': 'Sky News Arabia', 'anadoluagency.com': 'Anadolu Agency', 'aa.com.tr': 'Anadolu Agency',
+  'iranintl.com': 'Iran International',
+  // International tier-1
+  'reuters.com': 'Reuters', 'apnews.com': 'AP', 'bbc.com': 'BBC', 'bbc.co.uk': 'BBC',
+  'nytimes.com': 'The New York Times', 'cnn.com': 'CNN', 'theguardian.com': 'The Guardian',
+  'washingtonpost.com': 'The Washington Post', 'wsj.com': 'The Wall Street Journal', 'bloomberg.com': 'Bloomberg',
+  'ft.com': 'Financial Times', 'economist.com': 'The Economist', 'npr.org': 'NPR', 'politico.com': 'Politico',
+  'axios.com': 'Axios', 'dw.com': 'DW', 'france24.com': 'France 24', 'time.com': 'Time',
+};
+
+function domainOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, '').toLowerCase(); } catch { return ''; }
+}
+// Readable fallback when no map entry exists: title-case the domain's core label.
+function deriveOutletName(domain) {
+  if (!domain) return '';
+  const core = domain.replace(/^(en|english|today|m|amp)\./, '').split('.').slice(0, -1).pop() || domain;
+  return core.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+// Clean English outlet name for an article: prefer the domain map, then an already-English
+// label, then a derived name. Never returns Arabic/Farsi script or a raw URL.
+function cleanOutletName(source, url) {
+  const domain = domainOf(url);
+  for (const [d, name] of Object.entries(OUTLET_NAMES)) {
+    if (domain === d || domain.endsWith('.' + d)) return name;
+  }
+  const s = (source || '').trim();
+  if (s && !/[؀-ۿ]/.test(s) && !/^https?:/i.test(s) && !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(s)) return s;
+  return deriveOutletName(domain) || s || '';
+}
+
 function hostMatches(url, domains) {
   if (!domains || !domains.length) return false;
   try {
@@ -617,12 +670,16 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     // Arabic press). One query ORs the region's key local domains.
     const sites = [...(NATIONAL_AGENCIES[category] || []), ...localTier1En(category)].slice(0, 9);
     const siteFilter = sites.map(d => `site:${d}`).join(' OR ');
+    // A second site query restricted to the local tier-1 outlets ONLY (no national wire),
+    // so independent local coverage (L'Orient, Naharnet, Daily Star, Al Akhbar …) is
+    // guaranteed in the pool and the feed isn't dominated by the national agency.
+    const localOnly = localTier1En(category).slice(0, 6).map(d => `site:${d}`).join(' OR ');
     queries = [
       `${categoryQuery} ${dateLabel}`,
       `${categoryQuery} breaking latest`,
       `${rs} news ${h.outlets} ${dateLabel}`,
       siteFilter ? `${rs} (${siteFilter})` : `${rs} ${h.agency} ${dateLabel}`,
-      `${categoryQuery} politics economy diplomacy security`,
+      localOnly ? `${rs} (${localOnly})` : `${categoryQuery} politics economy diplomacy security`,
     ];
   } else {
     // Diversified suffixes — each pulls a different slice of results vs. near-identical variants
@@ -739,7 +796,10 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     const e = echoMap[url];
     if (region) {
       if (isLocalSource(url, region)) {
-        return 1000 + (e.localCount || 0) * 30 + (isNationalAgency(url, region) ? 40 : 0) + scoreMap[url];
+        // Weight multi-local echo heavily and the national-agency bonus lightly, so a
+        // story carried by several local outlets outranks a solo national-wire item
+        // (prevents the national agency from dominating the feed).
+        return 1000 + (e.localCount || 0) * 45 + (isNationalAgency(url, region) ? 12 : 0) + scoreMap[url];
       }
       if (isTier1(url)) return 200 + e.tier1Count * 10 + scoreMap[url];
       return (e.totalCount - 1) * 3 + scoreMap[url]; // non-local, non-tier-1 — filler
@@ -773,13 +833,13 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
             : total >= 2 ? `[${total} OUTLETS] `
             : '';
     }
-    return `${label}[${i + 1}] Title: ${item.title}\nSource: ${item.source || ''}\nDate: ${item.date || 'recent'}\nURL: ${url}\nSummary: ${item.snippet || ''}`;
+    return `${label}[${i + 1}] Title: ${item.title}\nSource: ${cleanOutletName(item.source, url)}\nDate: ${item.date || 'recent'}\nURL: ${url}\nSummary: ${item.snippet || ''}`;
   }).join('\n\n');
 
   // Return both formatted context (for Claude) and raw article metadata (for audit storage)
   const articles = sorted.map(item => ({
     title:    item.title    || '',
-    source:   item.source   || '',
+    source:   cleanOutletName(item.source, item.link),
     date:     item.date     || '',
     url:      item.link     || '',
     snippet:  item.snippet  || '',
@@ -928,11 +988,12 @@ For each major story group, use this EXACT format — no introduction, no preamb
 - Another key detail — include numbers, names, and specifics where available
 - Additional relevant detail or background
 - For contested claims: "According to [source]..." or "[Party X] claims... while [Party Y] argues..."
-**Perspectives differ:** Only include when at least two different outlets, parties, or experts genuinely frame the story differently — one sentence describing the contrast. Omit if only one source covers the story, or if all sources are fully aligned.
+**Perspectives differ:** Whenever two or more outlets, parties, or experts cover this story, explain in one or two sentences HOW their framing, emphasis, or interpretation differs — name the specific outlets or parties (e.g. "Al Jazeera frames the operation as aggression while The National stresses the ceasefire violation; Israeli officials call it a defensive strike"). Include this for every multi-source story unless the coverage is genuinely identical in angle. Omit ONLY when a single outlet covers the story.
 **Why this matters:** One or two sentences on broader significance and implications.
 
 ${storyCountInstruction} ${prioritisationRules}
-Group articles covering the same story together. Coverage must use real URLs from the search results provided. After all stories, include a sources section:
+CONSOLIDATION (IMPORTANT): When several articles describe different facets, incidents, or sequential updates of the SAME ongoing situation, conflict, or event — for example multiple incidents within one military escalation, or successive developments of one negotiation — combine them into ONE comprehensive story whose bullets cover each facet. Do NOT create a separate ## story for each sub-event. Every ## story must be a genuinely distinct topic, not an incremental update of another story in this digest.
+Coverage must use real URLs from the search results provided. In **Coverage:**, feature a diverse set of outlets — do not list the national news agency alone when independent local outlets also cover the story. After all stories, include a sources section:
 
 ## Sources
 - [Full article headline](exact-article-url)
@@ -978,13 +1039,13 @@ ${digestContent}
 
 For each story in the digest, use this EXACT format — no preamble:
 
-## [Headline: same story as digest, 5–8 words, plain text]
+## [Use the EXACT same headline as the corresponding digest story — copy it verbatim, plain text. Do NOT shorten, rephrase, or invent a new headline.]
 - One key fact — short, direct sentence under 20 words.
 - Second key detail — short, direct sentence under 20 words.
 - Third point if critical — short, direct sentence under 20 words.
-**Summary:** Write 3–4 complete sentences here. Go deeper than the bullets — add context, background, and nuance from the digest. Cover additional angles or details the bullets omit. This is the paragraph a reader wants when they want the full story. (REQUIRED — always include for every story.)
+**Summary:** Write 3–4 complete flowing sentences as a narrative paragraph — NOT a restatement of the bullets. Add the context, background, and nuance from the digest that the bullets leave out (history, causes, what's at stake, what happens next). This is the paragraph a reader wants when they tap for the full story, so it must read differently from and go beyond the bullets above. (REQUIRED — always include for every story.)
 **Why this matters:** One sentence, maximum impact.
-**Perspectives differ:** Include this line only if the digest includes it for this story — condense to one punchy sentence. Omit entirely if not applicable.
+**Perspectives differ:** Carry this line over whenever the digest includes it for this story — keep the named outlets and the contrast, condensed to one clear sentence. Omit only if the digest has no perspectives line for that story.
 
 Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence. The **Summary:** field is mandatory for every single story — never skip it.`;
 
