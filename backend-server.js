@@ -951,10 +951,10 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullet points, "Perspectives differ" text, and "Why this matters" text must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, **Perspectives differ:**, **Why this matters:**, ## Sources. Keep source outlet names and URLs in their original form.`
     : '';
 
-  // Regional categories get a higher story ceiling (more niche events worth covering).
+  // Count is a soft guide, NOT a target to pad toward — consolidation always wins.
   const storyCountInstruction = isRegional
-    ? 'Write 10–14 grouped stories from the results above.'
-    : 'Write 7–10 grouped stories from the results above.';
+    ? 'Cover every genuinely DISTINCT story the results support — usually 6–10, and fewer is fine when one big situation dominates the day. NEVER reach a number by splitting one situation into several stories.'
+    : 'Cover every genuinely DISTINCT story the results support — usually 6–9. NEVER reach a number by splitting one situation into several stories.';
 
   // ── Prioritisation rules + region gate ─────────────────────────────────────
   // Regional categories rank LOCAL coverage first and drop off-region stories;
@@ -991,8 +991,11 @@ For each major story group, use this EXACT format — no introduction, no preamb
 **Perspectives differ:** Whenever two or more outlets, parties, or experts cover this story, explain in one or two sentences HOW their framing, emphasis, or interpretation differs — name the specific outlets or parties (e.g. "Al Jazeera frames the operation as aggression while The National stresses the ceasefire violation; Israeli officials call it a defensive strike"). Include this for every multi-source story unless the coverage is genuinely identical in angle. Omit ONLY when a single outlet covers the story.
 **Why this matters:** One or two sentences on broader significance and implications.
 
+CONSOLIDATION (TOP PRIORITY — overrides the story count): One ongoing situation = ONE story. If several articles cover different facets, incidents, angles, consequences, or updates of the SAME event, conflict, or negotiation, you MUST merge them into a single ## story whose bullets cover each facet and whose **Coverage:** lists ALL of those outlets together.
+For example, a ceasefire deal, continued strikes despite it, the resulting civilian casualties, one side refusing to withdraw, residents returning to damaged homes, and reported truce violations are ALL the same story → ONE ## headline that references every source, NOT six separate headlines.
+Before you finish, re-read your ## headlines: if any two describe the same situation from different angles, MERGE them. Every ## story must be a genuinely distinct topic.
+
 ${storyCountInstruction} ${prioritisationRules}
-CONSOLIDATION (IMPORTANT): When several articles describe different facets, incidents, or sequential updates of the SAME ongoing situation, conflict, or event — for example multiple incidents within one military escalation, or successive developments of one negotiation — combine them into ONE comprehensive story whose bullets cover each facet. Do NOT create a separate ## story for each sub-event. Every ## story must be a genuinely distinct topic, not an incremental update of another story in this digest.
 Coverage must use real URLs from the search results provided. In **Coverage:**, feature a diverse set of outlets — do not list the national news agency alone when independent local outlets also cover the story. After all stories, include a sources section:
 
 ## Sources
