@@ -2163,6 +2163,53 @@ app.post('/api/auth/verify-email', async (req, res) => {
 
 
 // ==========================================
+// ENDPOINT: ENSURE PROFILE (passwordless OTP)
+// Called right after a successful Supabase email-OTP verification. The OTP flow
+// creates the auth.users row but not our app `users` row, so we upsert it here
+// (service role, bypasses RLS) and return the profile.
+// ==========================================
+app.post('/api/auth/ensure-profile', async (req, res) => {
+  try {
+    const { user_id, email } = req.body;
+    if (!user_id || !email) {
+      return res.status(400).json({ error: 'user_id and email are required' });
+    }
+
+    const { data: existing } = await supabaseAdmin
+      .from('users')
+      .select('*')
+      .eq('id', user_id)
+      .maybeSingle();
+
+    if (existing) {
+      // Make sure an OTP-verified user is marked verified.
+      if (existing.verification_status !== 'verified') {
+        await supabaseAdmin.from('users').update({ verification_status: 'verified' }).eq('id', user_id);
+        existing.verification_status = 'verified';
+      }
+      return res.json({ profile: existing, created: false });
+    }
+
+    const { data: created, error: insertError } = await supabaseAdmin
+      .from('users')
+      .insert({ id: user_id, email, verification_status: 'verified' })
+      .select('*')
+      .single();
+
+    if (insertError) {
+      console.error('ensure-profile insert error:', insertError);
+      return res.status(500).json({ error: insertError.message });
+    }
+
+    return res.json({ profile: created, created: true });
+  } catch (error) {
+    console.error('ensure-profile error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+// ==========================================
 // ENDPOINT 3: RESEND VERIFICATION EMAIL
 // ==========================================
 app.post('/api/auth/resend-verification', async (req, res) => {
