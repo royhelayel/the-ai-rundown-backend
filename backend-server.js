@@ -680,6 +680,9 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
       `${rs} news ${h.outlets} ${dateLabel}`,
       siteFilter ? `${rs} (${siteFilter})` : `${rs} ${h.agency} ${dateLabel}`,
       localOnly ? `${rs} (${localOnly})` : `${categoryQuery} politics economy diplomacy security`,
+      // Soft / local-interest pull — keeps the feed from going all-politics on heavy
+      // news days (business, sports, culture, society, education, health, weather).
+      `${rs} business economy sports culture entertainment lifestyle education health weather ${dateLabel}`,
     ];
   } else {
     // Diversified suffixes — each pulls a different slice of results vs. near-identical variants
@@ -968,7 +971,8 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
 1. Articles labelled [NATIONAL AGENCY], [N LOCAL OUTLETS — TOP LOCAL STORY], or [LOCAL OUTLET] are LOCAL coverage — include these FIRST, prioritising stories covered by the most local outlets.
 2. Then include [INTERNATIONAL TIER-1] stories, but ONLY when they are specifically about ${regionSubject || 'the region'}.
 3. Prefer stories covered by multiple outlets over single-source stories.
-4. Single-source stories should only be included if clearly significant and from a national agency or local tier-1 outlet.`
+4. Single-source stories should only be included if clearly significant and from a national agency or local tier-1 outlet.
+5. DIVERSITY (REQUIRED): A local feed must reflect the FULL life of ${regionSubject || 'the region'}, not only politics, war, security, and diplomacy. Even on heavy news days, you MUST include the non-political local stories the results support — business & economy, sports, culture & entertainment, society & daily life, health, education, infrastructure & transport, weather, notable local events. Aim for a clear spread of topics across the feed; do NOT return an all-politics feed when softer local stories are present in the search results. A single dominant political situation = ONE story (per the consolidation rule), which leaves room for these other topics.`
     : `PRIORITISATION RULES:
 1. Articles labelled with TIER-1 outlets (e.g. [3 OUTLETS — 3 TIER-1 — MAJOR STORY]) are globally significant — always include these first.
 2. Articles with broad multi-outlet coverage (e.g. [4 OUTLETS — MAJOR STORY]) are widely reported — include these unless clearly less important than tier-1 stories.
