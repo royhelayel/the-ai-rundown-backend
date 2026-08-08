@@ -1052,7 +1052,7 @@ async function loadCosts() {
 window.addEventListener('load', () => {
   setGenDateToday(); // pre-fill generate date picker with today
   loadOverview();
-  setInterval(loadOverview, 60000); // auto-refresh overview every minute
+  setInterval(loadOverview, 300000); // auto-refresh overview every 5 minutes
 });
 </script>
 </body>

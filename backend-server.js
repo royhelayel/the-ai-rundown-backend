@@ -310,11 +310,38 @@ const TIER1_DOMAINS = new Set([
   'spa.gov.sa', 'qna.org.qa',
 ]);
 
-function isTier1(url) {
+function isGoogleRedirect(url) {
   try {
     const host = new URL(url).hostname.replace(/^www\./, '');
-    return TIER1_DOMAINS.has(host) || [...TIER1_DOMAINS].some(d => host.endsWith('.' + d));
+    return host === 'google.com' || host.startsWith('news.google.');
   } catch { return false; }
+}
+
+// Lowercased display names for every tier-1 domain that has an entry in OUTLET_NAMES.
+// Built lazily after OUTLET_NAMES is defined; used only when the URL is a Google redirect.
+let _tier1DisplayNames = null;
+function tier1DisplayNames() {
+  if (!_tier1DisplayNames) {
+    _tier1DisplayNames = new Set(
+      Object.entries(OUTLET_NAMES)
+        .filter(([domain]) => TIER1_DOMAINS.has(domain) || [...TIER1_DOMAINS].some(d => domain.endsWith('.' + d)))
+        .map(([, name]) => name.toLowerCase())
+    );
+  }
+  return _tier1DisplayNames;
+}
+
+// sourceName is optional; only consulted when the URL is a Google News redirect so that
+// tier-1 outlets whose links arrive as google.com/goto?url=… are not misclassified.
+function isTier1(url, sourceName = '') {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    if (TIER1_DOMAINS.has(host) || [...TIER1_DOMAINS].some(d => host.endsWith('.' + d))) return true;
+  } catch {}
+  if (sourceName && isGoogleRedirect(url)) {
+    return tier1DisplayNames().has(sourceName.toLowerCase());
+  }
+  return false;
 }
 
 // ── Regional local-source layer ──────────────────────────────────────────────
@@ -565,7 +592,7 @@ function computeEchoScores(articles, region = null) {
     const allSources   = new Set([article.source || `src_${i}`]);
 
     // Count this article's own source as tier-1 / local if applicable
-    if (isTier1(article.link)) tier1Sources.add(article.source || `src_${i}`);
+    if (isTier1(article.link, article.source)) tier1Sources.add(article.source || `src_${i}`);
     if (region && isLocalSource(article.link, region)) localSources.add(article.source || `src_${i}`);
 
     for (let j = 0; j < articles.length; j++) {
@@ -574,7 +601,7 @@ function computeEchoScores(articles, region = null) {
       if (sharedTokens >= 2) {
         const src = articles[j].source || `source_${j}`;
         allSources.add(src);
-        if (isTier1(articles[j].link)) tier1Sources.add(src);
+        if (isTier1(articles[j].link, articles[j].source)) tier1Sources.add(src);
         if (region && isLocalSource(articles[j].link, region)) localSources.add(src);
       }
     }
@@ -804,10 +831,13 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
         // (prevents the national agency from dominating the feed).
         return 1000 + (e.localCount || 0) * 45 + (isNationalAgency(url, region) ? 12 : 0) + scoreMap[url];
       }
-      if (isTier1(url)) return 200 + e.tier1Count * 10 + scoreMap[url];
+      if (isTier1(url, itemMap[url]?.source)) return 200 + e.tier1Count * 10 + scoreMap[url];
       return (e.totalCount - 1) * 3 + scoreMap[url]; // non-local, non-tier-1 — filler
     }
-    return e.tier1Count * 15 + (e.totalCount - e.tier1Count) * 3 + (isTier1(url) ? 8 : 0) + scoreMap[url];
+    // Two-key sort: (1) any tier-1 source in cluster (desc), (2) total echo count (desc),
+    // (3) Serper position signal as tiebreaker within equal echo counts.
+    const hasTier1 = e.tier1Count > 0 ? 1 : 0;
+    return hasTier1 * 100_000 + e.totalCount * 10 + scoreMap[url];
   };
   const sorted = urlList.sort((a, b) => scoreFor(b) - scoreFor(a)).map(url => itemMap[url]);
 
@@ -846,7 +876,8 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     date:     item.date     || '',
     url:      item.link     || '',
     snippet:  item.snippet  || '',
-    imageUrl: item.imageUrl || '',
+    // Never persist base64 data URIs — store the URL only if it's a real http URL
+    imageUrl: (item.imageUrl || '').startsWith('http') ? item.imageUrl : '',
   }));
 
   return { context, articles };
@@ -909,6 +940,23 @@ function isClaudeErrorResponse(text) {
   ];
   const lower = text.toLowerCase().slice(0, 600);
   return errorPhrases.some(p => new RegExp(p).test(lower));
+}
+
+// Post-process generated digest: strip non-tier-1 outlets from every Coverage: line.
+// Keeps the content Claude wrote; only filters what gets attributed and displayed.
+// If a story has zero tier-1 sources, keeps up to 2 best-available outlets so
+// Coverage is never blank (rare edge case for niche category stories).
+function filterCoverageTier1(content) {
+  return content.replace(
+    /(\*\*Coverage:\*\*)(.*)/g,
+    (_, label, rest) => {
+      const links = [...rest.matchAll(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g)];
+      const tier1Links = links.filter(([, , url]) => isTier1(url));
+      const kept = tier1Links.length > 0 ? tier1Links : links.slice(0, 2);
+      const line = kept.map(([, name, url]) => `[${name}](${url})`).join(' · ');
+      return `${label} ${line}`;
+    }
+  );
 }
 
 // Clean raw Claude output: strip filler lines, extract from first heading
@@ -1002,16 +1050,21 @@ Before you finish, re-read your ## headlines: if any two describe the same situa
 HEADLINE FRAMING (applies after consolidation): When a merged story contains a major new development — a deal or ceasefire agreed, an agreement signed, a government formed, a leader elected, an offensive launched — ALONGSIDE its complications (violations, delays, disputes, casualties, pushback), the ## headline MUST state the development itself plainly and lead with it. Treat the complications as the tension inside the story (bullets and **Perspectives differ:**), never as the headline. Do NOT let a complication ("strikes undermine fragile truce", "violations threaten deal") replace or bury the underlying event ("Israel and Hezbollah agree to a ceasefire"). A reader must learn the central fact — that the thing happened — from the headline alone.
 
 ${storyCountInstruction} ${prioritisationRules}
-Coverage must use real URLs from the search results provided. In **Coverage:**, feature a diverse set of outlets — do not list the national news agency alone when independent local outlets also cover the story. After all stories, include a sources section:
+Coverage must use real URLs from the search results provided. In **Coverage:**, only list outlets that are major international or regional news organisations — wire services (Reuters, AP), broadcasters (BBC, CNN, Al Jazeera), national newspapers (NYT, Guardian, WaPo, FT), and established regional outlets in TIER1_DOMAINS. Do NOT list niche blogs, legal/trade publications, local TV stations, aggregators, or any outlet whose primary audience is a single city or narrow profession. After all stories, include a sources section:
 
 ## Sources
 - [Full article headline](exact-article-url)
 
-Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. CRITICAL: In **Coverage:**, list EVERY outlet from the search results that covers this story — do NOT truncate to 2 or 3. If 5 outlets covered it, list all 5. If 8 covered it, list all 8. In **## Sources**, list every article URL used across all stories with its full headline as the link text. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.`;
+Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. CRITICAL: In **Coverage:**, list EVERY tier-1 outlet from the search results that covers this story. In **## Sources**, list every article URL used across all stories with its full headline as the link text. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.
+
+ACCURACY RULES (violations make the story wrong, not just imprecise):
+- **Perspectives differ:** must contrast positions held by named tier-1 news organisations or official government/institutional sources only. Do NOT cite think-tanks, advocacy groups, regional institutes, or unnamed "international observers" — if no meaningful tier-1 contrast exists, omit the line entirely.
+- Be precise about what type of agreement or deal is under discussion. A shipping/navigation deal and a nuclear deal are different things — do not conflate them in the headline or body, even when both tracks are active simultaneously.
+- Do not attribute a quote or claim to an official unless a source in the search results directly attributes it to that person.`;
 
   const data = await callClaude(prompt, 5000);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
-  const summary = cleanRawSummary(rawSummary);
+  const summary = filterCoverageTier1(cleanRawSummary(rawSummary));
 
   // Track usage
   if (data.usage) {
@@ -1116,7 +1169,7 @@ Rules: Flowing prose in one or two short paragraphs. NO headings, NO bullet poin
 }
 
 // Function to store news in Supabase
-async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en', briefing = null) {
+async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en', briefing = null, leadImageUrl = null) {
   try {
     const generated_at = new Date().toISOString();
 
@@ -1148,6 +1201,7 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     if (sourceArticles !== null) updatePayload.source_articles = sourceArticles;
     if (storyCount !== null)     updatePayload.story_count = storyCount;
     if (briefing !== null)       updatePayload.briefing = briefing;
+    if (leadImageUrl !== null)   updatePayload.lead_image_url = leadImageUrl;
 
     const runUpsert = async (payload) => {
       if (existing) {
@@ -1454,6 +1508,9 @@ async function pregenerateTTSForContent(content, label) {
 async function generateAndStoreCategory(category, targetDay, timeSlot, language = 'en') {
   const { summary: digestContent, sourceArticles } = await generateNews(category, targetDay, timeSlot, 3, null, null, language);
 
+  // First real http:// image from the article pool — used as the per-digest lead image
+  const leadImageUrl = (sourceArticles || []).find(a => a.imageUrl?.startsWith('http'))?.imageUrl || null;
+
   let storiesContent = null;
   if (GENERATE_STORIES_CONTENT) {
     try {
@@ -1471,7 +1528,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     console.warn(`Briefing generation failed for ${category}:`, err.message);
   }
 
-  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing);
+  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl);
 
   // Only pre-generate TTS for English (Arabic TTS not supported yet)
   if (language === 'en') {
@@ -2456,8 +2513,8 @@ app.get('/admin/api/overview', async (req, res) => {
       supabaseAdmin.from('news_summaries').select('category, day, time_slot, language, generated_at').in('day', last7Days).neq('category', '__completed__'),
       // Behavioral metrics – category selections with event type (last 30 days only)
       supabaseAdmin.from('behavioral_metrics').select('category_selected, event_type, created_at').not('category_selected', 'is', null).gte('created_at', new Date(Date.now() - 30*24*60*60*1000).toISOString()),
-      // News summaries – for generated count + sources
-      supabaseAdmin.from('news_summaries').select('category, language, generated_at, source_articles').neq('category', '__completed__'),
+      // News summaries – for generated count + sources (last 30 days; no full source_articles blob)
+      supabaseAdmin.from('news_summaries').select('category, language, generated_at').neq('category', '__completed__').gte('generated_at', new Date(Date.now() - 30*24*60*60*1000).toISOString()),
       // Story reads – event_type='story_read' for read rate (last 30 days only)
       supabaseAdmin.from('behavioral_metrics').select('user_id, category_selected, day_selected, metadata, created_at').eq('event_type', 'story_read').gte('created_at', new Date(Date.now() - 30*24*60*60*1000).toISOString()),
       // Users with feed categories – for read rate denominator
