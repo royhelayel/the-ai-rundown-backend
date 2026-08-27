@@ -2606,12 +2606,14 @@ app.post('/admin/api/audit/toggle', async (req, res) => {
 
 app.get('/admin/api/audit', async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
+    const { day } = req.query; // optional — omit to see the last 300 audited digests across all days
+    let query = supabaseAdmin
       .from('news_summaries')
       .select('id, category, day, time_slot, language, generated_at, audit_result')
       .not('audit_result', 'is', null)
-      .order('generated_at', { ascending: false })
-      .limit(300);
+      .order('generated_at', { ascending: false });
+    query = day ? query.eq('day', day) : query.limit(300);
+    const { data, error } = await query;
     if (error) throw error;
 
     const rows = data || [];

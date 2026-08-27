@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admin · The Rundown</title>
+  <title>Admin · RadioNews</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -11,8 +11,13 @@
 
     /* ── Nav ── */
     .topbar { background: #0f172a; padding: 0 2rem; display: flex; align-items: center; gap: 0; position: sticky; top: 0; z-index: 100; }
-    .brand { color: white; font-weight: 900; font-size: 1rem; padding: 1rem 1.5rem 1rem 0; white-space: nowrap; border-right: 1px solid rgba(255,255,255,0.1); margin-right: 0.5rem; }
-    .brand span { background: linear-gradient(135deg, #818cf8, #f472b6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    /* Same wordmark treatment as the app header: "Radio" carries the weight, "News"
+       recedes — colors flipped for this topbar's dark background. */
+    .brand { display: flex; align-items: baseline; gap: 0.7rem; padding: 1rem 1.5rem 1rem 0; white-space: nowrap; border-right: 1px solid rgba(255,255,255,0.1); margin-right: 0.5rem; }
+    .brand-mark { font-size: 1.5rem; font-weight: 900; letter-spacing: 0.14em; text-transform: uppercase; }
+    .brand-mark .radio { color: rgba(255,255,255,0.95); }
+    .brand-mark .news { color: rgba(255,255,255,0.4); }
+    .brand-sub { font-size: 0.75rem; font-weight: 600; color: rgba(255,255,255,0.35); }
     .tabs { display: flex; flex: 1; }
     .tab { padding: 1.1rem 1.1rem; color: rgba(255,255,255,0.5); cursor: pointer; font-size: 0.82rem; font-weight: 500; border-bottom: 2px solid transparent; transition: all 0.15s; white-space: nowrap; }
     .tab:hover { color: rgba(255,255,255,0.85); }
@@ -114,7 +119,10 @@
 
 <!-- ── Topbar ── -->
 <nav class="topbar">
-  <div class="brand">✦ <span>The Rundown</span> &nbsp;Admin</div>
+  <div class="brand">
+    <span class="brand-mark"><span class="radio">Radio</span><span class="news">News</span></span>
+    <span class="brand-sub">Admin</span>
+  </div>
   <div class="tabs">
     <div class="tab active" data-tab="overview" onclick="switchTab(this)">Overview</div>
     <div class="tab" data-tab="news"     onclick="switchTab(this)">News</div>
@@ -434,6 +442,12 @@
 
   <div class="section">
     <div class="section-title"><span class="dot"></span>Flagged digests</div>
+    <div class="filters">
+      <span class="filter-label">Date</span>
+      <input type="date" id="f-audit-date">
+      <button class="btn-apply" onclick="loadAudit()">Apply</button>
+      <button class="refresh-btn" style="color:#374151;border-color:#e2e8f0;background:#f8fafc;" onclick="document.getElementById('f-audit-date').value='';loadAudit();">Clear (all dates)</button>
+    </div>
     <div class="table-wrap" id="audit-wrap"><div class="loading">Loading…</div></div>
   </div>
 </div>
@@ -1126,9 +1140,11 @@ async function loadAudit() {
     const status = await api('/audit/status');
     renderAuditToggle(status.enabled, status.persisted);
 
-    const d = await api('/audit');
+    const day = document.getElementById('f-audit-date').value;
+    const d = await api('/audit' + (day ? '?day=' + day : ''));
     document.getElementById('a-flagged').textContent = d.flagged_count;
     document.getElementById('a-passed').textContent = d.passed_count;
+    document.querySelector('#a-passed').nextElementSibling.textContent = day ? day : 'last 300 audited digests';
     window._auditFlags = d.flagged;
 
     if (!d.flagged.length) {
