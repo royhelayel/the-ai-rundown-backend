@@ -1109,10 +1109,10 @@ function renderAuditToggle(enabled, persisted) {
   if (!persisted) {
     sub.innerHTML = enabled
       ? 'On for this server session only — the app_settings table doesn\'t exist yet, so this resets on restart/redeploy. See server logs for the CREATE TABLE statement.'
-      : 'Runs a Haiku check on every English digest before it\'s stored, flagging anything not grounded in its sources.';
+      : 'Runs a Haiku check on every digest (English and Arabic) before it\'s stored, flagging anything not grounded in its sources.';
   } else {
     sub.textContent = enabled
-      ? 'Running on every English digest at generation time.'
+      ? 'Running on every digest — English and Arabic — at generation time.'
       : 'Not running. Turn on to check new digests as they\'re generated.';
   }
 }

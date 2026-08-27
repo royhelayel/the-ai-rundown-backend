@@ -1623,11 +1623,11 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   // First real http:// image from the article pool — used as the per-digest lead image
   const leadImageUrl = (sourceArticles || []).find(a => a.imageUrl?.startsWith('http'))?.imageUrl || null;
 
-  // Digest-only, English-only (searchContext is only meaningfully checkable in the
-  // language it was searched in for now) — see auditDigest for why stories/briefing
-  // don't get their own separate check.
+  // Digest-only, both languages — Arabic digests are checked against the Arabic
+  // searchContext they were written from, same as English. One toggle controls both;
+  // see auditDigest for why stories/briefing don't get their own separate check.
   let auditResult = null;
-  if (language === 'en' && await isAuditEnabled()) {
+  if (await isAuditEnabled()) {
     auditResult = await auditDigest(category, timeSlot, digestContent, searchContext);
   }
 
