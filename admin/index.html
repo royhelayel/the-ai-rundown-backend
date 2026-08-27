@@ -121,6 +121,7 @@
     <div class="tab" data-tab="users"    onclick="switchTab(this)">Users</div>
     <div class="tab" data-tab="behavior" onclick="switchTab(this)">Behavior</div>
     <div class="tab" data-tab="costs"    onclick="switchTab(this)">API & Costs</div>
+    <div class="tab" data-tab="audit"    onclick="switchTab(this)">Audit</div>
   </div>
   <div class="topbar-meta">
     <span id="last-updated">—</span>
@@ -273,6 +274,7 @@
         <option>World News</option><option>Technology</option><option>Business</option><option>Politics</option>
         <option>Sports</option><option>Entertainment</option><option>Science</option><option>Health</option>
         <option>UAE</option><option>KSA</option><option>QAT</option><option>LEB</option>
+        <option>AI</option><option>Crypto</option><option>Football</option><option>Basketball</option>
       </select>
     </div>
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;">
@@ -307,6 +309,7 @@
         <option>World News</option><option>Technology</option><option>Business</option><option>Politics</option>
         <option>Sports</option><option>Entertainment</option><option>Science</option><option>Health</option>
         <option>UAE</option><option>KSA</option><option>QAT</option><option>LEB</option>
+        <option>AI</option><option>Crypto</option><option>Football</option><option>Basketball</option>
       </select>
       <button class="btn-apply" onclick="loadNews()">Apply</button>
     </div>
@@ -405,6 +408,36 @@
   </div>
 </div>
 
+<!-- ── AUDIT ── -->
+<div id="page-audit" class="page">
+  <div class="alert alert-info">
+    Checks each digest against the search results it was written from, flagging claims, numbers, names, or quotes that aren't supported by those sources. Runs on the digest only — stories and briefing are reformatted from the digest, so they inherit its grounding. Regenerating re-runs the audit on the fresh digest automatically.
+  </div>
+
+  <div class="section" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+    <div>
+      <div class="section-title" style="margin-bottom:0.3rem;"><span class="dot"></span>Audit agent</div>
+      <div style="font-size:0.82rem;color:#64748b;" id="audit-toggle-sub">Loading…</div>
+    </div>
+    <label style="display:flex;align-items:center;gap:0.6rem;cursor:pointer;">
+      <span style="font-size:0.82rem;font-weight:700;color:#374151;" id="audit-toggle-label">Off</span>
+      <span id="audit-toggle-switch" onclick="toggleAudit()" style="width:42px;height:24px;border-radius:999px;background:#e2e8f0;position:relative;cursor:pointer;transition:background 0.15s;">
+        <span id="audit-toggle-knob" style="position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.3);transition:left 0.15s;"></span>
+      </span>
+    </label>
+  </div>
+
+  <div class="cards">
+    <div class="card"><div class="card-label">Flagged</div><div class="card-value grad" id="a-flagged">—</div><div class="card-sub">not grounded in sources</div></div>
+    <div class="card"><div class="card-label">Passed</div><div class="card-value grad" id="a-passed">—</div><div class="card-sub">last 300 audited digests</div></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title"><span class="dot"></span>Flagged digests</div>
+    <div class="table-wrap" id="audit-wrap"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+
 <!-- ── Modal ── -->
 <div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -468,7 +501,7 @@ async function triggerGeneration(slot) {
     const data = await res.json();
     if (res.ok) {
       const isToday = !day || day === new Date().toISOString().split('T')[0];
-      const catCount = category ? '1 category' : '12 categories';
+      const catCount = category ? '1 category' : '16 categories';
       status.style.color = '#16a34a';
       status.textContent = `✓ Running in background: ${slot}${langLabel}${catLabel} on ${dayLabel}. ~${category ? '2' : '19'} min — check the news grid below when done.${isToday && language === 'en' ? ' Emails sent on completion.' : ''}`;
     } else {
@@ -503,6 +536,7 @@ function loadTab(name) {
   else if (name === 'users')    loadUsers();
   else if (name === 'behavior') loadBehavior();
   else if (name === 'costs')    loadCosts();
+  else if (name === 'audit')    loadAudit();
 }
 
 // ── Helpers ──
@@ -627,7 +661,7 @@ async function refreshActiveNow() {
 function renderGenGrid(genGrid, last7Days) {
   if (!genGrid || !last7Days) { document.getElementById('gen-grid-wrap').innerHTML = '<div class="empty">No data</div>'; return; }
 
-  const cats = ['World News','Technology','Business','Politics','Sports','Entertainment','Science','Health','UAE','KSA','QAT','LEB'];
+  const cats = ['World News','Technology','AI','Crypto','Business','Politics','Sports','Football','Basketball','Entertainment','Science','Health','UAE','KSA','QAT','LEB'];
   const fmtDay = (d) => { const dt = new Date(d + 'T12:00:00Z'); return dt.toLocaleDateString('en', {weekday:'short',month:'short',day:'numeric'}); };
 
   // Column header: each day has 4 sub-cols (☀️EN ☀️AR 🌙EN 🌙AR)
@@ -1046,6 +1080,113 @@ async function loadCosts() {
     }
     stamp();
   } catch(e) { document.getElementById('usage-wrap').innerHTML = '<div class="empty">Failed to load usage data.</div>'; console.error(e); }
+}
+
+// ── Audit ──
+window._auditFlags = [];
+let _auditEnabled = false;
+
+function renderAuditToggle(enabled, persisted) {
+  _auditEnabled = enabled;
+  document.getElementById('audit-toggle-label').textContent = enabled ? 'On' : 'Off';
+  document.getElementById('audit-toggle-switch').style.background = enabled ? '#6366f1' : '#e2e8f0';
+  document.getElementById('audit-toggle-knob').style.left = enabled ? '20px' : '2px';
+  const sub = document.getElementById('audit-toggle-sub');
+  if (!persisted) {
+    sub.innerHTML = enabled
+      ? 'On for this server session only — the app_settings table doesn\'t exist yet, so this resets on restart/redeploy. See server logs for the CREATE TABLE statement.'
+      : 'Runs a Haiku check on every English digest before it\'s stored, flagging anything not grounded in its sources.';
+  } else {
+    sub.textContent = enabled
+      ? 'Running on every English digest at generation time.'
+      : 'Not running. Turn on to check new digests as they\'re generated.';
+  }
+}
+
+async function toggleAudit() {
+  const next = !_auditEnabled;
+  renderAuditToggle(next, true); // optimistic
+  try {
+    const res = await fetch('/admin/api/audit/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next })
+    });
+    const d = await res.json();
+    renderAuditToggle(d.enabled, d.persisted);
+  } catch (e) {
+    renderAuditToggle(!next, true); // revert on failure
+    alert('Could not update the toggle: ' + e.message);
+  }
+}
+
+async function loadAudit() {
+  document.getElementById('audit-wrap').innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    const status = await api('/audit/status');
+    renderAuditToggle(status.enabled, status.persisted);
+
+    const d = await api('/audit');
+    document.getElementById('a-flagged').textContent = d.flagged_count;
+    document.getElementById('a-passed').textContent = d.passed_count;
+    window._auditFlags = d.flagged;
+
+    if (!d.flagged.length) {
+      document.getElementById('audit-wrap').innerHTML = '<div class="empty">No flagged digests. Nothing to review right now.</div>';
+    } else {
+      let h = `<table class="data-table"><thead><tr>
+        <th>Generated</th><th>Category</th><th>Slot</th><th>Day</th><th>Flags</th><th></th>
+      </tr></thead><tbody>`;
+      d.flagged.forEach((r, i) => {
+        h += `<tr>
+          <td style="color:#6b7280;font-size:0.78rem;">${r.generated_at ? new Date(r.generated_at).toLocaleString() : '—'}</td>
+          <td>${r.category}</td>
+          <td><span class="badge bp">${r.time_slot}</span></td>
+          <td>${r.day}</td>
+          <td><span class="badge br">${r.flags.length} flagged</span></td>
+          <td style="white-space:nowrap;">
+            <button class="refresh-btn" style="color:#374151;border-color:#e2e8f0;background:#f8fafc;" onclick="viewAuditFlags(${i})">View</button>
+            <button class="refresh-btn" style="color:white;border-color:#6366f1;background:#6366f1;" onclick="regenerateFlagged(${i}, this)">Regenerate</button>
+          </td>
+        </tr>`;
+      });
+      h += `</tbody></table><div class="tbl-footer">${d.flagged.length} of the last 300 audited digests are flagged</div>`;
+      document.getElementById('audit-wrap').innerHTML = h;
+    }
+    stamp();
+  } catch (e) {
+    document.getElementById('audit-wrap').innerHTML = '<div class="empty">Failed to load audit data.</div>';
+    console.error(e);
+  }
+}
+
+function viewAuditFlags(i) {
+  const r = window._auditFlags[i];
+  document.getElementById('modal-title').textContent = r.category + ' · ' + r.time_slot + ' · ' + r.day;
+  document.getElementById('modal-body').textContent = r.flags.map((f, idx) =>
+    `${idx + 1}. "${f.claim}"\n   → ${f.reason}`
+  ).join('\n\n') || 'No detail returned by the judge.';
+  document.getElementById('modal').classList.add('open');
+}
+
+async function regenerateFlagged(i, btn) {
+  const r = window._auditFlags[i];
+  btn.disabled = true;
+  btn.textContent = 'Regenerating…';
+  try {
+    const res = await fetch(`/api/generate/${r.time_slot.toLowerCase()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ day: r.day, language: r.language || 'en', category: r.category })
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    btn.textContent = 'Started ✓';
+    setTimeout(() => loadAudit(), 4000); // give the background regen + re-audit a moment
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Regenerate';
+    alert('Could not start regeneration: ' + e.message);
+  }
 }
 
 // ── Init ──

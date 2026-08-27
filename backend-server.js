@@ -30,6 +30,15 @@ const DEFAULT_CATEGORIES = [
   'KSA',
   'QAT',
   'LEB',
+  // Subcategories — their own generation unit (own search + own digest), same as any
+  // category above, not a filter on Technology/Sports. English-only for now: no entry
+  // in ARABIC_CATEGORY_QUERIES, and generateAllNewsForTimeSlot's default category list
+  // for language='ar' filters to categories that DO have one, so these are skipped
+  // automatically on Arabic runs rather than falling through to a broken query.
+  'AI',
+  'Crypto',
+  'Football',
+  'Basketball',
 ];
 
 const TIME_SLOTS = [
@@ -219,6 +228,10 @@ const CATEGORY_SEARCH_QUERIES = {
   'KSA':           'Saudi Arabia Riyadh news today',
   'QAT':           'Qatar Doha news today',
   'LEB':           'Lebanon Beirut news today',
+  'AI':            'latest artificial intelligence news OpenAI Anthropic Google DeepMind Meta models research funding launches',
+  'Crypto':        'latest cryptocurrency news bitcoin ethereum blockchain crypto market regulation',
+  'Football':      'latest football soccer news Premier League Champions League La Liga transfers results',
+  'Basketball':    'latest NBA basketball news games results trades playoffs',
 };
 
 // Arabic search queries — pure Arabic terms for each category, used when language='ar'.
@@ -1085,6 +1098,104 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
   return { summary, searchContext, sourceArticles };
 }
 
+// ── Audit agent ──────────────────────────────────────────────────────────────
+// Checks a generated digest against the exact search results it was written from —
+// not general knowledge — flagging claims, numbers, names, or quotes that aren't
+// traceable to that source text. Runs on the digest only: stories_content and briefing
+// are reformatted FROM the digest (see generateStoriesContent/generateBriefing), not
+// from the raw sources, so auditing them separately would just re-check the same facts
+// twice for no extra safety. A cheap Haiku pass, not a second full generation.
+//
+// Failure of the audit itself (bad JSON, API error) must never block publishing — it
+// returns null, and generateAndStoreCategory treats null the same as "not audited".
+async function auditDigest(category, timeSlot, digestContent, searchContext) {
+  const prompt = `You are a fact-checking editor. Below are the raw search results a news digest was supposed to be based on, and the digest itself. Check the digest ONLY against these search results — not your own general knowledge of the topic.
+
+SEARCH RESULTS (ground truth):
+${searchContext}
+
+DIGEST TO CHECK:
+${digestContent}
+
+Find any claim, statistic, name, quote, or attributed statement in the digest that is NOT supported by the search results above. This includes: fabricated details, invented quotes, numbers that don't appear in or don't match the sources, and claims attributed to the wrong outlet or person. Do NOT flag stylistic choices, omissions, or reasonable synthesis/paraphrasing of what the sources say — only flag things that are actually unsupported or contradicted.
+
+Respond with ONLY valid JSON, no other text, no markdown fences:
+{"passed": true or false, "flags": [{"claim": "the exact sentence or phrase in question", "reason": "why it isn't supported by the search results"}]}
+
+If every claim in the digest is grounded in the search results, return {"passed": true, "flags": []}.`;
+
+  try {
+    const data = await callClaude(prompt, 1500);
+    const raw = data.content.filter(item => item.type === 'text').map(item => item.text).join('\n').trim();
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('Judge did not return JSON');
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    if (data.usage) {
+      const { input_tokens, output_tokens } = data.usage;
+      const token_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
+      supabaseAdmin.from('api_usage').insert({
+        service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+        input_tokens, output_tokens,
+        web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
+        category, time_slot: timeSlot, content_type: 'audit',
+        created_at: new Date().toISOString()
+      }).then(({ error }) => {
+        if (error) console.warn('Could not track audit API usage:', error.message);
+      }, err => console.warn('Could not track audit API usage:', err.message));
+    }
+
+    return {
+      passed: parsed.passed !== false,
+      flags: Array.isArray(parsed.flags) ? parsed.flags : [],
+      checked_at: new Date().toISOString(),
+    };
+  } catch (err) {
+    console.warn(`⚠️  Audit failed for ${category}/${timeSlot} (not blocking publish):`, err.message);
+    return null;
+  }
+}
+
+// In-memory fallback so the toggle works today even before `app_settings` exists —
+// see the SQL note this ships with. Once that table exists, this becomes a warm cache
+// only; the source of truth is always the Supabase read.
+let auditEnabledFallback = false;
+let appSettingsTableMissing = false;
+
+async function isAuditEnabled() {
+  if (appSettingsTableMissing) return auditEnabledFallback;
+  try {
+    const { data, error } = await supabaseAdmin.from('app_settings').select('value').eq('key', 'audit_enabled').maybeSingle();
+    if (error) {
+      if (error.code === 'PGRST205' || error.code === '42P01') {
+        appSettingsTableMissing = true;
+        console.warn(`⚠️  'app_settings' table not found — audit toggle is in-memory only until it's created. Run in Supabase:\n  CREATE TABLE IF NOT EXISTS app_settings (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz DEFAULT now());`);
+      }
+      return auditEnabledFallback;
+    }
+    const enabled = data?.value === true || data?.value?.enabled === true;
+    auditEnabledFallback = enabled; // keep the fallback warm in case the table disappears mid-run
+    return enabled;
+  } catch {
+    return auditEnabledFallback;
+  }
+}
+
+async function setAuditEnabled(enabled) {
+  auditEnabledFallback = enabled;
+  try {
+    const { error } = await supabaseAdmin.from('app_settings').upsert({ key: 'audit_enabled', value: { enabled }, updated_at: new Date().toISOString() });
+    if (error) {
+      appSettingsTableMissing = true;
+      return { persisted: false, warning: "Saved for this session only — 'app_settings' table doesn't exist yet." };
+    }
+    appSettingsTableMissing = false;
+    return { persisted: true };
+  } catch (err) {
+    return { persisted: false, warning: err.message };
+  }
+}
+
 // Generate shorter, punchier stories content by reformatting the already-generated digest.
 // Using the digest (not raw search results) guarantees stories covers the exact same headlines.
 async function generateStoriesContent(category, day, timeSlot, digestContent, language = 'en') {
@@ -1169,7 +1280,7 @@ Rules: Flowing prose in one or two short paragraphs. NO headings, NO bullet poin
 }
 
 // Function to store news in Supabase
-async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en', briefing = null, leadImageUrl = null) {
+async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en', briefing = null, leadImageUrl = null, auditResult = null) {
   try {
     const generated_at = new Date().toISOString();
 
@@ -1202,6 +1313,7 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     if (storyCount !== null)     updatePayload.story_count = storyCount;
     if (briefing !== null)       updatePayload.briefing = briefing;
     if (leadImageUrl !== null)   updatePayload.lead_image_url = leadImageUrl;
+    if (auditResult !== null)    updatePayload.audit_result = auditResult;
 
     const runUpsert = async (payload) => {
       if (existing) {
@@ -1506,10 +1618,18 @@ async function pregenerateTTSForContent(content, label) {
 
 // Helper: generate and store one category, returns { storiesContent } on success, throws on failure
 async function generateAndStoreCategory(category, targetDay, timeSlot, language = 'en') {
-  const { summary: digestContent, sourceArticles } = await generateNews(category, targetDay, timeSlot, 3, null, null, language);
+  const { summary: digestContent, sourceArticles, searchContext } = await generateNews(category, targetDay, timeSlot, 3, null, null, language);
 
   // First real http:// image from the article pool — used as the per-digest lead image
   const leadImageUrl = (sourceArticles || []).find(a => a.imageUrl?.startsWith('http'))?.imageUrl || null;
+
+  // Digest-only, English-only (searchContext is only meaningfully checkable in the
+  // language it was searched in for now) — see auditDigest for why stories/briefing
+  // don't get their own separate check.
+  let auditResult = null;
+  if (language === 'en' && await isAuditEnabled()) {
+    auditResult = await auditDigest(category, timeSlot, digestContent, searchContext);
+  }
 
   let storiesContent = null;
   if (GENERATE_STORIES_CONTENT) {
@@ -1528,7 +1648,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     console.warn(`Briefing generation failed for ${category}:`, err.message);
   }
 
-  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl);
+  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl, auditResult);
 
   // Only pre-generate TTS for English (Arabic TTS not supported yet)
   if (language === 'en') {
@@ -1549,7 +1669,10 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
 // categories: optional array to generate only specific categories (defaults to DEFAULT_CATEGORIES)
 async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en', categories = null) {
   const targetDay = day || getTodayDate();
-  const targetCategories = categories || DEFAULT_CATEGORIES;
+  // Arabic default run: skip any category with no Arabic query rather than falling
+  // through to CATEGORY_SEARCH_QUERIES's generic `|| category` fallback, which would
+  // search Serper for the literal English category name (e.g. "AI") as Arabic content.
+  const targetCategories = categories || (language === 'ar' ? DEFAULT_CATEGORIES.filter(c => ARABIC_CATEGORY_QUERIES[c]) : DEFAULT_CATEGORIES);
   const langLabel = language === 'ar' ? ' [AR]' : '';
   const startedAt = new Date();
 
@@ -1792,25 +1915,6 @@ app.delete('/api/user/custom-category', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-app.get('/api/categories/suggestions', async (req, res) => {
-  try {
-    const q = (req.query.q || '').trim();
-    if (!q || q.length < 3) return res.json([]);
-
-    const embedding = await generateEmbedding(q);
-    if (!embedding) return res.json([]);
-
-    const { data, error } = await supabaseAdmin.rpc('search_similar_categories', {
-      query_embedding: embedding,
-      similarity_threshold: 0.65,
-      match_count: 5
-    });
-
-    if (error) throw error;
-    res.json((data || []).map(r => ({ description: r.category_description, shared_key: r.shared_key })));
-  } catch (error) { res.status(500).json({ error: error.message }); }
-});
-
 // Generate news for a single custom category
 app.post('/api/generate/custom-category', async (req, res) => {
   const { user_id, category, description, day, timeSlot } = req.body;
@@ -1901,321 +2005,6 @@ app.post('/api/generate/:timeSlot', async (req, res) => {
   }
 });
 
-// Endpoint to get news from Supabase
-app.get('/api/news/:category/:day/:timeSlot', async (req, res) => {
-  try {
-    const { category, day, timeSlot } = req.params;
-    
-    const { data, error } = await supabaseAdmin
-      .from('news_summaries')
-      .select('*')
-      .eq('category', category)
-      .eq('day', day)
-      .eq('time_slot', timeSlot)
-      .single();
-
-    if (error && error.code !== 'PGRST116') {
-      throw error;
-    }
-
-    if (!data) {
-      return res.status(404).json({ 
-        error: 'News not found',
-        message: 'This news summary has not been generated yet'
-      });
-    }
-
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Endpoint to get all news for a day
-app.get('/api/news/day/:day', async (req, res) => {
-  try {
-    const { day } = req.params;
-    
-    const { data, error } = await supabaseAdmin
-      .from('news_summaries')
-      .select('*')
-      .eq('day', day);
-
-    if (error) {
-      throw error;
-    }
-
-    res.json(data || []);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ==========================================
-// ENDPOINT 1: SEND VERIFICATION EMAIL
-// ==========================================
-app.post('/api/auth/send-verification', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ 
-        error: 'Email and password are required' 
-      });
-    }
-
-    console.log(`📧 Processing sign-up for ${email}`);
-
-    // === CHECK IF USER ALREADY EXISTS ===
-    const { data: existingUser, error: checkError } = await supabaseAdmin
-      .from('users')
-      .select('id, verification_status')
-      .eq('email', email)
-      .single();
-
-    let userId;
-
-    let isResend = false;
-
-    if (existingUser) {
-      console.log('✓ User already exists:', existingUser.id);
-      userId = existingUser.id;
-
-      if (existingUser.verification_status === 'verified') {
-        return res.status(400).json({
-          error: 'This email is already verified. Please sign in instead.'
-        });
-      }
-      isResend = true;
-    } else {
-      // === CREATE USER IN SUPABASE AUTH ===
-      console.log('Creating new Auth user...');
-      const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-        email: email,
-        password: password,
-        email_confirm: false
-      });
-
-      if (authError) {
-        if (authError.message.includes('already been registered')) {
-          // User exists in Auth but not in users table
-          const { data: authUsers, error: listError } = await supabaseAdmin.auth.admin.listUsers();
-          if (!listError) {
-            const foundUser = authUsers.users.find(u => u.email === email);
-            if (foundUser) {
-              userId = foundUser.id;
-              console.log('✓ Found existing Auth user:', userId);
-              
-              // Create profile if it doesn't exist
-              const { error: insertError } = await supabaseAdmin
-                .from('users')
-                .insert({
-                  id: userId,
-                  email: email,
-                  verification_status: 'pending'
-                });
-              
-              if (insertError && !insertError.message.includes('duplicate')) {
-                console.error('Profile creation failed:', insertError);
-              }
-            }
-          }
-        } else {
-          console.error('Auth creation failed:', authError);
-          return res.status(500).json({ 
-            error: 'Failed to create account',
-            details: authError.message 
-          });
-        }
-      } else {
-        userId = authData.user.id;
-        console.log('✓ User created in Auth:', userId);
-
-        // === CREATE USER PROFILE ===
-        const { error: profileError } = await supabaseAdmin
-          .from('users')
-          .insert({
-            id: userId,
-            email: email,
-            verification_status: 'pending'
-          });
-
-        if (profileError) {
-          console.error('Profile creation failed:', profileError);
-          return res.status(500).json({ 
-            error: 'Failed to create user profile',
-            details: profileError.message 
-          });
-        }
-        console.log('✓ User profile created');
-      }
-    }
-
-    // === GENERATE TOKEN ===
-    const verificationToken = Math.random().toString(36).substring(2, 15) + 
-                              Math.random().toString(36).substring(2, 15);
-    
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24);
-
-    const { error: tokenError } = await supabaseAdmin
-      .from('users')
-      .update({
-        verification_token: verificationToken,
-        verification_token_expires_at: expiresAt.toISOString()
-      })
-      .eq('id', userId);
-
-    if (tokenError) {
-      console.error('Token storage failed:', tokenError);
-      return res.status(500).json({ 
-        error: 'Failed to create verification token',
-        details: tokenError.message 
-      });
-    }
-
-    console.log('✓ Token generated');
-
-    // === SEND EMAIL ===
-    const verificationLink = `${process.env.REACT_APP_URL}/verify-email?token=${verificationToken}&email=${encodeURIComponent(email)}`;
-    
-    const result = await resend.emails.send({
-      from: process.env.FROM_EMAIL || 'noreply@resend.dev',
-      to: email,
-      subject: 'Verify your email - The Rundown',
-      html: `
-        <h2>Welcome to The Rundown!</h2>
-        <p>Click the link below to verify your email and complete your sign-up:</p>
-        <a href="${verificationLink}" style="padding: 10px 20px; background: #6366f1; color: white; text-decoration: none; border-radius: 5px; display: inline-block;">
-          Verify Email
-        </a>
-        <p>Or copy this link: <br>${verificationLink}</p>
-        <p>This link expires in 24 hours.</p>
-      `
-    });
-
-    if (result.error) {
-      console.error('Email send failed:', result.error);
-      return res.status(500).json({ 
-        error: 'Failed to send verification email',
-        details: result.error.message 
-      });
-    }
-
-    console.log('✓ Verification email sent');
-
-    res.json({
-      success: true,
-      message: 'Verification email sent',
-      userId: userId,
-      resent: isResend
-    });
-
-  } catch (error) {
-    console.error('Sign-up endpoint error:', error);
-    res.status(500).json({ 
-      error: 'Failed during sign-up',
-      details: error.message 
-    });
-  }
-});
-
-
-
-// ==========================================
-// ENDPOINT 2: VERIFY EMAIL TOKEN
-// ==========================================
-app.post('/api/auth/verify-email', async (req, res) => {
-  try {
-    const { token, email } = req.body;
-
-    if (!token || !email) {
-      return res.status(400).json({ 
-        error: 'Token and email are required' 
-      });
-    }
-
-    console.log(`🔐 Verifying email token for ${email}`);
-
-    // Find user with this token
-    const { data: user, error: findError } = await supabaseAdmin
-      .from('users')
-      .select('id, verification_token, verification_token_expires_at')
-      .eq('email', email)
-      .single();
-
-    if (findError || !user) {
-      console.error('User not found:', findError);
-      return res.status(401).json({ 
-        error: 'Invalid email or token' 
-      });
-    }
-
-    // Check if token matches
-    if (user.verification_token !== token) {
-      console.error('Token mismatch');
-      return res.status(401).json({ 
-        error: 'Invalid verification token' 
-      });
-    }
-
-    // Check if token expired
-    const now = new Date();
-    const expiresAt = new Date(user.verification_token_expires_at);
-    
-    if (now > expiresAt) {
-      console.error('Token expired');
-      return res.status(401).json({ 
-        error: 'Verification link expired',
-        code: 'TOKEN_EXPIRED'
-      });
-    }
-
-    console.log(`✓ Token verified for user ${user.id}`);
-
-    // Update user's verification status
-    const { error: updateError } = await supabaseAdmin
-      .from('users')
-      .update({
-        verification_status: 'verified',
-        email_verified_at: new Date().toISOString(),
-        verification_token: null,
-        verification_token_expires_at: null
-      })
-      .eq('id', user.id);
-
-    if (updateError) {
-      console.error('Database update failed:', updateError);
-      return res.status(500).json({ error: 'Failed to verify email' });
-    }
-
-    console.log(`✓ User ${user.id} marked as verified`);
-
-    // Track metric
-    try {
-      await supabaseAdmin
-        .from('behavioral_metrics')
-        .insert({
-          user_id: user.id,
-          event_type: 'email_verified',
-          metadata: { email },
-          created_at: new Date().toISOString()
-        });
-    } catch (err) {
-      console.warn('Could not track metric:', err.message);
-    }
-
-    res.json({ 
-      success: true, 
-      message: 'Email verified successfully',
-      userId: user.id
-    });
-
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
 
 
@@ -2265,97 +2054,6 @@ app.post('/api/auth/ensure-profile', async (req, res) => {
   }
 });
 
-
-// ==========================================
-// ENDPOINT 3: RESEND VERIFICATION EMAIL
-// ==========================================
-app.post('/api/auth/resend-verification', async (req, res) => {
-  try {
-    const { email, userId } = req.body;
-
-    if (!email || !userId) {
-      return res.status(400).json({ 
-        error: 'Email and userId are required' 
-      });
-    }
-
-    console.log(`🔄 Resending verification email to ${email}`);
-
-    // Check if already verified
-    const { data: user } = await supabaseAdmin
-      .from('users')
-      .select('verification_status')
-      .eq('id', userId)
-      .single();
-
-    if (user?.verification_status === 'verified') {
-      return res.status(400).json({ 
-        error: 'Email already verified'
-      });
-    }
-
-    // Generate new token
-    const verificationToken = Math.random().toString(36).substring(2, 15) + 
-                              Math.random().toString(36).substring(2, 15);
-    
-    const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24);
-
-    // Store token
-    const { error: tokenError } = await supabaseAdmin
-      .from('users')
-      .update({
-        verification_token: verificationToken,
-        verification_token_expires_at: expiresAt.toISOString()
-      })
-      .eq('id', userId);
-
-    if (tokenError) {
-      return res.status(500).json({ 
-        error: 'Failed to generate verification token' 
-      });
-    }
-
-    // Build link and send email
-    const verificationLink = `${process.env.REACT_APP_URL}/verify-email?token=${verificationToken}&email=${encodeURIComponent(email)}`;
-
-    const { error: emailError } = await resend.emails.send({
-      from: process.env.FROM_EMAIL,
-      to: email,
-      subject: '✨ Verify Your Email - The Rundown (Resend)',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; background: #f5f7fa;">
-          <div style="background: white; padding: 40px; border-radius: 12px;">
-            <h2 style="color: #6366f1; margin-top: 0;">Verification Email Resent</h2>
-            <p style="color: #64748b;">Here's your verification link (valid for 24 hours):</p>
-            <div style="margin: 30px 0;">
-              <a href="${verificationLink}" style="background: linear-gradient(135deg, #6366f1 0%, #ec4899 100%); color: white; padding: 12px 24px; text-decoration: none; border-radius: 8px; display: inline-block; font-weight: bold;">
-                Verify Email
-              </a>
-            </div>
-          </div>
-        </div>
-      `
-    });
-
-    if (emailError) {
-      return res.status(500).json({ 
-        error: 'Failed to send email' 
-      });
-    }
-
-    console.log(`✓ Resend verification email sent to ${email}`);
-
-    res.json({ 
-      success: true, 
-      message: 'Verification email resent successfully' 
-    });
-
-  } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
 
 // ── Metrics feature flag — set to true to re-enable ──────────────────────────
 const METRICS_ENABLED = false;
@@ -2887,6 +2585,51 @@ app.get('/admin/api/usage', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+// ── Audit agent — status, toggle, flagged digests ───────────────────────────
+// Regeneration for a flagged row reuses the existing POST /api/generate/:timeSlot
+// endpoint (pass day/language/category) rather than a new one — it already does
+// exactly this and now runs the audit again on the fresh digest.
+app.get('/admin/api/audit/status', async (req, res) => {
+  try {
+    const enabled = await isAuditEnabled();
+    res.json({ enabled, persisted: !appSettingsTableMissing });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/admin/api/audit/toggle', async (req, res) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    const result = await setAuditEnabled(enabled);
+    res.json({ enabled, ...result });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.get('/admin/api/audit', async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('news_summaries')
+      .select('id, category, day, time_slot, language, generated_at, audit_result')
+      .not('audit_result', 'is', null)
+      .order('generated_at', { ascending: false })
+      .limit(300);
+    if (error) throw error;
+
+    const rows = data || [];
+    const flagged = rows.filter(r => r.audit_result?.passed === false);
+    const passed  = rows.filter(r => r.audit_result?.passed === true);
+    res.json({
+      flagged_count: flagged.length,
+      passed_count: passed.length,
+      flagged: flagged.map(r => ({
+        id: r.id, category: r.category, day: r.day, time_slot: r.time_slot, language: r.language,
+        generated_at: r.generated_at,
+        flags: r.audit_result?.flags || [],
+        checked_at: r.audit_result?.checked_at || null,
+      })),
+    });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
 // ==========================================
 // ENDPOINT: SAVE EMAIL PREFERENCES
 // ==========================================
@@ -3121,47 +2864,6 @@ app.post('/admin/api/test-email', async (req, res) => {
   }
 });
 
-// ── TTS URL endpoint: returns a signed Supabase CDN URL so the browser streams audio
-//    directly (no Render bandwidth), and generates + caches audio if not yet cached. ──
-app.post('/api/tts-url', async (req, res) => {
-  const { text } = req.body;
-  if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
-
-  const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
-  const key = crypto.createHash('md5').update(`${voiceId}:${text.trim()}`).digest('hex');
-  const fileName = `${key}.mp3`;
-
-  try {
-    // Check existence via list (metadata only, no file download)
-    const { data: files } = await supabaseAdmin.storage
-      .from('tts-cache')
-      .list('', { limit: 1, search: key });
-    const cached = !!(files?.some(f => f.name === fileName));
-
-    if (!cached) {
-      // Not in cache — generate with Unreal Speech then upload
-      const audioBuffer = await callUnrealSpeech(text.trim());
-      await supabaseAdmin.storage.from('tts-cache')
-        .upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false })
-        .catch(() => {}); // ignore duplicate upload race
-    }
-
-    // Return a signed URL valid for 1 hour — browser fetches audio directly from CDN
-    const { data: signedData, error: signErr } = await supabaseAdmin.storage
-      .from('tts-cache')
-      .createSignedUrl(fileName, 3600);
-
-    if (signErr || !signedData?.signedUrl) {
-      return res.status(500).json({ error: 'Failed to create signed URL' });
-    }
-
-    res.json({ url: signedData.signedUrl, cached });
-  } catch (err) {
-    console.error('TTS-URL error:', err.message);
-    return res.status(500).json({ error: 'TTS URL failed' });
-  }
-});
-
 // ── TTS stream endpoint — returns audio bytes directly, no Supabase CDN round-trip ──
 // Cache hit:  downloads from Supabase (~300ms), streams to client
 // Cache miss: pipes Unreal Speech /stream response chunk-by-chunk to client (~200ms to first byte),
@@ -3231,46 +2933,6 @@ app.post('/api/tts-stream', async (req, res) => {
   }
 });
 
-// ── TTS endpoint (Unreal Speech with Supabase Storage cache) ──
-app.post('/api/tts', async (req, res) => {
-  const { text } = req.body;
-  if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
-
-  const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
-  const key = crypto.createHash('md5').update(`${voiceId}:${text.trim()}`).digest('hex');
-  const fileName = `${key}.mp3`;
-
-  try {
-    // Check cache first
-    const { data: cached, error: cacheErr } = await supabaseAdmin.storage
-      .from('tts-cache')
-      .download(fileName);
-
-    if (cached && !cacheErr) {
-      const buf = Buffer.from(await cached.arrayBuffer());
-      res.set('Content-Type', 'audio/mpeg');
-      res.set('Cache-Control', 'public, max-age=604800');
-      return res.send(buf);
-    }
-  } catch {}
-
-  try {
-    const audioBuffer = await callUnrealSpeech(text.trim());
-
-    // Cache in Supabase Storage (fire-and-forget)
-    supabaseAdmin.storage.from('tts-cache')
-      .upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false })
-      .catch(() => {});
-
-    res.set('Content-Type', 'audio/mpeg');
-    res.set('Cache-Control', 'public, max-age=604800');
-    return res.send(audioBuffer);
-  } catch (err) {
-    console.error('TTS error:', err.message);
-    return res.status(500).json({ error: 'TTS failed' });
-  }
-});
-
 // News generation is triggered exclusively by GitHub Actions via the
 // /api/generate/:timeSlot HTTP endpoints — no in-process cron jobs.
 // This prevents duplicate runs if the server happens to be warm at schedule time.
@@ -3314,25 +2976,6 @@ app.post('/api/social/setup-username', async (req, res) => {
   res.json({ username, display_name, avatar_color });
 });
 
-// PUT /api/user/profile — update username / display_name
-app.put('/api/user/profile', async (req, res) => {
-  const { user_id, username, display_name } = req.body;
-  if (!user_id) return res.status(400).json({ error: 'Missing user_id' });
-  const update = {};
-  if (username) {
-    const cleaned = username.toLowerCase().replace(/[^a-z0-9_]/g, '');
-    if (cleaned.length < 3) return res.status(400).json({ error: 'Username must be at least 3 characters' });
-    const { data: taken } = await supabaseAdmin.from('users').select('id').eq('username', cleaned).neq('id', user_id).maybeSingle();
-    if (taken) return res.status(409).json({ error: 'Username already taken' });
-    update.username = cleaned;
-  }
-  if (display_name !== undefined) update.display_name = display_name;
-  if (!Object.keys(update).length) return res.status(400).json({ error: 'Nothing to update' });
-  const { data, error } = await supabaseAdmin.from('users').update(update).eq('id', user_id).select('id, username, display_name, avatar_color').single();
-  if (error) return res.status(500).json({ error: error.message });
-  res.json(data);
-});
-
 // GET /api/social/profile/:username — public profile with saves + counts
 app.get('/api/social/profile/:username', async (req, res) => {
   const { username } = req.params;
@@ -3358,19 +3001,6 @@ app.get('/api/social/profile/:username', async (req, res) => {
     followingCount: followingRes.count || 0,
     isFollowing: !!isFollowingRes.data,
   });
-});
-
-// GET /api/social/search?q=&userId=
-app.get('/api/social/search', async (req, res) => {
-  const { q, userId } = req.query;
-  if (!q || q.length < 2) return res.json([]);
-  const { data } = await supabaseAdmin.from('users')
-    .select('id, username, display_name, avatar_color')
-    .eq('verification_status', 'verified')
-    .or(`username.ilike.%${q}%,display_name.ilike.%${q}%`)
-    .neq('id', userId || '00000000-0000-0000-0000-000000000000')
-    .limit(10);
-  res.json(data || []);
 });
 
 // POST /api/social/follow
@@ -3403,15 +3033,6 @@ app.get('/api/social/following', async (req, res) => {
 });
 
 // GET /api/social/followers?userId=
-app.get('/api/social/followers', async (req, res) => {
-  const { userId } = req.query;
-  if (!userId) return res.json([]);
-  const { data } = await supabaseAdmin.from('user_follows')
-    .select('follower_id, users!user_follows_follower_id_fkey(id, username, display_name, avatar_color)')
-    .eq('following_id', userId);
-  res.json((data || []).map(r => r.users).filter(Boolean));
-});
-
 // GET /api/social/circle/saves?userId=
 // Returns saves by people the user follows, grouped and sorted by recency.
 app.get('/api/social/circle/saves', async (req, res) => {
