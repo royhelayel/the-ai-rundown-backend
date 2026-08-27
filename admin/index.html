@@ -142,10 +142,13 @@
 
   <!-- Active now hero cards -->
   <div class="cards" style="margin-bottom:1.25rem;">
-    <div class="card" style="border-left:4px solid #6366f1;">
-      <div class="card-label">🟢 On the Website Right Now</div>
-      <div class="card-value grad" id="s-active-now">—</div>
-      <div class="card-sub" id="s-active-sub">refreshes every 30s</div>
+    <div class="card" style="border-left:4px solid #6366f1;display:flex;align-items:center;justify-content:space-between;gap:1rem;">
+      <div>
+        <div class="card-label">🟢 On the Website Right Now</div>
+        <div class="card-value grad" id="s-active-now">—</div>
+        <div class="card-sub" id="s-active-sub">click to check</div>
+      </div>
+      <button class="btn-apply" style="flex-shrink:0;" onclick="refreshActiveNow()">Check who's online</button>
     </div>
     <div class="card" style="border-left:4px solid #16a34a;">
       <div class="card-label">👤 Signed-In Users</div>
@@ -583,7 +586,6 @@ const CHART_OPTS = {
 
 // ── OVERVIEW ──
 let _ovData = null;
-let _activeNowTimer = null;
 
 async function loadOverview() {
   try {
@@ -654,22 +656,21 @@ async function loadOverview() {
 
     stamp();
   } catch(e) { console.error('overview', e); }
-
-  // Active-now: poll every 30s
-  if (_activeNowTimer) clearInterval(_activeNowTimer);
-  await refreshActiveNow();
-  _activeNowTimer = setInterval(refreshActiveNow, 30000);
 }
 
+// On-demand only — no auto-poll. Each click is one request, not a standing interval.
 async function refreshActiveNow() {
+  document.getElementById('s-active-sub').textContent = 'checking…';
   try {
     const d = await api('/active-now');
     document.getElementById('s-active-now').textContent      = d.total ?? '—';
     document.getElementById('s-active-signedin').textContent = d.signedIn ?? '—';
     document.getElementById('s-active-guests').textContent   = d.guests ?? '—';
     document.getElementById('s-active-sub').textContent =
-      `refreshed ${new Date(d.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
-  } catch(e) { /* silent */ }
+      `as of ${new Date(d.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}`;
+  } catch(e) {
+    document.getElementById('s-active-sub').textContent = 'check failed';
+  }
 }
 
 function renderGenGrid(genGrid, last7Days) {
