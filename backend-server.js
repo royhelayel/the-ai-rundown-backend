@@ -2055,8 +2055,15 @@ app.post('/api/auth/ensure-profile', async (req, res) => {
 });
 
 
-// ── Metrics feature flag — set to true to re-enable ──────────────────────────
-const METRICS_ENABLED = false;
+// ── Metrics feature flags — split so one doesn't drag the other along ────────
+// HEARTBEAT_ENABLED: in-memory only, no Supabase writes, safe at any traffic volume —
+//   powers "who's online" in the admin dashboard.
+// BEHAVIORAL_TRACKING_ENABLED: writes a row to `behavioral_metrics` per tracked event
+//   (story opens, page views, etc.) — this is what maxed out the Supabase plan before.
+//   Leave off unless you're deliberately re-enabling behavioral analytics and are ready
+//   for the write volume/cost that comes with it.
+const HEARTBEAT_ENABLED = true;
+const BEHAVIORAL_TRACKING_ENABLED = false;
 
 // ── In-memory active sessions ─────────────────────────────────────────────────
 // Map: sessionId → { userId: string|null, lastSeen: ms }
@@ -2073,7 +2080,7 @@ setInterval(() => {
 
 // Heartbeat — called by every browser tab every 60s (guests + signed-in users)
 app.post('/api/metrics/heartbeat', (req, res) => {
-  if (!METRICS_ENABLED) return res.json({ ok: true, disabled: true });
+  if (!HEARTBEAT_ENABLED) return res.json({ ok: true, disabled: true });
   const { sessionId, userId } = req.body || {};
   if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
   _activeSessions.set(sessionId, { userId: userId || null, lastSeen: Date.now() });
@@ -2084,7 +2091,7 @@ app.post('/api/metrics/heartbeat', (req, res) => {
 // ENDPOINT 4: TRACK BEHAVIORAL METRICS
 // ==========================================
 app.post('/api/metrics/track', async (req, res) => {
-  if (!METRICS_ENABLED) return res.json({ success: true, disabled: true });
+  if (!BEHAVIORAL_TRACKING_ENABLED) return res.json({ success: true, disabled: true });
   try {
     const {
       userId, 
