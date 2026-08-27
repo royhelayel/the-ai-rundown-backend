@@ -2639,6 +2639,63 @@ app.get('/admin/api/audit', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+// ── TTS cache — stats + retention cleanup ───────────────────────────────────
+// Files are named by content hash (md5 of the script text), not by day/category —
+// there's no date in the filename, so age has to come from Supabase Storage's own
+// created_at per object. The day picker only ever shows the last 7 days (see
+// daysOfWeek in App.js), so any audio older than that is already unreachable from
+// the app — a 14-day default leaves a safety margin without being a set-and-forget
+// automatic deletion. Always manual, always dry-run-first: see the admin UI.
+async function listAllTTSCacheFiles() {
+  const all = [];
+  const limit = 1000;
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabaseAdmin.storage.from('tts-cache').list('', { limit, offset });
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    if (data.length < limit) break;
+    offset += limit;
+  }
+  return all;
+}
+
+app.get('/admin/api/tts-cache/stats', async (req, res) => {
+  try {
+    const files = await listAllTTSCacheFiles();
+    const totalBytes = files.reduce((s, f) => s + (f.metadata?.size || 0), 0);
+    res.json({ fileCount: files.length, totalBytes });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/admin/api/tts-cache/cleanup', async (req, res) => {
+  try {
+    const days = Number(req.body?.days) > 0 ? Number(req.body.days) : 14;
+    const dryRun = req.body?.dryRun !== false; // default true — caller must explicitly pass false to actually delete
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const files = await listAllTTSCacheFiles();
+    const stale = files.filter(f => new Date(f.created_at).getTime() < cutoff);
+    const totalBytes = stale.reduce((s, f) => s + (f.metadata?.size || 0), 0);
+
+    if (dryRun) {
+      return res.json({ dryRun: true, days, fileCount: stale.length, totalBytes });
+    }
+
+    // Supabase's remove() takes a flat array of paths — batch to stay well under
+    // any request-size limit.
+    let deleted = 0;
+    for (let i = 0; i < stale.length; i += 500) {
+      const batch = stale.slice(i, i + 500).map(f => f.name);
+      const { error } = await supabaseAdmin.storage.from('tts-cache').remove(batch);
+      if (error) throw error;
+      deleted += batch.length;
+    }
+    res.json({ dryRun: false, days, fileCount: deleted, totalBytes });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
 // ==========================================
 // ENDPOINT: SAVE EMAIL PREFERENCES
 // ==========================================

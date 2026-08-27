@@ -408,6 +408,22 @@
     <div class="table-wrap" id="usage-wrap"><div class="loading">Loading…</div></div>
   </div>
   <div class="section">
+    <div class="section-title"><span class="dot"></span>TTS Audio Cache (Supabase Storage)</div>
+    <p style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">Pre-generated audio, cached by content hash — not tied to a day or category. The day picker only ever shows the last 7 days, so anything older than that is already unreachable from the app.</p>
+    <div class="cards" style="margin-bottom:1rem;">
+      <div class="card"><div class="card-label">Files</div><div class="card-value grad" id="tts-files">—</div></div>
+      <div class="card"><div class="card-label">Total Size</div><div class="card-value grad" id="tts-size">—</div></div>
+    </div>
+    <div class="filters">
+      <span class="filter-label">Delete audio older than</span>
+      <input type="number" id="tts-days" value="14" min="1" style="width:70px;padding:0.4rem 0.6rem;border:1px solid #e2e8f0;border-radius:6px;">
+      <span class="filter-label">days</span>
+      <button class="btn-apply" onclick="loadTTSStats()">Refresh stats</button>
+      <button class="refresh-btn" style="color:#b91c1c;border-color:#fecaca;background:#fef2f2;" onclick="previewTTSCleanup()">Preview cleanup</button>
+    </div>
+    <div id="tts-cleanup-status" style="font-size:0.82rem;color:#64748b;margin-top:0.75rem;"></div>
+  </div>
+  <div class="section">
     <div class="section-title"><span class="dot"></span>External Dashboards</div>
     <div class="ext-links">
       <a class="ext-link ext-primary" href="https://console.anthropic.com" target="_blank">Anthropic Console →</a>
@@ -1095,6 +1111,78 @@ async function loadCosts() {
     }
     stamp();
   } catch(e) { document.getElementById('usage-wrap').innerHTML = '<div class="empty">Failed to load usage data.</div>'; console.error(e); }
+
+  loadTTSStats();
+}
+
+function fmtBytes(n) {
+  if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(2) + ' GB';
+  if (n >= 1024 ** 2) return (n / 1024 ** 2).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+// ── TTS cache stats + cleanup — always a manual, confirm-before-delete action ──
+async function loadTTSStats() {
+  document.getElementById('tts-files').textContent = '—';
+  document.getElementById('tts-size').textContent = '—';
+  document.getElementById('tts-cleanup-status').textContent = '';
+  try {
+    const d = await api('/tts-cache/stats');
+    document.getElementById('tts-files').textContent = fmtNum(d.fileCount);
+    document.getElementById('tts-size').textContent = fmtBytes(d.totalBytes);
+  } catch (e) { console.error('tts stats', e); }
+}
+
+async function previewTTSCleanup() {
+  const days = Number(document.getElementById('tts-days').value) || 14;
+  const status = document.getElementById('tts-cleanup-status');
+  status.style.color = '#64748b';
+  status.textContent = 'Checking what would be deleted…';
+  try {
+    const res = await fetch('/admin/api/tts-cache/cleanup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days, dryRun: true })
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'request failed');
+    if (d.fileCount === 0) {
+      status.style.color = '#64748b';
+      status.textContent = `Nothing older than ${days} days. Nothing to delete.`;
+      return;
+    }
+    status.innerHTML = `Would delete <strong>${fmtNum(d.fileCount)}</strong> files (<strong>${fmtBytes(d.totalBytes)}</strong>) older than ${days} days. `;
+    const btn = document.createElement('button');
+    btn.className = 'refresh-btn';
+    btn.style.cssText = 'color:white;border-color:#dc2626;background:#dc2626;';
+    btn.textContent = `Delete ${fmtNum(d.fileCount)} files`;
+    btn.onclick = () => runTTSCleanup(days, d.fileCount, d.totalBytes);
+    status.appendChild(btn);
+  } catch (e) {
+    status.style.color = '#b91c1c';
+    status.textContent = 'Preview failed: ' + e.message;
+  }
+}
+
+async function runTTSCleanup(days, fileCount, totalBytes) {
+  if (!confirm(`Permanently delete ${fileCount} audio files (${fmtBytes(totalBytes)}) older than ${days} days? This can't be undone.`)) return;
+  const status = document.getElementById('tts-cleanup-status');
+  status.style.color = '#64748b';
+  status.textContent = 'Deleting…';
+  try {
+    const res = await fetch('/admin/api/tts-cache/cleanup', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days, dryRun: false })
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'request failed');
+    status.style.color = '#15803d';
+    status.textContent = `Deleted ${fmtNum(d.fileCount)} files (${fmtBytes(d.totalBytes)} freed).`;
+    loadTTSStats();
+  } catch (e) {
+    status.style.color = '#b91c1c';
+    status.textContent = 'Delete failed: ' + e.message;
+  }
 }
 
 // ── Audit ──
