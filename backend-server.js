@@ -1098,6 +1098,93 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
   return { summary, searchContext, sourceArticles };
 }
 
+// ── Evening incremental update ──────────────────────────────────────────────
+// Evening no longer regenerates a category from scratch — it takes the digest Morning
+// already published and asks Claude to fold in only what's genuinely new: merge a fresh
+// development into its existing story (flagged Updated, same headline, new outlets
+// appended to Coverage), append a genuinely new story at the end (flagged New), or
+// reproduce an untouched story exactly as-is (flagged Unchanged). Reproducing every
+// Morning story — even untouched ones — keeps this digest a complete, self-contained
+// replacement rather than a diff, so the frontend shows Evening's row on its own instead
+// of stitching two rows together (see the Evening-supersedes-Morning filter in App.js).
+// Preserving Morning's story order — new stories only ever appended, never inserted or
+// reordered — is also what keeps a story's position, and therefore its read status,
+// stable across the Morning→Evening transition (see useListenHistory.js).
+async function generateEveningUpdate(category, day, priorDigestContent, language = 'en') {
+  const categoryQuery = language === 'ar' ? (ARABIC_CATEGORY_QUERIES[category] || category) : (CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category));
+  const isRegional = REGIONAL_CATEGORIES_SET.has(category);
+
+  console.log(`Generating evening update for ${category} on ${day}${language === 'ar' ? ' [AR]' : ''}`);
+
+  const { context: searchContext, articles: sourceArticles } = await buildSearchContext(categoryQuery, day, language, isRegional, category);
+  const serper_searches = 5;
+  const serper_cost = serper_searches * 0.001;
+
+  const arabicInstruction = language === 'ar'
+    ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullet points, "Perspectives differ" text, and "Why this matters" text must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, **Perspectives differ:**, **Why this matters:**, **Status:**, ## Sources. Keep source outlet names and URLs in their original form.`
+    : '';
+
+  const prompt = `You are a news analyst updating a digest that was already published earlier today. Below is the digest already published, followed by fresh search results for "${categoryQuery}" from later in the day.${arabicInstruction}
+
+ALREADY PUBLISHED THIS MORNING:
+${priorDigestContent}
+
+FRESH SEARCH RESULTS:
+${searchContext}
+
+Produce an updated digest by working through the ALREADY PUBLISHED stories one at a time, in the SAME ORDER, then appending anything genuinely new:
+
+1. For each already-published story, check whether the fresh search results contain a genuine new development for it — a real escalation, resolution, reaction, new figures, or fact that wasn't in the story before. Do NOT count an outlet simply re-reporting the same facts already in the story as a development.
+   - If there IS a genuine new development: reproduce the story using the EXACT SAME headline text as published (copy it verbatim, do not reword it), keep every existing bullet, and add one or two new bullets covering only the new development. Extend its **Coverage:** line with the new outlet(s) — keep every outlet already listed, only add to it. End the story with a line **Status:** Updated
+   - If there is NO genuine new development: reproduce the story completely unchanged — same headline, same bullets, same **Coverage:**, same **Perspectives differ:**/**Why this matters:** lines if present. End the story with a line **Status:** Unchanged
+2. After all already-published stories, add any genuinely new story from the fresh search results that is NOT a continuation of one of them — a distinct topic not covered above. Write it in the normal digest format (own ## headline, **Coverage:**, bullets, **Perspectives differ:** / **Why this matters:** where applicable) and end it with **Status:** New
+3. Never reorder, merge, drop, or rewrite an already-published story beyond what rule 1 allows. Never invent a development that the fresh search results don't support.
+
+Use this EXACT format for every story:
+
+## Headline
+**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · ...
+- Key fact or development
+- Another key detail
+**Perspectives differ:** (carry over or add per the normal rules — see below)
+**Why this matters:** One or two sentences on broader significance.
+**Status:** Updated | Unchanged | New
+
+**Perspectives differ:** Whenever two or more outlets, parties, or experts cover a story, explain in one or two sentences HOW their framing, emphasis, or interpretation differs, naming the specific outlets or parties. Include for every multi-source story unless the coverage is genuinely identical in angle. Omit only when a single outlet covers the story.
+
+Coverage must use real URLs from the fresh search results for any new outlets added; keep the original URLs for outlets carried over unchanged. Only list major international or regional news organisations — wire services, broadcasters, national newspapers, and established regional outlets. After all stories, include:
+
+## Sources
+- [Full article headline](exact-article-url)
+
+List every article URL used across all stories (both carried-over and new) with its full headline as the link text. Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##, and **Status:** as the last line of each story. Complete all sentences. Never use Wikipedia as a source.
+
+ACCURACY RULES (violations make the story wrong, not just imprecise):
+- **Perspectives differ:** must contrast positions held by named tier-1 news organisations or official government/institutional sources only.
+- Do not attribute a quote or claim to an official unless a source in the fresh search results directly attributes it to that person.`;
+
+  const data = await callClaude(prompt, 5000);
+  const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+  const summary = filterCoverageTier1(cleanRawSummary(rawSummary));
+
+  if (data.usage) {
+    const { input_tokens, output_tokens } = data.usage;
+    const token_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
+    const estimated_cost_usd = token_cost_usd + serper_cost;
+    supabaseAdmin.from('api_usage').insert({
+      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+      input_tokens, output_tokens,
+      web_searches: serper_searches, search_cost_usd: serper_cost, token_cost_usd, estimated_cost_usd,
+      category, time_slot: 'Evening', content_type: 'digest',
+      created_at: new Date().toISOString()
+    }).then(({ error }) => {
+      if (error) console.warn('Could not track API usage:', error.message);
+    }, err => console.warn('Could not track API usage:', err.message));
+  }
+
+  return { summary, searchContext, sourceArticles };
+}
+
 // ── Audit agent ──────────────────────────────────────────────────────────────
 // Checks a generated digest against the exact search results it was written from —
 // not general knowledge — flagging claims, numbers, names, or quotes that aren't
@@ -1634,7 +1721,23 @@ async function pregenerateTTSForContent(content, label) {
 
 // Helper: generate and store one category, returns { storiesContent } on success, throws on failure
 async function generateAndStoreCategory(category, targetDay, timeSlot, language = 'en') {
-  const { summary: digestContent, sourceArticles, searchContext } = await generateNews(category, targetDay, timeSlot, 3, null, null, language);
+  // Evening builds on Morning's digest when one exists for this category/day — see
+  // generateEveningUpdate. No Morning digest (backfills, or Morning never ran that day)
+  // falls back to a normal independent generation, same as before.
+  let priorDigest = null;
+  if (timeSlot === 'Evening') {
+    const { data: morningRow } = await supabaseAdmin
+      .from('news_summaries')
+      .select('content')
+      .eq('category', category).eq('day', targetDay).eq('time_slot', 'Morning').eq('language', language)
+      .is('user_id', null).is('shared_key', null)
+      .maybeSingle();
+    if (morningRow?.content) priorDigest = morningRow.content;
+  }
+
+  const { summary: digestContent, sourceArticles, searchContext } = priorDigest
+    ? await generateEveningUpdate(category, targetDay, priorDigest, language)
+    : await generateNews(category, targetDay, timeSlot, 3, null, null, language);
 
   // First real http:// image from the article pool — used as the per-digest lead image
   const leadImageUrl = (sourceArticles || []).find(a => a.imageUrl?.startsWith('http'))?.imageUrl || null;
