@@ -1206,6 +1206,11 @@ const setAuditEnabled      = (enabled) => setSettingEnabled('audit_enabled', ena
 // hasn't touched it yet.
 const isGenerationEnabled  = () => isSettingEnabled('generation_enabled', true);
 const setGenerationEnabled = (enabled) => setSettingEnabled('generation_enabled', enabled);
+// Narrower than the master switch above: only affects the *automated* Evening trigger
+// (the scheduled GitHub Actions cron and the watchdog's self-correct) — manual "Generate
+// Evening" clicks from the admin dashboard still work while this is off. Default true.
+const isEveningAutoEnabled  = () => isSettingEnabled('evening_auto_enabled', true);
+const setEveningAutoEnabled = (enabled) => setSettingEnabled('evening_auto_enabled', enabled);
 
 // Generate shorter, punchier stories content by reformatting the already-generated digest.
 // Using the digest (not raw search results) guarantees stories covers the exact same headlines.
@@ -2099,6 +2104,15 @@ app.post('/api/generate/:timeSlot', async (req, res) => {
       return res.status(423).json({ error: 'Generation is currently paused from the admin dashboard. Turn it back on to generate news.' });
     }
 
+    // Narrower Evening-only switch — only applies to calls the caller marks as
+    // automated (the GitHub Actions cron and the watchdog both send auto:true).
+    // Manual "Generate Evening" clicks from the admin dashboard never set this flag,
+    // so they still work while automated Evening runs are paused.
+    const isAuto = req.body?.auto === true;
+    if (isAuto && slot.label === 'Evening' && !(await isEveningAutoEnabled())) {
+      return res.json({ status: 'skipped', message: 'Automated Evening generation is currently disabled from the admin dashboard.' });
+    }
+
     const targetDay = day || getTodayDate();
     const categories = category ? [category] : null;
     const langLabel = language === 'ar' ? ' [AR]' : '';
@@ -2742,6 +2756,23 @@ app.post('/admin/api/generation/toggle', async (req, res) => {
   try {
     const enabled = !!req.body?.enabled;
     const result = await setGenerationEnabled(enabled);
+    res.json({ enabled, ...result });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ── Automated-Evening-only switch — narrower than the master pause above. See the
+// `auto` flag check in POST /api/generate/:timeSlot.
+app.get('/admin/api/generation/evening-auto/status', async (req, res) => {
+  try {
+    const enabled = await isEveningAutoEnabled();
+    res.json({ enabled, persisted: !appSettingsTableMissing });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/admin/api/generation/evening-auto/toggle', async (req, res) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    const result = await setEveningAutoEnabled(enabled);
     res.json({ enabled, ...result });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });

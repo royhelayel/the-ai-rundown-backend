@@ -46,7 +46,7 @@ jobs:
             --max-time 60 --connect-timeout 30 \
             -X POST \
             -H "Content-Type: application/json" \
-            -d '{"language":"en"}' \
+            -d '{"language":"en","auto":true}' \
             "${{ secrets.BACKEND_URL }}/api/generate/$SLOT")
           echo "HTTP status: $RESPONSE"
           cat /tmp/response.json

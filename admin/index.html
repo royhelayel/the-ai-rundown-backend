@@ -280,6 +280,19 @@
     </label>
   </div>
 
+  <div class="section" style="margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+    <div>
+      <div class="section-title" style="margin-bottom:0.3rem;"><span class="dot"></span>Automated Evening generation</div>
+      <div style="font-size:0.82rem;color:#64748b;" id="evening-auto-toggle-sub">Loading…</div>
+    </div>
+    <label style="display:flex;align-items:center;gap:0.6rem;cursor:pointer;">
+      <span style="font-size:0.82rem;font-weight:700;color:#374151;" id="evening-auto-toggle-label">On</span>
+      <span id="evening-auto-toggle-switch" onclick="toggleEveningAuto()" style="width:42px;height:24px;border-radius:999px;background:#e2e8f0;position:relative;cursor:pointer;transition:background 0.15s;">
+        <span id="evening-auto-toggle-knob" style="position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.3);transition:left 0.15s;"></span>
+      </span>
+    </label>
+  </div>
+
   <div class="section" style="margin-bottom:1.5rem;">
     <div class="section-title"><span class="dot"></span>Generate News Now</div>
     <p style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">Manually trigger news generation. Emails are only sent for English news generated today. Arabic is Morning-only.</p>
@@ -850,6 +863,7 @@ function renderNewsCats() {
 // ── NEWS ──
 async function loadNews() {
   loadGenerationToggle();
+  loadEveningAutoToggle();
   const dateEl = document.getElementById('f-news-date');
   if (!dateEl.value) dateEl.value = new Date().toISOString().split('T')[0];
 
@@ -1235,6 +1249,45 @@ async function toggleGeneration() {
     renderGenerationToggle(d.enabled, d.persisted);
   } catch (e) {
     renderGenerationToggle(!next, true); // revert on failure
+    alert('Could not update the toggle: ' + e.message);
+  }
+}
+
+// ── Automated-Evening-only switch (narrower than the master switch above) ──
+let _eveningAutoEnabled = true;
+
+function renderEveningAutoToggle(enabled, persisted) {
+  _eveningAutoEnabled = enabled;
+  document.getElementById('evening-auto-toggle-label').textContent = enabled ? 'On' : 'Off';
+  document.getElementById('evening-auto-toggle-switch').style.background = enabled ? '#6366f1' : '#e2e8f0';
+  document.getElementById('evening-auto-toggle-knob').style.left = enabled ? '20px' : '2px';
+  const sub = document.getElementById('evening-auto-toggle-sub');
+  const persistNote = persisted ? '' : ' (this session only — app_settings table not found, see server logs)';
+  sub.textContent = enabled
+    ? 'The scheduled Evening cron and the watchdog will trigger Evening as usual. Manual "Generate Evening" always works regardless of this switch.' + persistNote
+    : 'The scheduled Evening cron and the watchdog will skip Evening. You can still click "Generate Evening" manually below.' + persistNote;
+}
+
+async function loadEveningAutoToggle() {
+  try {
+    const d = await api('/generation/evening-auto/status');
+    renderEveningAutoToggle(d.enabled, d.persisted);
+  } catch (e) { console.error('evening-auto status', e); }
+}
+
+async function toggleEveningAuto() {
+  const next = !_eveningAutoEnabled;
+  renderEveningAutoToggle(next, true); // optimistic
+  try {
+    const res = await fetch('/admin/api/generation/evening-auto/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next })
+    });
+    const d = await res.json();
+    renderEveningAutoToggle(d.enabled, d.persisted);
+  } catch (e) {
+    renderEveningAutoToggle(!next, true); // revert on failure
     alert('Could not update the toggle: ' + e.message);
   }
 }

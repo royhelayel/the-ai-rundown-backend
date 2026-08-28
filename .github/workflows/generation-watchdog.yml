@@ -53,7 +53,7 @@ jobs:
           elif [ "$STARTED" = "false" ]; then
             echo "$SLOT generation never started today — triggering it now."
             curl -s --max-time 60 --retry 3 --retry-delay 15 --retry-connrefused \
-              -X POST -H "Content-Type: application/json" -d '{"language":"en"}' \
+              -X POST -H "Content-Type: application/json" -d '{"language":"en","auto":true}' \
               "${{ secrets.BACKEND_URL }}/api/generate/$SLOT"
             if [ "$SLOT" = "morning" ]; then
               curl -s --max-time 60 --retry 3 --retry-delay 15 --retry-connrefused \
