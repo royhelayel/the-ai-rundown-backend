@@ -330,18 +330,36 @@ function isGoogleRedirect(url) {
   } catch { return false; }
 }
 
-// Lowercased display names for every tier-1 domain that has an entry in OUTLET_NAMES.
-// Built lazily after OUTLET_NAMES is defined; used only when the URL is a Google redirect.
-let _tier1DisplayNames = null;
+// Strips punctuation, "the", "news", and TLDs so "AP News" and OUTLET_NAMES' "AP" (or
+// "Sky Sports" and a derived "Skysports") normalize to the same token. Needed because every
+// search result now arrives via a Google News redirect (see isGoogleRedirect below) — the
+// true publisher domain is hidden inside the redirect, so cleanOutletName can never resolve
+// it through OUTLET_NAMES and just keeps whatever label Google itself shows, which routinely
+// differs from this file's own display strings for the same outlet.
+function normalizeOutletName(name) {
+  return (name || '')
+    .toLowerCase()
+    .replace(/\.(com|net|org|ae|sa|qa|lb|tr)\b/g, '')
+    .replace(/\bnews\b/g, '')
+    .replace(/^the\s+/, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+// Normalized display names for every TIER1_DOMAINS entry — OUTLET_NAMES' string where one
+// exists, else a name derived straight from the domain. Built from TIER1_DOMAINS rather than
+// OUTLET_NAMES: a lot of tier-1 domains (techcrunch.com, espn.com, forbes.com, theverge.com…)
+// have no OUTLET_NAMES entry at all, so building this set from OUTLET_NAMES alone silently
+// excluded them from ever matching. Built lazily; used only when the URL is a Google redirect.
+let _tier1NormalizedNames = null;
 function tier1DisplayNames() {
-  if (!_tier1DisplayNames) {
-    _tier1DisplayNames = new Set(
-      Object.entries(OUTLET_NAMES)
-        .filter(([domain]) => TIER1_DOMAINS.has(domain) || [...TIER1_DOMAINS].some(d => domain.endsWith('.' + d)))
-        .map(([, name]) => name.toLowerCase())
+  if (!_tier1NormalizedNames) {
+    _tier1NormalizedNames = new Set(
+      [...TIER1_DOMAINS]
+        .map(domain => normalizeOutletName(OUTLET_NAMES[domain] || deriveOutletName(domain)))
+        .filter(Boolean)
     );
   }
-  return _tier1DisplayNames;
+  return _tier1NormalizedNames;
 }
 
 // sourceName is optional; only consulted when the URL is a Google News redirect so that
@@ -352,7 +370,7 @@ function isTier1(url, sourceName = '') {
     if (TIER1_DOMAINS.has(host) || [...TIER1_DOMAINS].some(d => host.endsWith('.' + d))) return true;
   } catch {}
   if (sourceName && isGoogleRedirect(url)) {
-    return tier1DisplayNames().has(sourceName.toLowerCase());
+    return tier1DisplayNames().has(normalizeOutletName(sourceName));
   }
   return false;
 }
@@ -964,7 +982,15 @@ function filterCoverageTier1(content) {
     /(\*\*Coverage:\*\*)(.*)/g,
     (_, label, rest) => {
       const links = [...rest.matchAll(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g)];
-      const tier1Links = links.filter(([, , url]) => isTier1(url));
+      // isTier1's second arg is required for Google News redirect links (google.com/goto?
+      // url=…) — the actual publisher domain isn't visible in the URL itself, so it's only
+      // classified correctly by matching the outlet's display name against tier1DisplayNames().
+      // Every search result comes back through exactly this kind of redirect (see
+      // buildSearchContext / google.serper.dev/news), so omitting the name here made
+      // isTier1 return false for every single link, tier1Links always came back empty, and
+      // this silently fell through to "keep the first 2 links, whatever they are" — letting
+      // non-tier1 outlets like The Hill sit right next to a real tier-1 source in Coverage.
+      const tier1Links = links.filter(([, name, url]) => isTier1(url, name));
       const kept = tier1Links.length > 0 ? tier1Links : links.slice(0, 2);
       const line = kept.map(([, name, url]) => `[${name}](${url})`).join(' · ');
       return `${label} ${line}`;
