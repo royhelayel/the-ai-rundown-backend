@@ -1156,35 +1156,38 @@ If every claim in the digest is grounded in the search results, return {"passed"
   }
 }
 
-// In-memory fallback so the toggle works today even before `app_settings` exists —
+// In-memory fallback so toggles work today even before `app_settings` exists —
 // see the SQL note this ships with. Once that table exists, this becomes a warm cache
-// only; the source of truth is always the Supabase read.
-let auditEnabledFallback = false;
+// only; the source of truth is always the Supabase read. Generic over any boolean
+// setting key so the same pair backs both the audit toggle and the generation
+// on/off switch below.
+const settingsFallback = {};
 let appSettingsTableMissing = false;
 
-async function isAuditEnabled() {
-  if (appSettingsTableMissing) return auditEnabledFallback;
+async function isSettingEnabled(key, defaultValue) {
+  if (appSettingsTableMissing) return key in settingsFallback ? settingsFallback[key] : defaultValue;
   try {
-    const { data, error } = await supabaseAdmin.from('app_settings').select('value').eq('key', 'audit_enabled').maybeSingle();
+    const { data, error } = await supabaseAdmin.from('app_settings').select('value').eq('key', key).maybeSingle();
     if (error) {
       if (error.code === 'PGRST205' || error.code === '42P01') {
         appSettingsTableMissing = true;
-        console.warn(`⚠️  'app_settings' table not found — audit toggle is in-memory only until it's created. Run in Supabase:\n  CREATE TABLE IF NOT EXISTS app_settings (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz DEFAULT now());`);
+        console.warn(`⚠️  'app_settings' table not found — toggles are in-memory only until it's created. Run in Supabase:\n  CREATE TABLE IF NOT EXISTS app_settings (key text PRIMARY KEY, value jsonb NOT NULL, updated_at timestamptz DEFAULT now());`);
       }
-      return auditEnabledFallback;
+      return key in settingsFallback ? settingsFallback[key] : defaultValue;
     }
-    const enabled = data?.value === true || data?.value?.enabled === true;
-    auditEnabledFallback = enabled; // keep the fallback warm in case the table disappears mid-run
+    if (!data) return defaultValue; // never set — use the default, don't assume off
+    const enabled = data.value === true || data.value?.enabled === true;
+    settingsFallback[key] = enabled; // keep the fallback warm in case the table disappears mid-run
     return enabled;
   } catch {
-    return auditEnabledFallback;
+    return key in settingsFallback ? settingsFallback[key] : defaultValue;
   }
 }
 
-async function setAuditEnabled(enabled) {
-  auditEnabledFallback = enabled;
+async function setSettingEnabled(key, enabled) {
+  settingsFallback[key] = enabled;
   try {
-    const { error } = await supabaseAdmin.from('app_settings').upsert({ key: 'audit_enabled', value: { enabled }, updated_at: new Date().toISOString() });
+    const { error } = await supabaseAdmin.from('app_settings').upsert({ key, value: { enabled }, updated_at: new Date().toISOString() });
     if (error) {
       appSettingsTableMissing = true;
       return { persisted: false, warning: "Saved for this session only — 'app_settings' table doesn't exist yet." };
@@ -1195,6 +1198,14 @@ async function setAuditEnabled(enabled) {
     return { persisted: false, warning: err.message };
   }
 }
+
+const isAuditEnabled       = () => isSettingEnabled('audit_enabled', false);
+const setAuditEnabled      = (enabled) => setSettingEnabled('audit_enabled', enabled);
+// Default true — this switch is for deliberately pausing generation on non-testing
+// days, not something that should silently start the pipeline off for anyone who
+// hasn't touched it yet.
+const isGenerationEnabled  = () => isSettingEnabled('generation_enabled', true);
+const setGenerationEnabled = (enabled) => setSettingEnabled('generation_enabled', enabled);
 
 // Generate shorter, punchier stories content by reformatting the already-generated digest.
 // Using the digest (not raw search results) guarantees stories covers the exact same headlines.
@@ -1945,6 +1956,10 @@ app.get('/api/generation-status', async (req, res) => {
       totalCount: targetCategories.length,
       complete: missing.length === 0,
       missing,
+      // The watchdog checks this before self-triggering — a deliberately paused
+      // pipeline is not the same failure as a missed scheduled run, and must not be
+      // "fixed" by turning generation back on behind the admin's back.
+      generationEnabled: await isGenerationEnabled(),
     });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
@@ -2075,6 +2090,13 @@ app.post('/api/generate/:timeSlot', async (req, res) => {
     // Arabic is Morning-only
     if (language === 'ar' && slot.label !== 'Morning') {
       return res.status(400).json({ error: 'Arabic generation is only available for the Morning slot' });
+    }
+
+    // Global pause switch — covers scheduled runs, the watchdog's self-correct, and
+    // manual "Generate Now" / regenerate clicks alike. One switch, no silent exceptions:
+    // turn it back on to run anything, including a one-off regenerate.
+    if (!(await isGenerationEnabled())) {
+      return res.status(423).json({ error: 'Generation is currently paused from the admin dashboard. Turn it back on to generate news.' });
     }
 
     const targetDay = day || getTodayDate();
@@ -2702,6 +2724,24 @@ app.post('/admin/api/audit/toggle', async (req, res) => {
   try {
     const enabled = !!req.body?.enabled;
     const result = await setAuditEnabled(enabled);
+    res.json({ enabled, ...result });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ── Generation pause switch — blocks scheduled, watchdog, and manual triggers alike
+// while off. See the check in POST /api/generate/:timeSlot and the generationEnabled
+// field on GET /api/generation-status (read by the watchdog workflow).
+app.get('/admin/api/generation/status', async (req, res) => {
+  try {
+    const enabled = await isGenerationEnabled();
+    res.json({ enabled, persisted: !appSettingsTableMissing });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/admin/api/generation/toggle', async (req, res) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    const result = await setGenerationEnabled(enabled);
     res.json({ enabled, ...result });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });

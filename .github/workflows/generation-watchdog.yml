@@ -12,6 +12,11 @@ name: Generation Watchdog
 # categories failed" is already handled inside generateAllNewsForTimeSlot itself, which
 # retries internally and emails on exhausted failures — this workflow would be redundant
 # (and noisy) if it also re-triggered for that case.
+#
+# Also respects the admin's generation pause switch (generationEnabled in the status
+# response) — a deliberately paused pipeline during non-testing days is not a missed run
+# to "fix"; POST /api/generate would 423 anyway, but checking first avoids a noisy failed
+# step on every tick while paused.
 on:
   schedule:
     - cron: '*/30 * * * *'
@@ -41,8 +46,11 @@ jobs:
           STATUS=$(curl -s --max-time 20 "${{ secrets.BACKEND_URL }}/api/generation-status?slot=$SLOT")
           echo "Status: $STATUS"
           STARTED=$(echo "$STATUS" | grep -o '"started":[a-z]*' | cut -d: -f2)
+          GEN_ENABLED=$(echo "$STATUS" | grep -o '"generationEnabled":[a-z]*' | cut -d: -f2)
 
-          if [ "$STARTED" = "false" ]; then
+          if [ "$GEN_ENABLED" = "false" ]; then
+            echo "Generation is paused from the admin dashboard — leaving it alone."
+          elif [ "$STARTED" = "false" ]; then
             echo "$SLOT generation never started today — triggering it now."
             curl -s --max-time 60 --retry 3 --retry-delay 15 --retry-connrefused \
               -X POST -H "Content-Type: application/json" -d '{"language":"en"}' \

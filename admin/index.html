@@ -267,6 +267,19 @@
 <!-- ── NEWS ── -->
 <div id="page-news" class="page">
 
+  <div class="section" style="margin-bottom:1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+    <div>
+      <div class="section-title" style="margin-bottom:0.3rem;"><span class="dot"></span>Automated generation</div>
+      <div style="font-size:0.82rem;color:#64748b;" id="gen-toggle-sub">Loading…</div>
+    </div>
+    <label style="display:flex;align-items:center;gap:0.6rem;cursor:pointer;">
+      <span style="font-size:0.82rem;font-weight:700;color:#374151;" id="gen-toggle-label">On</span>
+      <span id="gen-toggle-switch" onclick="toggleGeneration()" style="width:42px;height:24px;border-radius:999px;background:#e2e8f0;position:relative;cursor:pointer;transition:background 0.15s;">
+        <span id="gen-toggle-knob" style="position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.3);transition:left 0.15s;"></span>
+      </span>
+    </label>
+  </div>
+
   <div class="section" style="margin-bottom:1.5rem;">
     <div class="section-title"><span class="dot"></span>Generate News Now</div>
     <p style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">Manually trigger news generation. Emails are only sent for English news generated today. Arabic is Morning-only.</p>
@@ -836,6 +849,7 @@ function renderNewsCats() {
 
 // ── NEWS ──
 async function loadNews() {
+  loadGenerationToggle();
   const dateEl = document.getElementById('f-news-date');
   if (!dateEl.value) dateEl.value = new Date().toISOString().split('T')[0];
 
@@ -1182,6 +1196,46 @@ async function runTTSCleanup(days, fileCount, totalBytes) {
   } catch (e) {
     status.style.color = '#b91c1c';
     status.textContent = 'Delete failed: ' + e.message;
+  }
+}
+
+// ── Generation pause switch ──
+let _generationEnabled = true;
+
+function renderGenerationToggle(enabled, persisted) {
+  _generationEnabled = enabled;
+  document.getElementById('gen-toggle-label').textContent = enabled ? 'On' : 'Off';
+  document.getElementById('gen-toggle-switch').style.background = enabled ? '#6366f1' : '#e2e8f0';
+  document.getElementById('gen-toggle-knob').style.left = enabled ? '20px' : '2px';
+  const sub = document.getElementById('gen-toggle-sub');
+  const persistNote = persisted ? '' : ' (this session only — app_settings table not found, see server logs)';
+  sub.textContent = enabled
+    ? 'Scheduled runs, the watchdog, and manual triggers are all active.' + persistNote
+    : 'Paused — scheduled runs, the watchdog, and manual "Generate Now" clicks are all blocked until turned back on.' + persistNote;
+}
+
+async function loadGenerationToggle() {
+  try {
+    const d = await api('/generation/status');
+    renderGenerationToggle(d.enabled, d.persisted);
+  } catch (e) { console.error('generation status', e); }
+}
+
+async function toggleGeneration() {
+  const next = !_generationEnabled;
+  if (!next && !confirm('Pause all news generation? Scheduled runs, the watchdog, and manual triggers will all be blocked until you turn this back on.')) return;
+  renderGenerationToggle(next, true); // optimistic
+  try {
+    const res = await fetch('/admin/api/generation/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: next })
+    });
+    const d = await res.json();
+    renderGenerationToggle(d.enabled, d.persisted);
+  } catch (e) {
+    renderGenerationToggle(!next, true); // revert on failure
+    alert('Could not update the toggle: ' + e.message);
   }
 }
 
