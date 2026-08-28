@@ -1,0 +1,57 @@
+name: Generation Watchdog
+
+# Catches the one thing nothing inside the backend can detect on its own: the scheduled
+# trigger in news-generation.yml never firing at all (GitHub's scheduler can silently skip
+# a cron run under load). Runs far more often than generation itself so a single skipped
+# tick doesn't matter — the next one catches it.
+#
+# Deliberately does NOT check the __completed__ marker (it's written unconditionally, even
+# on total failure) — it asks /api/generation-status, which counts real generated content.
+#
+# Only acts on "never started" (started: false past the grace window). "Started but some
+# categories failed" is already handled inside generateAllNewsForTimeSlot itself, which
+# retries internally and emails on exhausted failures — this workflow would be redundant
+# (and noisy) if it also re-triggered for that case.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Determine which slot should have started by now (UAE time)
+        id: slot
+        run: |
+          UAE_HOUR=$(TZ=Asia/Dubai date +%H)
+          if [ "$UAE_HOUR" -ge 7 ] && [ "$UAE_HOUR" -lt 14 ]; then
+            echo "slot=morning" >> $GITHUB_OUTPUT
+          elif [ "$UAE_HOUR" -ge 19 ] || [ "$UAE_HOUR" -lt 2 ]; then
+            echo "slot=evening" >> $GITHUB_OUTPUT
+          else
+            echo "slot=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check generation status and self-correct if it never started
+        if: steps.slot.outputs.slot != ''
+        run: |
+          SLOT="${{ steps.slot.outputs.slot }}"
+          STATUS=$(curl -s --max-time 20 "${{ secrets.BACKEND_URL }}/api/generation-status?slot=$SLOT")
+          echo "Status: $STATUS"
+          STARTED=$(echo "$STATUS" | grep -o '"started":[a-z]*' | cut -d: -f2)
+
+          if [ "$STARTED" = "false" ]; then
+            echo "$SLOT generation never started today — triggering it now."
+            curl -s --max-time 60 --retry 3 --retry-delay 15 --retry-connrefused \
+              -X POST -H "Content-Type: application/json" -d '{"language":"en"}' \
+              "${{ secrets.BACKEND_URL }}/api/generate/$SLOT"
+            if [ "$SLOT" = "morning" ]; then
+              curl -s --max-time 60 --retry 3 --retry-delay 15 --retry-connrefused \
+                -X POST -H "Content-Type: application/json" -d '{"language":"ar"}' \
+                "${{ secrets.BACKEND_URL }}/api/generate/morning"
+            fi
+          else
+            echo "$SLOT generation already started today — nothing to do."
+          fi

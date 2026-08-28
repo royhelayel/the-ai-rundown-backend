@@ -1667,6 +1667,29 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
 // day defaults to today (UAE) — pass an explicit YYYY-MM-DD to backfill a specific date
 // language: 'en' (default) or 'ar'. Arabic is only generated for Morning.
 // categories: optional array to generate only specific categories (defaults to DEFAULT_CATEGORIES)
+// Sent only when a generation cycle finishes with categories that never recovered after
+// every retry (reconciliation pass + DB-verification final retry) — not for individual
+// retries succeeding, which is the self-correcting path working as intended. Requires
+// ADMIN_ALERT_EMAIL to be set; skips (with a log line) if it isn't, rather than failing
+// the generation run over a missing notification address.
+async function sendGenerationFailureAlert(timeSlot, day, language, failedList, succeededCount, totalCount) {
+  const to = process.env.ADMIN_ALERT_EMAIL;
+  if (!to) { console.warn('⚠️  ADMIN_ALERT_EMAIL not set — skipping failure alert email'); return; }
+  try {
+    const langLabel = language === 'ar' ? ' [AR]' : '';
+    const list = failedList.map(f => `<li><strong>${f.category}</strong> — ${f.error}</li>`).join('');
+    await resend.emails.send({
+      from: process.env.FROM_EMAIL || 'noreply@resend.dev',
+      to,
+      subject: `⚠️ RadioNews: ${timeSlot}${langLabel} generation incomplete on ${day} (${failedList.length} categories)`,
+      html: `<p>${succeededCount}/${totalCount} categories generated successfully for ${timeSlot}${langLabel} on ${day}. The following failed even after automatic retries:</p><ul>${list}</ul><p>These categories will show no news for this slot until manually regenerated from the admin dashboard.</p>`,
+    });
+    console.log(`📧 Failure alert email sent to ${to}`);
+  } catch (err) {
+    console.warn('Could not send failure alert email:', err.message);
+  }
+}
+
 async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en', categories = null) {
   const targetDay = day || getTodayDate();
   // Arabic default run: skip any category with no Arabic query rather than falling
@@ -1675,6 +1698,24 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   const targetCategories = categories || (language === 'ar' ? DEFAULT_CATEGORIES.filter(c => ARABIC_CATEGORY_QUERIES[c]) : DEFAULT_CATEGORIES);
   const langLabel = language === 'ar' ? ' [AR]' : '';
   const startedAt = new Date();
+
+  // Written immediately, not at the end — the watchdog workflow needs "started" to flip
+  // true within seconds of a real run beginning, not ~19 minutes later when the full log
+  // row used to land. Without this, "no log row yet" was indistinguishable from "never
+  // started," and the watchdog would have triggered a duplicate run on top of one already
+  // in progress. Falls back to a plain insert-at-the-end if this fails for any reason —
+  // never let logging block generation itself.
+  let generationLogId = null;
+  try {
+    const { data: logRow, error: logErr } = await supabaseAdmin
+      .from('generation_logs')
+      .insert({ day: targetDay, time_slot: timeSlot, language, started_at: startedAt.toISOString() })
+      .select('id').single();
+    if (logErr) throw logErr;
+    generationLogId = logRow.id;
+  } catch (err) {
+    console.warn('Could not write start-of-run generation log:', err.message);
+  }
 
   // Arabic is Morning-only
   if (language === 'ar' && timeSlot !== 'Morning') {
@@ -1803,6 +1844,9 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   console.log(`\n✨ Generation complete for ${timeSlot}${langLabel} on ${targetDay} — ${totalSucceeded}/${targetCategories.length} categories succeeded`);
   if (allFailed.length > 0) {
     console.warn(`⚠️  Permanently failed: ${allFailed.map(f => f.category).join(', ')}`);
+    if (targetDay === getTodayDate()) {
+      await sendGenerationFailureAlert(timeSlot, targetDay, language, allFailed, totalSucceeded, targetCategories.length);
+    }
   }
 
   // ── Completion marker (one per language per slot) ─────────────────────────
@@ -1817,7 +1861,7 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   const completedAt       = new Date();
   const durationSeconds   = Math.round((completedAt - startedAt) / 1000);
   try {
-    await supabaseAdmin.from('generation_logs').insert({
+    const payload = {
       day:                    targetDay,
       time_slot:              timeSlot,
       language:               language,
@@ -1828,7 +1872,14 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
       categories_failed:      failed,
       retry_succeeded:        retrySucceeded,
       retry_failed:           allFailed,
-    });
+    };
+    // Fill in the row written at the top of this function (see generationLogId) rather
+    // than inserting a second one — falls back to insert if that row is missing for any
+    // reason (e.g. the start-of-run write failed).
+    const { error: updateErr } = generationLogId
+      ? await supabaseAdmin.from('generation_logs').update(payload).eq('id', generationLogId)
+      : { error: 'no id' };
+    if (updateErr) await supabaseAdmin.from('generation_logs').insert(payload);
     console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${targetCategories.length} ok)`);
   } catch (err) {
     console.warn(`Could not save generation log:`, err.message);
@@ -1852,6 +1903,50 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// ── Generation completeness — real content, not the __completed__ marker ───────
+// __completed__ gets written unconditionally at the end of a run, even when every
+// category failed, so it can't answer "did this slot actually generate." This counts
+// real rows against the expected category list instead — used by the watchdog workflow
+// to tell "never ran" apart from "ran and produced content."
+app.get('/api/generation-status', async (req, res) => {
+  try {
+    const { slot, day, language = 'en' } = req.query;
+    if (!slot) return res.status(400).json({ error: 'slot is required (morning or evening)' });
+    const timeSlot = slot.charAt(0).toUpperCase() + slot.slice(1).toLowerCase();
+    const targetDay = day || getTodayDate();
+
+    const targetCategories = language === 'ar' ? DEFAULT_CATEGORIES.filter(c => ARABIC_CATEGORY_QUERIES[c]) : DEFAULT_CATEGORIES;
+
+    const { data: rows, error } = await supabaseAdmin
+      .from('news_summaries')
+      .select('category, content')
+      .eq('day', targetDay).eq('time_slot', timeSlot).eq('language', language)
+      .is('user_id', null).is('shared_key', null)
+      .in('category', targetCategories);
+    if (error) throw error;
+
+    const withContent = new Set((rows || []).filter(r => r.content).map(r => r.category));
+    const missing = targetCategories.filter(c => !withContent.has(c));
+
+    const { data: logRow } = await supabaseAdmin
+      .from('generation_logs')
+      .select('started_at, completed_at')
+      .eq('day', targetDay).eq('time_slot', timeSlot).eq('language', language)
+      .order('started_at', { ascending: false }).limit(1).maybeSingle();
+
+    res.json({
+      day: targetDay, timeSlot, language,
+      started: !!logRow,
+      startedAt: logRow?.started_at || null,
+      completedAt: logRow?.completed_at || null,
+      succeededCount: withContent.size,
+      totalCount: targetCategories.length,
+      complete: missing.length === 0,
+      missing,
+    });
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 
