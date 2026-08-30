@@ -1420,6 +1420,136 @@ Rules: Flowing prose in one or two short paragraphs — not a list. NO headings,
   return text;
 }
 
+// ── Period recaps: the week, and the month ────────────────────────────────────
+//
+// Stored in news_summaries like everything else, under the sentinel category
+// `__period__` (the same trick `__completed__` uses) with time_slot 'Weekly' or 'Monthly'
+// and `day` set to the period's LAST day. That means the existing read layer serves them
+// with no new endpoint: mode=one&category=__period__&day=<end>&timeSlot=Weekly.
+//
+// These are a curation, not a sweep. A week is roughly five hundred stories; no honest
+// five-minute recap enumerates them, so the prompt is asked to pick what mattered and say
+// why, which is a different editorial product from the daily category recap.
+export const PERIOD_SLOTS = { Weekly: 7, Monthly: 0 };  // 0 = calendar month, computed below
+
+function periodRange(period, endDay) {
+  const end = new Date(`${endDay}T00:00:00Z`);
+  const days = [];
+  if (period === 'Monthly') {
+    const y = end.getUTCFullYear(), m = end.getUTCMonth();
+    const first = new Date(Date.UTC(y, m, 1));
+    for (let d = new Date(first); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+      days.push(d.toISOString().slice(0, 10));
+    }
+  } else {
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(end);
+      d.setUTCDate(d.getUTCDate() - i);
+      days.push(d.toISOString().slice(0, 10));
+    }
+  }
+  return days;
+}
+
+// Headlines only. Feeding whole digests for a month would be hundreds of thousands of
+// tokens and would bury the signal anyway — the judgement being asked for is "which of
+// these mattered", and a headline plus its category is enough to make it.
+function harvestHeadlines(rows) {
+  const byCategory = {};
+  for (const row of rows) {
+    const heads = (row.content || '').split('\n')
+      .filter(l => /^##\s+/.test(l))
+      .map(l => l.replace(/^##\s+/, '').trim())
+      .filter(Boolean);
+    if (!heads.length) continue;
+    byCategory[row.category] = byCategory[row.category] || new Set();
+    heads.forEach(h => byCategory[row.category].add(h));
+  }
+  return byCategory;
+}
+
+// The prompt forbids headings and bullets; the model emits them anyway often enough that
+// asking is not a control. This is: a title line would be read aloud verbatim by the
+// narrator and shown as a stray heading in the reader, so it is stripped rather than hoped
+// against. Bullets keep their text and lose the marker — a recap that arrives as a list is
+// still readable prose once the dashes are gone.
+function stripRecapChrome(text) {
+  return (text || '')
+    .split('\n')
+    .filter(line => !/^\s*#{1,6}\s+/.test(line))          // drop heading lines outright
+    .map(line => line.replace(/^\s*[-*•]\s+/, ''))         // demote bullets to sentences
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+async function generatePeriodRecap(period, endDay, language = 'en') {
+  const days = periodRange(period, endDay);
+  console.log(`Generating ${period} recap ending ${endDay} (${days.length} days)${language === 'ar' ? ' [AR]' : ''}`);
+
+  const { data: rows, error } = await supabaseAdmin
+    .from('news_summaries')
+    .select('category, day, content')
+    .in('day', days)
+    .eq('language', language)
+    .is('user_id', null).is('shared_key', null)
+    .not('category', 'in', '("__completed__","__period__")');
+  if (error) throw new Error(`Could not read the period's digests: ${error.message}`);
+
+  const byCategory = harvestHeadlines(rows || []);
+  const categories = Object.keys(byCategory);
+  const total = categories.reduce((n, c) => n + byCategory[c].size, 0);
+  if (!total) return null;   // nothing generated in this window — nothing to recap
+
+  const source = categories
+    .map(c => `### ${c}\n${[...byCategory[c]].map(h => `- ${h}`).join('\n')}`)
+    .join('\n\n');
+
+  // A listener will give the week about five minutes and the month about ten. At ~150 wpm
+  // that is the budget; picking a story count from it keeps the recap honest about being a
+  // selection rather than pretending to cover everything.
+  const spec = period === 'Monthly'
+    ? { words: 1400, picks: 30, label: 'month' }
+    : { words: 700,  picks: 18, label: 'week' };
+
+  const arabicInstruction = language === 'ar'
+    ? `\n\nWrite the entire recap in Modern Standard Arabic (اللغة العربية الفصحى).`
+    : '';
+
+  const prompt = `You are a news anchor writing the ${spec.label}'s wrap-up for a listener who may have missed days of it.${arabicInstruction}
+
+Below are the headlines this ${spec.label} produced, grouped by section — ${total} in total across ${categories.length} sections:
+
+${source}
+
+Pick the ${spec.picks} or so that actually mattered and write a spoken recap of about ${spec.words} words.
+
+This is a selection, not a summary of everything: ${total} stories cannot be covered in ${Math.round(spec.words / 150)} minutes, and pretending otherwise produces a list nobody can follow. Choose on consequence — what changed, what a reasonable person would still be thinking about at the end of the ${spec.label}, what turned out to be the start of something. Say why each one mattered, not just that it happened.
+
+Structure it as flowing prose in short paragraphs, moving between sections as the story requires rather than marching through them in order. Where several headlines are the same running story, treat them as one thread and say where it ended up. NO headings, NO bullet points, NO markdown, NO source names or URLs, no dates unless they carry meaning. Conversational and clear, meant to be read aloud. Start immediately — no preamble, no title.`;
+
+  const data = await callClaude(prompt, Math.round(spec.words * 2.2));
+  const text = stripRecapChrome(data.content.filter(i => i.type === 'text').map(i => i.text).join('\n'));
+
+  if (data.usage) {
+    const { input_tokens, output_tokens } = data.usage;
+    const token_cost_usd = (input_tokens / 1_000_000) * 0.8 + (output_tokens / 1_000_000) * 4;
+    supabaseAdmin.from('api_usage').insert({
+      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+      input_tokens, output_tokens, web_searches: 0, search_cost_usd: 0,
+      token_cost_usd, estimated_cost_usd: token_cost_usd,
+      category: '__period__', time_slot: period, content_type: 'period_recap',
+      created_at: new Date().toISOString(),
+    }).then(({ error: e }) => { if (e) console.warn('Could not track period recap usage:', e.message); }, () => {});
+  }
+
+  // content and briefing both carry the prose: the reader renders `content`, the player
+  // narrates `briefing`, and for a recap they are the same text.
+  await storeNews('__period__', endDay, period, text, null, null, null, null, language, text);
+  console.log(`✓ ${period} recap stored for ${endDay} — ${text.split(/\s+/).length} words from ${total} headlines`);
+  return text;
+}
+
 // Function to store news in Supabase
 async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en', briefing = null, leadImageUrl = null, auditResult = null) {
   try {
@@ -2207,6 +2337,37 @@ app.post('/api/generate/custom-category', async (req, res) => {
 
 // Manual trigger endpoint — supports both GET (browser/admin) and POST (Cloud Scheduler)
 // Optional: ?day=YYYY-MM-DD (GET) or { day: "YYYY-MM-DD" } (POST body) to target a specific date
+// ── Period recaps ─────────────────────────────────────────────────────────────
+// POST /api/generate/period/weekly  { day?, language? }
+// POST /api/generate/period/monthly { day?, language? }
+//
+// `day` is the LAST day of the period and defaults to today, so the weekly job runs on a
+// Sunday and the monthly on the last of the month with no argument. Synchronous, unlike
+// the daily generators: one Claude call over headlines takes seconds, not the tens of
+// minutes a full category sweep does, so there is nothing to fire-and-forget.
+app.post('/api/generate/period/:period', async (req, res) => {
+  try {
+    const raw = String(req.params.period || '').toLowerCase();
+    const period = raw === 'weekly' ? 'Weekly' : raw === 'monthly' ? 'Monthly' : null;
+    if (!period) return res.status(400).json({ error: 'period must be weekly or monthly' });
+
+    if (!(await isGenerationEnabled())) {
+      return res.status(423).json({ error: 'Generation is currently paused from the admin dashboard.' });
+    }
+
+    const endDay = req.body?.day || getTodayDate();
+    const language = req.body?.language || 'en';
+    const text = await generatePeriodRecap(period, endDay, language);
+    if (!text) {
+      return res.json({ status: 'skipped', message: `No digests found in the ${period.toLowerCase()} window ending ${endDay} — nothing to recap.` });
+    }
+    res.json({ status: 'ok', period, day: endDay, language, words: text.split(/\s+/).length });
+  } catch (error) {
+    console.error('Period recap failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/generate/:timeSlot', async (req, res) => {
   try {
     const timeSlot = req.params.timeSlot;
