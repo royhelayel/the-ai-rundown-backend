@@ -1373,8 +1373,8 @@ Rules: Cover the same stories as the digest, in the same order. Start immediatel
   return summary;
 }
 
-// Generate a short spoken "category briefing" — a synthesis of the whole category's
-// top stories (~90-120 words) for a quick read or ~90s listen at the category level.
+// Generate a short spoken "category briefing" — a catch-up on the whole category for a
+// quick read or a ~1 min listen. Length scales with the number of stories; see below.
 async function generateBriefing(category, day, timeSlot, digestContent, language = 'en') {
   console.log(`Generating briefing for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
@@ -1382,14 +1382,26 @@ async function generateBriefing(category, day, timeSlot, digestContent, language
     ? `\n\nWrite the entire briefing in Modern Standard Arabic (اللغة العربية الفصحى).`
     : '';
 
+  // Budget scales with how much there is to cover. A flat 90–120 words told the model to
+  // lead with the biggest story and explicitly NOT to enumerate — so across eight or nine
+  // stories it spent everything on one or two and dropped the rest, which is what the recap
+  // was being criticised for. ~18 words per story gives every one a clause; the floor keeps
+  // a thin category from reading as a stub, the cap keeps this inside its "1 min" promise
+  // (~150 wpm, so 170 words ≈ 68s of speech).
+  const storyCount = (digestContent.match(/^##\s+/gm) || []).length;
+  const targetWords = Math.max(90, Math.min(170, Math.round(storyCount * 18)));
+
   const prompt = `You are a news anchor writing a short spoken briefing that catches a listener up on the "${category}" section.${arabicInstruction}
 
-Below is today's full digest for this section:
+Below is today's full digest for this section${storyCount ? ` — ${storyCount} stories` : ''}:
 
 ${digestContent}
 
-Write ONE cohesive briefing of about 90–120 words that ties together the most important stories — what is happening and why it matters — as if delivering a quick on-air catch-up.
-Rules: Flowing prose in one or two short paragraphs. NO headings, NO bullet points, NO markdown, NO source names or URLs. Lead with the single biggest story, then weave in the other top themes. Do not enumerate every story — synthesise. Conversational and clear, meant to be read aloud. Start immediately with the briefing text — no preamble, no title.`;
+Write ONE cohesive briefing of about ${targetWords} words that catches the listener up on the WHOLE section — what is happening and why it matters — as if delivering a quick on-air catch-up.
+
+Coverage is the priority: EVERY story in the digest above must appear, at minimum as a clause. Give the biggest story a sentence or two; give each remaining story at least a clause of its own. Do not spend the whole briefing on one or two stories and leave the rest out — a listener should finish it knowing everything that happened in this section, even if only in outline. Group related stories into a single sentence where that reads naturally.
+
+Rules: Flowing prose in one or two short paragraphs — not a list. NO headings, NO bullet points, NO markdown, NO source names or URLs. Lead with the biggest story, then move through the rest. Conversational and clear, meant to be read aloud. Start immediately with the briefing text — no preamble, no title.`;
 
   const data = await callClaude(prompt, 600);
   const text = data.content.filter(item => item.type === 'text').map(item => item.text).join('\n').trim();
