@@ -1526,7 +1526,9 @@ Pick the ${spec.picks} or so that actually mattered and write a spoken recap of 
 
 This is a selection, not a summary of everything: ${total} stories cannot be covered in ${Math.round(spec.words / 150)} minutes, and pretending otherwise produces a list nobody can follow. Choose on consequence — what changed, what a reasonable person would still be thinking about at the end of the ${spec.label}, what turned out to be the start of something. Say why each one mattered, not just that it happened.
 
-Structure it as flowing prose in short paragraphs, moving between sections as the story requires rather than marching through them in order. Where several headlines are the same running story, treat them as one thread and say where it ended up. NO headings, NO bullet points, NO markdown, NO source names or URLs, no dates unless they carry meaning. Conversational and clear, meant to be read aloud. Start immediately — no preamble, no title.`;
+Structure it as flowing prose in short paragraphs, moving between sections as the story requires rather than marching through them in order. Where several headlines are the same running story, treat them as one thread and say where it ended up.
+
+The ${spec.label} is over by the time anyone hears this. Write in the past tense throughout — nothing in it is still upcoming, however a headline phrased it at the time it was written. NO headings, NO bullet points, NO markdown, NO source names or URLs, no dates unless they carry meaning. Conversational and clear, meant to be read aloud. Start immediately — no preamble, no title.`;
 
   const data = await callClaude(prompt, Math.round(spec.words * 2.2));
   const text = stripRecapChrome(data.content.filter(i => i.type === 'text').map(i => i.text).join('\n'));
