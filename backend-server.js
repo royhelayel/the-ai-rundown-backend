@@ -1404,7 +1404,12 @@ Coverage is the priority: EVERY story in the digest above must appear, at minimu
 Rules: Flowing prose in one or two short paragraphs — not a list. NO headings, NO bullet points, NO markdown, NO source names or URLs. Lead with the biggest story, then move through the rest. Conversational and clear, meant to be read aloud. Start immediately with the briefing text — no preamble, no title.`;
 
   const data = await callClaude(prompt, 600);
-  const text = data.content.filter(item => item.type === 'text').map(item => item.text).join('\n').trim();
+  // Same strip the period recaps get. The prompt asks for no headings and no bullets, but a
+  // title line comes back often enough to be worth removing rather than only asking for —
+  // and this text is read aloud, so a stray "# Technology Briefing" is a sentence the
+  // narrator says out loud. (Rows generated before this still carry one; the reader strips
+  // defensively too.)
+  const text = stripRecapChrome(data.content.filter(item => item.type === 'text').map(item => item.text).join('\n'));
 
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
