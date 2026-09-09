@@ -71,11 +71,6 @@ function getTodayDate() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(new Date());
 }
 
-function formatDateForEmail(dateStr) {
-  const date = new Date(dateStr + 'T00:00:00Z');
-  return date.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
-}
-
 function markdownToEmailHtml(content) {
   const getDomain = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
 
@@ -1629,137 +1624,6 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
   }
 }
 
-// Send digest emails to all users opted in for a given time slot
-async function sendNewsDigestEmails(timeSlot, day) {
-  try {
-    const timeSlotKey = timeSlot.toLowerCase();
-
-    // Fetch all verified users (include feed_categories so My Rundown can be expanded)
-    const { data: users, error: usersError } = await supabaseAdmin
-      .from('users')
-      .select('id, email, email_preferences, feed_categories')
-      .eq('verification_status', 'verified');
-
-    if (usersError || !users?.length) return;
-
-    // Support old { morning: true }, intermediate { morning: { enabled: true } }, and new flat { morning: true, categories: [] }
-    const optedIn = users.filter(u => {
-      const pref = u.email_preferences?.[timeSlotKey];
-      return pref === true || pref?.enabled === true;
-    });
-
-    if (!optedIn.length) {
-      console.log(`📭 No users opted in for ${timeSlot} digest`);
-      return;
-    }
-
-    console.log(`📧 Sending ${timeSlot} digest to ${optedIn.length} user(s)...`);
-
-    // Fetch all default category news for this slot/day (fetch all, filter per user)
-    const { data: newsItems } = await supabaseAdmin
-      .from('news_summaries')
-      .select('category, content')
-      .eq('day', day)
-      .eq('time_slot', timeSlot)
-      .in('category', DEFAULT_CATEGORIES);
-
-    if (!newsItems?.length) {
-      console.log(`No news found for ${timeSlot} digest`);
-      return;
-    }
-
-    const WEBSITE_URL = process.env.REACT_APP_URL || 'https://the-ai-rundown-frontend.vercel.app';
-    const formattedDate = formatDateForEmail(day);
-
-    for (const user of optedIn) {
-      try {
-        // Determine which categories this user wants (new flat format stores categories at top level)
-        const prefs = user.email_preferences || {};
-        let rawCategories = Array.isArray(prefs.categories) && prefs.categories.length
-          ? prefs.categories
-          : DEFAULT_CATEGORIES;
-
-        // Expand 'My Rundown' to the user's saved feed categories; remove it if no feed set
-        const feedCats = Array.isArray(user.feed_categories) && user.feed_categories.length
-          ? user.feed_categories
-          : [];
-        const userCategories = rawCategories.flatMap(cat => {
-          if (cat === 'My Rundown') return feedCats.length ? feedCats : [];
-          return [cat];
-        }).filter((cat, i, arr) => arr.indexOf(cat) === i); // dedupe
-
-        // Filter and sort news to user's chosen categories
-        const sorted = userCategories
-          .map(cat => newsItems.find(n => n.category === cat))
-          .filter(Boolean);
-
-        if (!sorted.length) {
-          console.log(`  ⏭️  Skipping ${user.email} — none of their categories have news`);
-          continue;
-        }
-
-        const emailHtml = `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background:#f5f7fa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0">
-<tr><td align="center" style="padding:24px 16px;">
-<table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;">
-
-<tr><td style="background:linear-gradient(135deg,#6366f1 0%,#ec4899 100%);border-radius:12px 12px 0 0;padding:28px 32px;">
-  <p style="margin:0;font-size:22px;font-weight:900;color:white;letter-spacing:-0.02em;">✦ The Rundown</p>
-  <p style="margin:8px 0 0;font-size:14px;color:rgba(255,255,255,0.82);">${timeSlot} Digest &nbsp;·&nbsp; ${formattedDate}</p>
-</td></tr>
-
-<tr><td style="background:white;padding:20px 32px 16px;">
-  <a href="${WEBSITE_URL}" style="display:inline-block;padding:10px 22px;background:linear-gradient(135deg,#6366f1,#ec4899);color:white;text-decoration:none;border-radius:999px;font-weight:700;font-size:13px;">View on Website →</a>
-</td></tr>
-<tr><td style="background:white;padding:0 32px;"><hr style="border:none;border-top:1px solid #f3f4f6;margin:0;"></td></tr>
-
-${sorted.map(item => `
-<tr><td style="background:white;padding:24px 32px 20px;">
-  <h2 style="margin:0 0 10px;font-size:17px;font-weight:800;color:#111827;letter-spacing:-0.02em;">${item.category}</h2>
-  <div style="font-size:14px;line-height:1.75;color:#374151;">${markdownToEmailHtml(item.content)}</div>
-</td></tr>
-<tr><td style="background:white;padding:0 32px;"><hr style="border:none;border-top:1px solid #f3f4f6;margin:0;"></td></tr>
-`).join('')}
-
-<tr><td style="background:#faf8ff;padding:24px 32px;border-top:3px solid #6366f1;">
-  <p style="margin:0 0 6px;font-size:14px;font-weight:800;color:#6366f1;">Want news on your specific topics?</p>
-  <p style="margin:0 0 14px;font-size:13px;color:#64748b;line-height:1.6;">Custom categories (your favourite team, company, or niche topic) are generated on demand and won't appear in this email. Log in and click any custom category to generate it instantly.</p>
-  <a href="${WEBSITE_URL}" style="display:inline-block;padding:9px 20px;border:1.5px solid #6366f1;color:#6366f1;text-decoration:none;border-radius:999px;font-weight:700;font-size:12px;background:white;">Generate Custom News →</a>
-</td></tr>
-
-<tr><td style="background:#f5f7fa;border-radius:0 0 12px 12px;padding:16px 32px;text-align:center;">
-  <p style="margin:0;font-size:12px;color:#9ca3af;line-height:1.6;">
-    You're receiving this because you subscribed to ${timeSlot} digests on The Rundown.<br>
-    <a href="${WEBSITE_URL}" style="color:#6366f1;text-decoration:none;font-weight:600;">Manage your preferences</a>
-  </p>
-</td></tr>
-
-</table>
-</td></tr>
-</table>
-</body>
-</html>`;
-
-        await resend.emails.send({
-          from: process.env.FROM_EMAIL || 'noreply@resend.dev',
-          to: user.email,
-          subject: `The Rundown — ${timeSlot} · ${formattedDate}`,
-          html: emailHtml
-        });
-        console.log(`  ✉️  Sent to ${user.email} (${sorted.length} categories)`);
-      } catch (err) {
-        console.error(`  ✗ Failed for ${user.email}:`, err.message);
-      }
-    }
-
-    console.log(`✅ ${timeSlot} digest sent to ${optedIn.length} user(s)`);
-  } catch (error) {
-    console.error('Error sending digest emails:', error.message);
-  }
-}
 
 // Mirrors frontend cleanForTTS exactly — must stay in sync so MD5 cache keys align
 function cleanForTTS(text) {
@@ -2177,15 +2041,6 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
     console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${targetCategories.length} ok)`);
   } catch (err) {
     console.warn(`Could not save generation log:`, err.message);
-  }
-
-  // ── Digest emails (today only, not backfills, English only) ───────────────
-  if (targetDay === getTodayDate() && language === 'en') {
-    await sendNewsDigestEmails(timeSlot, targetDay);
-  } else if (language === 'ar') {
-    console.log(`⏭️  Skipping email send — Arabic digest emails not yet configured`);
-  } else {
-    console.log(`⏭️  Skipping email send — ${targetDay} is not today`);
   }
 
   clearInterval(keepAliveTimer);
@@ -2915,7 +2770,7 @@ app.get('/admin/api/news', async (req, res) => {
 
 app.get('/admin/api/users', async (req, res) => {
   try {
-    const { data: users, error } = await supabaseAdmin.from('users').select('id, email, created_at, verification_status, email_preferences').order('created_at', { ascending: false });
+    const { data: users, error } = await supabaseAdmin.from('users').select('id, email, created_at, verification_status').order('created_at', { ascending: false });
     if (error) throw error;
 
     const { data: cats } = await supabaseAdmin.from('custom_categories').select('user_id');
@@ -3174,24 +3029,6 @@ app.post('/admin/api/tts-cache/cleanup', async (req, res) => {
 // ==========================================
 // ENDPOINT: SAVE EMAIL PREFERENCES
 // ==========================================
-app.put('/api/user/email-preferences', async (req, res) => {
-  try {
-    const { userId, preferences } = req.body;
-    if (!userId || !preferences) {
-      return res.status(400).json({ error: 'userId and preferences are required' });
-    }
-    const { error } = await supabaseAdmin
-      .from('users')
-      .update({ email_preferences: preferences })
-      .eq('id', userId);
-    if (error) throw error;
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Error saving email preferences:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 app.put('/api/user/feed-categories', async (req, res) => {
   try {
     const { userId, categories } = req.body;
@@ -3373,19 +3210,6 @@ app.post('/admin/api/debug-generate', async (req, res) => {
     res.json({ ok: true, contentLength: content.length, preview: content.slice(0, 300) });
   } catch (err) {
     res.json({ ok: false, error: err.message });
-  }
-});
-
-// Send digest emails for an existing slot/day without regenerating news
-app.post('/admin/api/send-digest', async (req, res) => {
-  const { timeSlot, day } = req.body;
-  if (!timeSlot) return res.status(400).json({ error: 'timeSlot is required (Morning or Evening)' });
-  const targetDay = day || getTodayDate();
-  try {
-    res.json({ ok: true, message: `Sending ${timeSlot} digest emails for ${targetDay}…` });
-    await sendNewsDigestEmails(timeSlot, targetDay);
-  } catch (err) {
-    console.error('Manual send-digest error:', err.message);
   }
 });
 

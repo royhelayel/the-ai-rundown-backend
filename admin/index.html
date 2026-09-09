@@ -364,12 +364,6 @@
         <option value="verified">Verified</option>
         <option value="pending">Pending</option>
       </select>
-      <span class="filter-label">Email Prefs</span>
-      <select id="f-u-prefs" onchange="renderUsers()">
-        <option value="">Any</option>
-        <option value="has">Has subscriptions</option>
-        <option value="none">No subscriptions</option>
-      </select>
       <input type="text" id="f-u-search" placeholder="Search email…" style="min-width:200px;" oninput="renderUsers()">
     </div>
     <div class="table-wrap" id="users-wrap"><div class="loading">Loading…</div></div>
@@ -974,21 +968,16 @@ async function loadUsers() {
 
 function renderUsers() {
   const status = document.getElementById('f-u-status').value;
-  const prefs  = document.getElementById('f-u-prefs').value;
   const search = document.getElementById('f-u-search').value.toLowerCase();
 
   let data = usersData;
   if (status) data = data.filter(u => u.verification_status === status);
-  if (prefs === 'has')  data = data.filter(u => Object.values(u.email_preferences||{}).some(v=>v===true));
-  if (prefs === 'none') data = data.filter(u => !Object.values(u.email_preferences||{}).some(v=>v===true));
   if (search) data = data.filter(u => u.email?.toLowerCase().includes(search));
 
   if (!data.length) { document.getElementById('users-wrap').innerHTML = '<div class="empty">No users match.</div>'; return; }
 
-  const icons = { night:'🌙', morning:'🌅', noon:'☀️', afternoon:'🌤️', evening:'🌆' };
-
   let h = `<table class="data-table"><thead><tr>
-    <th>Email</th><th>Joined</th><th>Status</th><th>Email Prefs</th><th>Custom Cats</th><th>Last Active</th>
+    <th>Email</th><th>Joined</th><th>Status</th><th>Custom Cats</th><th>Last Active</th>
   </tr></thead><tbody>`;
   data.forEach(u => {
     const joined     = u.created_at   ? new Date(u.created_at).toLocaleDateString()  : '—';
@@ -996,13 +985,10 @@ function renderUsers() {
     const statusBadge = u.verification_status === 'verified'
       ? '<span class="badge bg">Verified</span>'
       : '<span class="badge by">Pending</span>';
-    const subIcons = Object.entries(u.email_preferences||{})
-      .filter(([,v])=>v===true).map(([k])=>`<span title="${k}">${icons[k]||k}</span>`).join(' ');
     h += `<tr>
       <td><strong style="font-size:0.84rem;">${u.email}</strong></td>
       <td style="color:#6b7280;font-size:0.8rem;">${joined}</td>
       <td>${statusBadge}</td>
-      <td style="font-size:1rem;">${subIcons||'<span style="color:#d1d5db">—</span>'}</td>
       <td><span class="badge bb">${u.custom_category_count||0}</span></td>
       <td style="color:#6b7280;font-size:0.78rem;">${lastActive}</td>
     </tr>`;
