@@ -690,6 +690,107 @@ const WORLD_NEWS_ANGLE_QUERIES = (dateLabel) => [
   `Europe Middle East Asia Africa Americas developments ${dateLabel}`,
 ];
 
+// ── Spread rules ─────────────────────────────────────────────────────────────
+// The four regional categories have carried a DIVERSITY rule since they were built; the
+// global ones never got one. The result, measured on 2026-08-28: World News ran 6 of 8
+// stories on Russia/Ukraine, Iran/US and Trump, and Business ran 5 of 5 on US markets with
+// no energy and nothing outside the US.
+//
+// That is the ranking working as designed — a story's score is driven by how many outlets
+// covered it, and Trump and Iran are by definition the most-covered stories on earth. The
+// echo ranking is also what keeps a random local stabbing out of the feed, so the fix is not
+// to lower that bar. It is to require a spread on top of it.
+const SPREAD_RULES = {
+  'World News': `\n\nDIVERSITY (REQUIRED): The world is not only conflict and Washington. No single running situation may occupy more than TWO of the ## slots — consolidate it into one story per the rule above and move on. Beyond the major geopolitical stories, you MUST include the other kinds of world story the search results support: science and space, business and economy, climate and environment, health, culture and society, sport, and significant events outside the US, Europe and the Middle East. A feed in which every story is one of two conflicts plus US politics has failed this rule.`,
+
+  'Politics': `\n\nSIGNIFICANCE AND SPREAD (REQUIRED): Prefer consequence over obscurity. A story a reasonable reader would recognise as mattering beats a procedural item from a small legislature, even when both appear in the results. Spread the feed across regions rather than filling it with one country's domestic process, and include the major political stories of the day wherever the results support them. Do not return a feed made up entirely of minor parliamentary, regulatory or committee items.`,
+
+  'Business': `\n\nDIVERSITY (REQUIRED): Do not return an all-US-markets feed. Where the search results support it, you MUST include energy and commodities (including OPEC and Gulf producers), Middle East and Gulf business, and major non-US corporate and economic stories, alongside US markets and earnings. Five US stock-market stories is a failure of this rule.`,
+};
+
+// ── Angle queries for the remaining categories ───────────────────────────────
+// These ten ran five reworded variants of one sentence — "X news today", "X breaking
+// update latest", "X analysis reaction development" — which is the same search five times
+// as far as Google is concerned. Measured on 2026-08-28, the categories on suffixes averaged
+// 35 unique articles against 56 for the two that already had angles, and the tail was far
+// worse: AI 8, Health 11, Technology 14 unique articles out of a possible 240. AI then wrote
+// 6 stories from 8 articles — not selecting the day's news, just printing what it found.
+//
+// Each set below is five genuinely different slices of the category, so the five searches
+// compete for different results instead of returning the same page.
+const CATEGORY_ANGLE_QUERIES = {
+  'Technology': (d) => [
+    `technology product launch announcement release ${d}`,
+    `Apple Google Microsoft Meta Amazon company news ${d}`,
+    `consumer devices hardware chips gadgets review ${d}`,
+    `tech regulation antitrust privacy platform policy ${d}`,
+    `tech startup funding round IPO acquisition ${d}`,
+  ],
+  'Business': (d) => [
+    `stock markets indices trading session close ${d}`,
+    `corporate earnings results profit guidance ${d}`,
+    `central bank interest rates inflation economy ${d}`,
+    `oil gas energy commodities OPEC Gulf producers ${d}`,
+    `merger acquisition deal IPO corporate finance ${d}`,
+  ],
+  'Sports': (d) => [
+    `sports results scores fixtures ${d}`,
+    `transfers signings contracts moves ${d}`,
+    `championship tournament final qualification ${d}`,
+    `injury team news squad selection ${d}`,
+    `sports governance doping ban federation ruling ${d}`,
+  ],
+  'Entertainment': (d) => [
+    `film movie release box office ${d}`,
+    `music album single artist tour ${d}`,
+    `television streaming series premiere finale ${d}`,
+    `celebrity awards red carpet nominations ${d}`,
+    `studio entertainment industry deal production ${d}`,
+  ],
+  'Science': (d) => [
+    `space astronomy mission launch telescope ${d}`,
+    `climate environment emissions ecology study ${d}`,
+    `biology genetics medicine research findings ${d}`,
+    `physics chemistry materials engineering breakthrough ${d}`,
+    `archaeology palaeontology discovery excavation ${d}`,
+  ],
+  'Health': (d) => [
+    `medical research clinical trial study results ${d}`,
+    `disease outbreak infection public health warning ${d}`,
+    `healthcare policy hospitals insurance system ${d}`,
+    `drug treatment approval FDA therapy ${d}`,
+    `nutrition fitness mental health wellbeing ${d}`,
+  ],
+  'AI': (d) => [
+    `AI model release launch capability benchmark ${d}`,
+    `AI company funding valuation acquisition deal ${d}`,
+    `AI regulation safety policy governance law ${d}`,
+    `AI chips compute data centre infrastructure ${d}`,
+    `AI research paper breakthrough agents robotics ${d}`,
+  ],
+  'Crypto': (d) => [
+    `bitcoin ethereum price market movement ${d}`,
+    `crypto regulation SEC enforcement legislation ${d}`,
+    `crypto exchange ETF institutional adoption ${d}`,
+    `stablecoin DeFi protocol token launch ${d}`,
+    `crypto hack exploit fraud security breach ${d}`,
+  ],
+  'Football': (d) => [
+    `football match result score report ${d}`,
+    `football transfer signing contract deal ${d}`,
+    `Champions League European competition ${d}`,
+    `Premier League La Liga Serie A Bundesliga ${d}`,
+    `football manager injury club ownership ${d}`,
+  ],
+  'Basketball': (d) => [
+    `NBA game result score recap ${d}`,
+    `NBA trade free agency signing ${d}`,
+    `NBA playoffs standings season race ${d}`,
+    `NBA injury player news roster ${d}`,
+    `college international basketball EuroLeague ${d}`,
+  ],
+};
+
 const POLITICS_ANGLE_QUERIES = (base, dateLabel) => [
   `${base} ${dateLabel}`,
   `government legislation elections parliament policy ${dateLabel}`,
@@ -777,8 +878,11 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
       // news days (business, sports, culture, society, education, health, weather).
       `${rs} business economy sports culture entertainment lifestyle education health weather ${dateLabel}`,
     ];
+  } else if (CATEGORY_ANGLE_QUERIES[category]) {
+    queries = CATEGORY_ANGLE_QUERIES[category](dateLabel);
   } else {
-    // Diversified suffixes — each pulls a different slice of results vs. near-identical variants
+    // Fallback for anything with no angle set — custom user categories reach here.
+    // Still five near-identical variants, which is why every built-in category has angles.
     queries = [
       `${categoryQuery} news ${dateLabel}`,
       `${categoryQuery} breaking update latest`,
@@ -1099,6 +1203,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   const regionGate = isRegional && regionSubject
     ? `\n\nREGION FILTER (CRITICAL): Only include stories specifically about ${regionSubject} — its government, economy, society, security, diplomacy, or people. DISCARD any story that is not centrally about ${regionSubject}, even if it comes from a major international outlet or is widely covered globally.`
     : '';
+
   const prioritisationRules = isRegional
     ? `PRIORITISATION RULES (LOCAL NEWS):
 1. Articles labelled [NATIONAL AGENCY], [N LOCAL OUTLETS — TOP LOCAL STORY], or [LOCAL OUTLET] are LOCAL coverage — include these FIRST, prioritising stories covered by the most local outlets.
@@ -1112,7 +1217,11 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
 3. Prefer stories covered by multiple outlets over single-source stories.
 4. Single-source stories should only be included if clearly significant and from a tier-1 outlet.`;
 
-  const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.${regionGate}${arabicInstruction}
+  // Regional categories get the region gate; the three global ones that concentrate get a
+  // spread rule. Nothing gets both — they pull in opposite directions.
+  const spreadRule = !isRegional ? (SPREAD_RULES[category] || '') : '';
+
+  const prompt = `You are a news analyst. Below are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.${regionGate}${spreadRule}${arabicInstruction}
 
 SEARCH RESULTS:
 ${searchContext}
@@ -3216,6 +3325,85 @@ Respond with ONLY a JSON array (no markdown, no prose), max 18 items:
     res.json({ country, day: day || 'recent', count: outlets.length, summary, outlets });
   } catch (err) { res.json({ ok: false, error: err.message }); }
 });
+// ── Config inspector ─────────────────────────────────────────────────────────
+// Everything that decides what a category searches for and how its digest is written, read
+// from the live constants rather than restated — so this page cannot drift from what the
+// generator actually does. If a rule shows here, that is the rule being sent.
+app.get('/admin/api/config', (req, res) => {
+  try {
+    const dateLabel = 'September 10, 2026';   // a sample label, so queries render as they will
+    const rows = DEFAULT_CATEGORIES.map(category => {
+      const isRegional = REGIONAL_CATEGORIES_SET.has(category);
+      const baseQuery  = CATEGORY_SEARCH_QUERIES[category] || category;
+
+      // Rebuild the exact query list buildSearchContext would produce for this category.
+      let queries, queryStyle;
+      if (category === 'World News') {
+        queries = WORLD_NEWS_ANGLE_QUERIES(dateLabel); queryStyle = 'angles';
+      } else if (category === 'Politics') {
+        queries = POLITICS_ANGLE_QUERIES(baseQuery, dateLabel); queryStyle = 'angles';
+      } else if (isRegional) {
+        const h  = REGIONAL_QUERY_HINTS[category] || { agency: '', outlets: '' };
+        const rs = REGION_SUBJECT[category] || baseQuery;
+        const sites = [...(NATIONAL_AGENCIES[category] || []), ...localTier1En(category)].slice(0, 9);
+        const siteFilter = sites.map(d => `site:${d}`).join(' OR ');
+        const localOnly  = localTier1En(category).slice(0, 6).map(d => `site:${d}`).join(' OR ');
+        queries = [
+          `${baseQuery} ${dateLabel}`,
+          `${baseQuery} breaking latest`,
+          `${rs} news ${h.outlets} ${dateLabel}`,
+          siteFilter ? `${rs} (${siteFilter})` : `${rs} ${h.agency} ${dateLabel}`,
+          localOnly ? `${rs} (${localOnly})` : `${baseQuery} politics economy diplomacy security`,
+          `${rs} business economy sports culture entertainment lifestyle education health weather ${dateLabel}`,
+        ];
+        queryStyle = 'regional';
+      } else if (CATEGORY_ANGLE_QUERIES[category]) {
+        queries = CATEGORY_ANGLE_QUERIES[category](dateLabel); queryStyle = 'angles';
+      } else {
+        queries = [
+          `${baseQuery} news ${dateLabel}`,
+          `${baseQuery} breaking update latest`,
+          `${baseQuery} analysis reaction development`,
+          `${baseQuery} top stories today ${dateLabel}`,
+          `${baseQuery} major announcement impact`,
+        ];
+        queryStyle = 'suffixes';
+      }
+
+      return {
+        category,
+        isRegional,
+        queryStyle,
+        baseQuery,
+        arabicQuery: ARABIC_CATEGORY_QUERIES[category] || null,
+        generatedInArabic: !!ARABIC_CATEGORY_QUERIES[category],
+        queries,
+        phase2: 'up to 3 adaptive follow-ups (English only)',
+        resultsPerQuery: 30,
+        storyCountGuide: isRegional ? '6–10' : '6–9',
+        prioritisation: isRegional ? 'local-first (5 rules)' : 'tier-1 echo (4 rules)',
+        regionGate: isRegional ? (REGION_SUBJECT[category] || null) : null,
+        spreadRule: !isRegional ? (SPREAD_RULES[category] || null) : null,
+        rssFeeds: (REGIONAL_RSS[category] || []).map(f => ({ name: f.name, url: f.url })),
+        nationalAgency: NATIONAL_AGENCIES[category] || [],
+        localOutlets: LOCAL_TIER1[category]?.all || [],
+      };
+    });
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      model: 'claude-haiku-4-5-20251001',
+      timeSlots: TIME_SLOTS.map(t => `${t.label} (${t.time})`),
+      rssMaxAgeHours: RSS_MAX_AGE_HOURS,
+      swipeBatchNote: 'Serper: 5–6 phase-1 queries + up to 3 phase-2, 30 results each',
+      tier1DomainCount: TIER1_DOMAINS.size,
+      categories: rows,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // GET /admin/api/debug-serper?q=...&day=YYYY-MM-DD — runs the SAME query against
 // Serper's /news and /search endpoints so we can see what each returns (e.g.

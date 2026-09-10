@@ -130,6 +130,7 @@
     <div class="tab" data-tab="behavior" onclick="switchTab(this)">Behavior</div>
     <div class="tab" data-tab="costs"    onclick="switchTab(this)">API & Costs</div>
     <div class="tab" data-tab="audit"    onclick="switchTab(this)">Audit</div>
+    <div class="tab" data-tab="config"   onclick="switchTab(this)">Config</div>
   </div>
   <div class="topbar-meta">
     <span id="last-updated">—</span>
@@ -456,6 +457,15 @@
 </div>
 
 <!-- ── AUDIT ── -->
+<!-- ── CONFIG ── -->
+<div id="page-config" class="page">
+  <div class="alert alert-info">
+    Every setting that decides what a category searches for and how its digest is written, read live from the running code. If a rule appears here, it is the rule being sent to the model.
+  </div>
+  <div id="config-meta" style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">Loading…</div>
+  <div id="config-body"></div>
+</div>
+
 <div id="page-audit" class="page">
   <div class="alert alert-info">
     Checks each digest against the search results it was written from, flagging claims, numbers, names, or quotes that aren't supported by those sources. Runs on the digest only — stories and briefing are reformatted from the digest, so they inherit its grounding. Regenerating re-runs the audit on the fresh digest automatically.
@@ -583,6 +593,54 @@ function switchTab(el) {
 
 function refreshCurrent() { loadTab(currentTab); }
 
+// ── Config ──
+const CFG_STYLE = {
+  angles:   ['#065f46', '#d1fae5', 'angles'],
+  regional: ['#3730a3', '#e0e7ff', 'regional + site:'],
+  suffixes: ['#9a3412', '#ffedd5', 'suffix variants'],
+};
+async function loadConfig() {
+  const meta = document.getElementById('config-meta');
+  const body = document.getElementById('config-body');
+  body.innerHTML = '';
+  meta.textContent = 'Loading…';
+  let d;
+  try { d = await api('/config'); }
+  catch (e) { meta.textContent = 'Could not load config: ' + e.message; return; }
+
+  const styles = d.categories.reduce((a, c) => (a[c.queryStyle] = (a[c.queryStyle] || 0) + 1, a), {});
+  meta.innerHTML = `<strong>${d.categories.length}</strong> categories · `
+    + Object.entries(styles).map(([k, n]) => `${n} on ${CFG_STYLE[k] ? CFG_STYLE[k][2] : k}`).join(' · ')
+    + ` · ${d.tier1DomainCount} tier-1 domains · model <code>${d.model}</code> · ${d.swipeBatchNote}`;
+
+  body.innerHTML = d.categories.map(c => {
+    const st = CFG_STYLE[c.queryStyle] || ['#374151', '#f1f5f9', c.queryStyle];
+    const pill = (txt, fg, bg) => `<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:0.68rem;font-weight:700;color:${fg};background:${bg};">${txt}</span>`;
+    const row = (k, v) => v ? `<tr><th style="width:150px;">${k}</th><td>${v}</td></tr>` : '';
+    const esc = t => String(t).replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+    return `
+    <div class="section" style="margin-bottom:1rem;">
+      <div class="section-title" style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+        <span class="dot"></span>${c.category}
+        ${pill(st[2], st[0], st[1])}
+        ${c.isRegional ? pill('region gate: ' + c.regionGate, '#3730a3', '#e0e7ff') : ''}
+        ${c.spreadRule ? pill('spread rule', '#065f46', '#d1fae5') : ''}
+        ${c.generatedInArabic ? pill('AR', '#7c2d12', '#fef3c7') : pill('EN only', '#64748b', '#f1f5f9')}
+      </div>
+      <table class="data-table" style="margin-top:0.6rem;">
+        ${row('Searches', `<ol style="margin:0;padding-left:1.1rem;">` + c.queries.map(q => `<li><code style="font-size:0.76rem;">${esc(q)}</code></li>`).join('') + `</ol>
+             <div style="margin-top:0.4rem;font-size:0.76rem;color:#64748b;">+ ${c.phase2} · ${c.resultsPerQuery} results each</div>`)}
+        ${row('Stories', `${c.storyCountGuide} · prioritisation: ${c.prioritisation}`)}
+        ${row('Spread rule', c.spreadRule ? `<div style="font-size:0.8rem;white-space:pre-wrap;">${esc(c.spreadRule.trim())}</div>` : '')}
+        ${row('RSS feeds', c.rssFeeds.length ? c.rssFeeds.map(f => `${f.name} — <code style="font-size:0.72rem;">${esc(f.url)}</code>`).join('<br>') : (c.isRegional ? '<span style="color:#9a3412;">none configured</span>' : ''))}
+        ${row('National agency', c.nationalAgency.join(', '))}
+        ${row('Local outlets', c.localOutlets.length ? `<span style="font-size:0.78rem;">${c.localOutlets.join(' · ')}</span>` : '')}
+        ${row('Arabic query', c.arabicQuery ? `<code style="font-size:0.76rem;">${esc(c.arabicQuery)}</code>` : '')}
+      </table>
+    </div>`;
+  }).join('');
+}
+
 function loadTab(name) {
   if (name === 'overview') loadOverview();
   else if (name === 'news')     loadNews();
@@ -590,6 +648,7 @@ function loadTab(name) {
   else if (name === 'behavior') loadBehavior();
   else if (name === 'costs')    loadCosts();
   else if (name === 'audit')    loadAudit();
+  else if (name === 'config')   loadConfig();
 }
 
 // ── Helpers ──
