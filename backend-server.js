@@ -3211,6 +3211,44 @@ app.post('/admin/api/tts-cache/cleanup', async (req, res) => {
 // ==========================================
 // ENDPOINT: SAVE EMAIL PREFERENCES
 // ==========================================
+// ── Read a user's own settings ───────────────────────────────────────────────
+// Saving goes through the backend (service role); reading used to go straight from the
+// browser to Supabase on the anon key, which only works while a Supabase auth session is
+// live. The app's own idea of "signed in" is the newsdigest_user blob in localStorage, which
+// never expires — so once the Supabase session lapsed, the read was unauthorised, returned
+// null, and the caller silently fell back to whatever that device had stored. Change your
+// topics on the phone, open the laptop, see the laptop's old list.
+//
+// Reading here makes it symmetric with the write and removes the silent-fallback path.
+app.get('/api/user/preferences', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    const [prefRes, catRes] = await Promise.all([
+      supabaseAdmin.from('users').select('feed_categories, news_language').eq('id', userId).maybeSingle(),
+      supabaseAdmin.from('custom_categories').select('category_name, category_description')
+        .eq('user_id', userId).is('deleted_at', null),
+    ]);
+    if (prefRes.error) throw prefRes.error;
+    if (catRes.error)  throw catRes.error;
+
+    res.json({
+      // null (not []) when the row has never been written, so the client can tell
+      // "no saved preference" from "saved an empty list" and fall back correctly.
+      feedCategories:   prefRes.data?.feed_categories ?? null,
+      newsLanguage:     prefRes.data?.news_language ?? null,
+      customCategories: (catRes.data || []).map(c => ({
+        name: c.category_name,
+        description: c.category_description || c.category_name,
+      })),
+    });
+  } catch (error) {
+    console.error('Error reading user preferences:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.put('/api/user/feed-categories', async (req, res) => {
   try {
     const { userId, categories } = req.body;
