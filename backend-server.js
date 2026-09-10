@@ -479,9 +479,49 @@ function hostMatches(url, domains) {
 function isNationalAgency(url, region) { return hostMatches(url, NATIONAL_AGENCIES[region]); }
 // English-edition local domains — used to site:-target the English run.
 function localTier1En(region) { return LOCAL_TIER1[region]?.en || []; }
+// Serper's own display labels for the local outlets, where they differ from what
+// deriveOutletName() produces from the domain. Without these, "LBCI Lebanon" (Serper) never
+// matches "lbci" (from lbci.com.lb) and one of Lebanon's most-carried broadcasters is scored
+// as filler; likewise "ASHARQ AL-AWSAT English" against aawsat.com. Observed labels, taken
+// from stored source_articles rather than guessed.
+const LOCAL_DISPLAY_ALIASES = {
+  UAE: ['The National', 'Gulf News', 'Khaleej Times', 'Arabian Business', 'WAM', 'Emirates 24|7', 'Al Bayan', 'Al Khaleej', 'Emarat Al Youm'],
+  KSA: ['Arab News', 'Al Arabiya', 'Saudi Gazette', 'ASHARQ AL-AWSAT English', 'Asharq Al-Awsat', 'SPA', 'Saudi Press Agency', 'Okaz', 'Sabq', 'Argaam', 'Al Eqtisadiah'],
+  QAT: ['Al Jazeera', 'QNA', 'Qatar news agency', 'Qatar News Agency', 'The Peninsula', 'Doha News', 'Gulf Times', 'Qatar Tribune', 'Al Sharq'],
+  LEB: ["L'Orient Today", "L'Orient-Le Jour", 'Naharnet', 'The Daily Star', 'Al Akhbar', 'Annahar', 'An-Nahar', 'LBCI Lebanon', 'LBCI', 'MTV Lebanon', 'NNA', 'National News Agency'],
+};
+
+// Normalized local display names per region, built once. Same shape as tier1DisplayNames().
+const _localNamesByRegion = {};
+function localDisplayNames(region) {
+  if (!_localNamesByRegion[region]) {
+    const domains = [...(NATIONAL_AGENCIES[region] || []), ...(LOCAL_TIER1[region]?.all || [])];
+    _localNamesByRegion[region] = new Set([
+      ...domains.map(d => normalizeOutletName(OUTLET_NAMES[d] || deriveOutletName(d))),
+      ...(LOCAL_DISPLAY_ALIASES[region] || []).map(normalizeOutletName),
+    ].filter(Boolean));
+  }
+  return _localNamesByRegion[region];
+}
+
 // An outlet is "local" regardless of the language it publishes in.
-function isLocalSource(url, region) {
-  return hostMatches(url, NATIONAL_AGENCIES[region]) || hostMatches(url, LOCAL_TIER1[region]?.all || []);
+//
+// sourceName is optional and works exactly as it does in isTier1: consulted only when the URL
+// is a Google News redirect, where the publisher's own domain is hidden inside the redirect
+// and hostMatches can never see it. isTier1 was given this fallback and isLocalSource was
+// not, which quietly disabled the whole local-first ranking for most of the pool — measured
+// on a stored day, 36 of 53 Lebanon articles (68%) arrive as google.com redirects, so for
+// two-thirds of the feed "is this a Lebanese outlet?" was answered no by construction. Local
+// outlets then scored in the filler band, below international coverage they are meant to
+// outrank, and the [LOCAL OUTLET] / [TOP LOCAL STORY] labels Claude prioritises on never
+// appeared for them.
+function isLocalSource(url, region, sourceName = '') {
+  if (!region) return false;
+  if (hostMatches(url, NATIONAL_AGENCIES[region]) || hostMatches(url, LOCAL_TIER1[region]?.all || [])) return true;
+  if (sourceName && isGoogleRedirect(url)) {
+    return localDisplayNames(region).has(normalizeOutletName(sourceName));
+  }
+  return false;
 }
 // True when a title is written in Arabic script (≥ 2 Arabic letters).
 // Used to drop Arabic-language articles from the English feed.
@@ -619,7 +659,7 @@ function computeEchoScores(articles, region = null) {
 
     // Count this article's own source as tier-1 / local if applicable
     if (isTier1(article.link, article.source)) tier1Sources.add(article.source || `src_${i}`);
-    if (region && isLocalSource(article.link, region)) localSources.add(article.source || `src_${i}`);
+    if (region && isLocalSource(article.link, region, article.source)) localSources.add(article.source || `src_${i}`);
 
     for (let j = 0; j < articles.length; j++) {
       if (i === j) continue;
@@ -628,7 +668,7 @@ function computeEchoScores(articles, region = null) {
         const src = articles[j].source || `source_${j}`;
         allSources.add(src);
         if (isTier1(articles[j].link, articles[j].source)) tier1Sources.add(src);
-        if (region && isLocalSource(articles[j].link, region)) localSources.add(src);
+        if (region && isLocalSource(articles[j].link, region, articles[j].source)) localSources.add(src);
       }
     }
 
@@ -851,7 +891,7 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
   const scoreFor = (url) => {
     const e = echoMap[url];
     if (region) {
-      if (isLocalSource(url, region)) {
+      if (isLocalSource(url, region, itemMap[url]?.source)) {
         // Weight multi-local echo heavily and the national-agency bonus lightly, so a
         // story carried by several local outlets outranks a solo national-wire item
         // (prevents the national agency from dominating the feed).
@@ -876,7 +916,7 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     let label;
     if (region) {
       const lc = echo.localCount || 0;
-      if (isLocalSource(url, region)) {
+      if (isLocalSource(url, region, item.source)) {
         label = isNationalAgency(url, region)
           ? (lc >= 2 ? `[NATIONAL AGENCY — ${lc} LOCAL OUTLETS — TOP LOCAL STORY] ` : `[NATIONAL AGENCY] `)
           : (lc >= 2 ? `[${lc} LOCAL OUTLETS — TOP LOCAL STORY] ` : `[LOCAL OUTLET] `);
@@ -972,7 +1012,7 @@ function isClaudeErrorResponse(text) {
 // Keeps the content Claude wrote; only filters what gets attributed and displayed.
 // If a story has zero tier-1 sources, keeps up to 2 best-available outlets so
 // Coverage is never blank (rare edge case for niche category stories).
-function filterCoverageTier1(content) {
+function filterCoverageTier1(content, region = null) {
   return content.replace(
     /(\*\*Coverage:\*\*)(.*)/g,
     (_, label, rest) => {
@@ -985,8 +1025,19 @@ function filterCoverageTier1(content) {
       // isTier1 return false for every single link, tier1Links always came back empty, and
       // this silently fell through to "keep the first 2 links, whatever they are" — letting
       // non-tier1 outlets like The Hill sit right next to a real tier-1 source in Coverage.
+      const localLinks = region ? links.filter(([, name, url]) => isLocalSource(url, region, name)) : [];
       const tier1Links = links.filter(([, name, url]) => isTier1(url, name));
-      const kept = tier1Links.length > 0 ? tier1Links : links.slice(0, 2);
+      // On a regional feed, "best available" is not a safe last resort. A Lebanon story whose
+      // only search hit was a Texas local paper running wire copy was attributed to the
+      // Killeen Daily Herald — the fallback below did exactly what it says, and the result
+      // read as though the feed sources Lebanon from central Texas. Local first, then
+      // international tier-1, then nothing: a story with no credible outlet behind it is
+      // better shown with no Coverage line than with a misleading one. The line is optional
+      // downstream — the readers render outlets only when there are outlets.
+      const kept = localLinks.length > 0 ? localLinks
+        : tier1Links.length > 0 ? tier1Links
+        : region ? [] : links.slice(0, 2);
+      if (kept.length === 0) return '';
       const line = kept.map(([, name, url]) => `[${name}](${url})`).join(' · ');
       return `${label} ${line}`;
     }
@@ -1098,7 +1149,7 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
 
   const data = await callClaude(prompt, 5000);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
-  const summary = filterCoverageTier1(cleanRawSummary(rawSummary));
+  const summary = filterCoverageTier1(cleanRawSummary(rawSummary), isRegional ? category : null);
 
   // Track usage
   if (data.usage) {
@@ -1186,7 +1237,7 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
 
   const data = await callClaude(prompt, 5000);
   const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
-  const summary = filterCoverageTier1(cleanRawSummary(rawSummary));
+  const summary = filterCoverageTier1(cleanRawSummary(rawSummary), isRegional ? category : null);
 
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
