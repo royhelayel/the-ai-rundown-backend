@@ -265,6 +265,40 @@ async function generateEmbedding(text) {
 // unrelated content. The country name in the query is enough to surface local news.
 const REGIONAL_CATEGORIES_SET = new Set(['UAE', 'KSA', 'QAT', 'LEB']);
 
+// ── Article freshness ────────────────────────────────────────────────────────
+// Serper labels every result with its age — "3 hours ago", "4 months ago" — and until now
+// nothing read it, because the date pin was believed to handle freshness upstream. It does
+// not: Google's cdr filter matches on when it last CRAWLED a page, not when the page was
+// published. Evergreen explainers get re-crawled whenever current coverage links to them, so
+// on 2026-09-11 a World News pool pinned to Sep 10–11 contained eight articles from May —
+// Reuters, NYT and Al Jazeera pieces on Ukraine and Iran, ranked 13th to 42nd, displacing
+// fresher coverage of that day's actual top story.
+//
+// This is the second time this filter has existed. It was added on 14 May and removed eight
+// minutes later as "redundant — date pinning handles it", which was wrong for the reason
+// above. It stayed out because a strict window was starving the sparse regional categories:
+// LEB and QAT were coming back with 0–2 articles. That has since been fixed a better way —
+// the site:-targeted regional queries and the RSS feeds — so on the run that prompted this,
+// regional pools were LEB 49, QAT 46, KSA 39, and the filter removes nothing from any of
+// them. It removes 8 articles from one category out of sixteen.
+//
+// No "fall back to unfiltered if nothing survives" escape. That pattern is what hid this bug,
+// the Killeen Daily Herald attribution and the mobile/desktop settings desync: all three
+// failed quietly and were found months later. A category that filters down to nothing should
+// be loud.
+const MAX_ARTICLE_AGE_DAYS = 2;   // the pin covers day-1..day, so 2 days is the same window
+function isArticleFresh(dateStr) {
+  if (!dateStr) return true;                       // unlabelled — keep, the pin is still first line
+  const d = String(dateStr).toLowerCase().trim();
+  if (/\b(minute|hour)s?\s+ago/.test(d)) return true;
+  const days = d.match(/(\d+)\s*days?\s+ago/);
+  if (days) return parseInt(days[1], 10) <= MAX_ARTICLE_AGE_DAYS;
+  if (/\b(week|month|year)s?\s+ago/.test(d)) return false;
+  const parsed = new Date(dateStr);                // absolute date, e.g. "Sep 10, 2026"
+  if (isNaN(parsed.getTime())) return true;        // unparseable — keep rather than guess
+  return (Date.now() - parsed.getTime()) < (MAX_ARTICLE_AGE_DAYS + 1) * 86400000;
+}
+
 async function serperSearch(query, num = 10, day = null, gl = 'us', hl = 'en') {
   // Build day-pinned tbs: cover the target day plus the day before, so articles published
   // that day and any pieces filed just before midnight are both included.
@@ -898,10 +932,14 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
 
   // Merge results while preserving Google's ranking signal.
   // Each article gets a score = sum of (1 / position) across every query it appears in.
+  let staleDropped = 0;
   const mergeIntoMaps = (rawResults, scoreMap, itemMap) => {
     rawResults.forEach(r => {
       (r.news || []).forEach((item, idx) => {
         if (!item.link || item.link.includes('wikipedia.org')) return;
+        // Google's date pin matches on crawl date, so out-of-window articles arrive anyway.
+        // Serper's own age label is the reliable signal — see isArticleFresh.
+        if (!isArticleFresh(item.date)) { staleDropped++; return; }
         const url = item.link;
         const positionScore = 1 / (idx + 1); // rank 1 → 1.0, rank 2 → 0.5, rank 10 → 0.1
         scoreMap[url] = (scoreMap[url] || 0) + positionScore;
@@ -961,8 +999,18 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
     mergeIntoMaps(fallbackResults, scoreMap, itemMap);
   }
 
+  if (staleDropped > 0) {
+    console.log(`🗓️  Dropped ${staleDropped} out-of-window article${staleDropped === 1 ? '' : 's'} for "${categoryQuery}" (older than ${MAX_ARTICLE_AGE_DAYS} days despite the date pin)`);
+  }
+
   if (Object.keys(scoreMap).length === 0) {
     throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
+  }
+  // Loud, not silent. The last time a freshness filter existed it was removed because strict
+  // dates starved LEB and QAT down to 0–2 articles; if that ever recurs it should appear in
+  // the logs rather than be papered over by refilling the pool with stale material.
+  if (Object.keys(scoreMap).length < 10) {
+    console.warn(`⚠️  Thin pool for "${categoryQuery}": only ${Object.keys(scoreMap).length} articles after filtering (${staleDropped} dropped as stale)`);
   }
 
   // Language gate: keep the English feed English. Drop Arabic-script articles
