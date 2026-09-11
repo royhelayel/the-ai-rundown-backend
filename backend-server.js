@@ -3457,19 +3457,28 @@ app.get('/admin/api/debug-serper', async (req, res) => {
       const fmt = x => `${String(x.getUTCMonth()+1).padStart(2,'0')}/${String(x.getUTCDate()).padStart(2,'0')}/${x.getUTCFullYear()}`;
       tbs = `cdr:1,cd_min:${fmt(d1)},cd_max:${fmt(d)}`;
     }
+    // `num` is a parameter because it turned out to matter: a day-pinned query that cannot
+    // fill the requested count is where out-of-window results come from, so comparing the
+    // same query at two sizes is the whole diagnostic.
+    const num = Math.min(100, Math.max(1, parseInt(req.query.num, 10) || 20));
     const call = async (path) => {
       const r = await fetch(`https://google.serper.dev/${path}`, {
         method: 'POST',
         headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ q, num: 20, gl: 'us', hl: 'en', tbs }),
+        body: JSON.stringify({ q, num, gl: 'us', hl: 'en', tbs }),
       });
       if (!r.ok) return { httpError: r.status };
       const j = await r.json();
       const items = j.news || j.organic || [];
-      return { count: items.length, sample: items.slice(0, 8).map(it => ({ title: it.title, link: it.link, date: it.date || '' })) };
+      const stale = items.filter(it => /week|month|year/i.test(it.date || '')).length;
+      return {
+        count: items.length,
+        staleCount: stale,
+        all: items.map(it => ({ date: it.date || '', source: it.source || '', title: (it.title || '').slice(0, 70) })),
+      };
     };
     const [news, search] = await Promise.all([call('news'), call('search')]);
-    res.json({ q, day, tbs, news, search });
+    res.json({ q, day, tbs, num, news, search });
   } catch (err) { res.json({ ok: false, error: err.message }); }
 });
 
