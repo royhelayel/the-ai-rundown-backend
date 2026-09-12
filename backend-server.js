@@ -3571,6 +3571,63 @@ Respond with ONLY a JSON array (no markdown, no prose), max 18 items:
     res.json({ country, day: day || 'recent', count: outlets.length, summary, outlets });
   } catch (err) { res.json({ ok: false, error: err.message }); }
 });
+// ── Coverage gap ─────────────────────────────────────────────────────────────
+// "How do I know we have every tier-one outlet?" cannot be answered in the affirmative —
+// the registry is hand-assembled and always will be. What can be answered is how big the
+// gap is and what is in it.
+//
+// Every article Serper has returned is stored in source_articles. Rank the outlets that
+// appear there but are NOT in the registry, by how often they turn up. Real outlets rise
+// to the top of that list and obvious noise stays visibly noise, so the judgement call is
+// reduced to reading a ranked list rather than trying to recall the world's newspapers.
+app.get('/admin/api/coverage', async (req, res) => {
+  try {
+    const days = Math.min(30, Math.max(1, parseInt(req.query.days, 10) || 7));
+    const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+
+    const { data, error } = await supabaseAdmin
+      .from('news_summaries')
+      .select('category, day, source_articles')
+      .gte('day', since)
+      .is('user_id', null).is('shared_key', null)
+      .not('source_articles', 'is', null);
+    if (error) throw error;
+
+    const seen = new Map();   // domain → { name, count, cats:Set, sample }
+    let total = 0, inRegistry = 0;
+    for (const row of data || []) {
+      let arts = row.source_articles;
+      if (typeof arts === 'string') { try { arts = JSON.parse(arts); } catch { continue; } }
+      for (const a of arts || []) {
+        total++;
+        if (sourceForUrl(a.url)) { inRegistry++; continue; }
+        let host = '';
+        try { host = new URL(a.url).hostname.replace(/^www\./, ''); } catch { continue; }
+        const e = seen.get(host) || { domain: host, name: a.source || host, count: 0, cats: new Set(), sample: a.title || '' };
+        e.count++; e.cats.add(row.category);
+        seen.set(host, e);
+      }
+    }
+
+    const candidates = [...seen.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 60)
+      .map(e => ({ domain: e.domain, name: e.name, count: e.count, categories: [...e.cats].sort(), sample: e.sample.slice(0, 90) }));
+
+    res.json({
+      days, since,
+      registrySize: TIER1_SOURCES.length,
+      articlesSeen: total,
+      inRegistry,
+      inRegistryPct: total ? Math.round(inRegistry / total * 100) : 0,
+      distinctOutletsMissing: seen.size,
+      candidates,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Retrieval comparison ─────────────────────────────────────────────────────
 // Runs both retrieval paths over the same category, at the same moment, and reports what
 // each found. The point is to retire Serper with evidence rather than enthusiasm: if the

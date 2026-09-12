@@ -479,6 +479,22 @@
   </div>
 
   <div id="cmp-out"></div>
+
+  <div class="section" style="margin-top:1.4rem;">
+    <div class="section-title" style="display:flex;align-items:center;gap:0.7rem;flex-wrap:wrap;">
+      <span class="dot"></span>Coverage gap — outlets we are dropping
+      <select id="cov-days" onchange="loadCoverage()" style="padding:0.3rem 0.5rem;border:1px solid #e2e8f0;border-radius:6px;font-size:0.8rem;">
+        <option value="7">last 7 days</option><option value="14">last 14 days</option><option value="30">last 30 days</option>
+      </select>
+      <button class="refresh-btn" onclick="loadCoverage()" style="margin-left:auto;">Check</button>
+    </div>
+    <div style="font-size:0.82rem;color:#64748b;margin:0.4rem 0 0.8rem;">
+      Every outlet Serper has returned that is <strong>not</strong> in the registry, ranked by how often it appears.
+      Real outlets rise to the top; noise stays visibly noise. This is the answer to "have we got them all?" —
+      not a yes, but a list short enough to read.
+    </div>
+    <div id="cov-out" style="color:#64748b;font-size:0.86rem;">Not checked yet.</div>
+  </div>
 </div>
 
 <!-- ── CONFIG ── -->
@@ -709,6 +725,31 @@ async function runCompare() {
       <div class="section-title"><span class="dot"></span>Outlets in the corpus pool (${(c.outlets||[]).length})</div>
       <div style="font-size:0.85rem;color:#374151;line-height:1.9;">${(c.outlets||[]).map(o2 => `<span style="display:inline-block;padding:2px 9px;margin:0 4px 4px 0;background:#f1f5f9;border-radius:999px;font-size:0.78rem;">${esc(o2)}</span>`).join('')}</div>
     </div>`;
+}
+
+
+async function loadCoverage() {
+  const out = document.getElementById('cov-out');
+  const days = document.getElementById('cov-days').value;
+  out.innerHTML = 'Reading stored source articles…';
+  let d;
+  try { d = await api('/coverage?days=' + days); }
+  catch (e) { out.innerHTML = `<span style="color:#b91c1c;">Failed: ${e.message}</span>`; return; }
+  const esc = t => String(t == null ? '' : t).replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+  out.innerHTML = `
+    <div style="margin-bottom:0.8rem;color:#374151;">
+      <strong>${d.registrySize}</strong> outlets in the registry ·
+      <strong>${d.inRegistryPct}%</strong> of the ${d.articlesSeen.toLocaleString()} articles Serper returned since ${d.since} came from them ·
+      <strong>${d.distinctOutletsMissing}</strong> distinct outlets outside it
+    </div>
+    ${d.candidates.length ? `<table class="data-table">
+      <thead><tr><th style="width:60px;">Seen</th><th style="width:200px;">Outlet</th><th style="width:150px;">Categories</th><th>Most recent headline</th></tr></thead>
+      <tbody>${d.candidates.map(c => `<tr>
+        <td style="font-weight:700;">${c.count}×</td>
+        <td>${esc(c.name)}<div style="color:#94a3b8;font-size:0.74rem;">${esc(c.domain)}</div></td>
+        <td style="color:#64748b;font-size:0.78rem;">${c.categories.slice(0,4).join(', ')}</td>
+        <td style="color:#64748b;">${esc(c.sample)}</td></tr>`).join('')}</tbody></table>`
+      : '<div style="color:#065f46;font-weight:600;">Nothing outside the registry.</div>'}`;
 }
 
 // ── Config ──
