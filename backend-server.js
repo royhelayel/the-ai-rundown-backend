@@ -1128,7 +1128,13 @@ async function fetchFeedItems(url, outletName, domain) {
       domain,
       date: it.date ? it.date.toISOString() : '',
       publishedAt: it.date ? it.date.getTime() : null,
-      snippet: (it.snippet || '').slice(0, 1200),
+      // Google News puts an <a href> blob in <description>, not prose. Strip markup and
+      // treat what is left as body text only if it actually reads as text — otherwise the
+      // link markup counts as a body and a headline-only story looks like a sourced one.
+      snippet: (() => {
+        const plain = (it.snippet || '').replace(/<[^>]+>/g, ' ').replace(/https?:\/\/\S+/g, ' ').replace(/\s+/g, ' ').trim();
+        return plain.length > 60 ? plain.slice(0, 1200) : '';
+      })(),
     }));
   } catch { return []; }
 }
@@ -1158,6 +1164,73 @@ function splitGoogleTitle(title) {
   return i > 20 ? { title: title.slice(0, i).trim(), publisher: title.slice(i + 3).trim() } : { title, publisher: '' };
 }
 
+// ── Lane 4b: read the article ────────────────────────────────────────────────
+// Lanes 2 and 3 return a headline and nothing else — Google News descriptions are a link,
+// not prose — so for most local stories the model would otherwise be writing from a
+// headline. That is exactly how a 25-word fragment about Bab-el-Mandeb became two
+// confident bullets about chokepoints and shipping tariffs.
+//
+// Three rules, all of them limits rather than capabilities:
+//   · only where the outlet's own robots.txt permits it (see the registry's `fetch` flag)
+//   · only the articles that actually became stories, not the whole pool — fetching all 57
+//     costs 57% more and means sixty page requests a day at each outlet instead of twenty
+//   · stop at any paywall or gate, and never work around one
+const PAYWALL_SIGNALS = /subscribe to (continue|read)|sign in to (read|continue)|already a subscriber|this article is for subscribers|register to continue/i;
+
+async function fetchArticleBody(url) {
+  // Lane 2 and 3 links point at news.google.com, and Google no longer exposes the publisher
+  // URL behind them: the token does not decode and the page carries no static link. So those
+  // articles are unfetchable by construction, however permissive the outlet is — worth
+  // distinguishing from an outlet that said no, because the fixes are different.
+  try {
+    const h = new URL(url).hostname.replace(/^www\./, '');
+    if (h === 'news.google.com' || h.endsWith('.google.com')) return { text: null, reason: 'google-redirect-unresolvable' };
+  } catch { return { text: null, reason: 'bad-url' }; }
+  if (!mayFetchBody(url)) return { text: null, reason: 'outlet-disallows' };
+  try {
+    const r = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RadioNewsBot/1.0; +https://the-ai-rundown.vercel.app)' },
+      redirect: 'follow', signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) return { text: null, reason: 'http-' + r.status };
+    const html = await r.text();
+    if (PAYWALL_SIGNALS.test(html)) return { text: null, reason: 'paywalled' };
+
+    const stripped = html.replace(/<(script|style|nav|header|footer|aside|form)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+    const paras = [...stripped.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
+      .map(m => decodeXmlEntities(m[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim())
+      .filter(t => t.length > 40);
+    const text = paras.join(' ').slice(0, 4000);
+    // A handful of words is boilerplate or a JS shell, not an article.
+    return text.length > 250 ? { text, reason: 'ok' } : { text: null, reason: 'too-short' };
+  } catch { return { text: null, reason: 'fetch-failed' }; }
+}
+
+// Enrich the stories we are actually going to write about. `variants` carries the other
+// outlets that ran the same story, so when the first one blocks us we try a sibling that
+// does not — a story on both Khaleej Times (blocks Claude) and The National (does not)
+// should be read from The National and credited to both.
+async function enrichWithBodies(articles, limit = 12) {
+  const targets = articles.slice(0, limit);
+  await Promise.all(targets.map(async (a) => {
+    if ((a.snippet || '').length > 400) { a.bodySource = 'feed'; return; }   // lane 1 already gave us prose
+    const candidates = [{ link: a.link, source: a.source }, ...(a.variants || [])];
+    for (const c of candidates) {
+      const { text, reason } = await fetchArticleBody(c.link);
+      if (text) {
+        a.snippet = text;
+        a.bodySource = c.link === a.link ? 'fetched' : 'sibling';
+        a.bodyFrom = c.source;
+        return;
+      }
+      a.bodyReason = reason;
+    }
+    a.bodySource = 'none';
+  }));
+  articles.slice(limit).forEach(a => { if (!a.bodySource) a.bodySource = (a.snippet || '').length > 400 ? 'feed' : 'not-attempted'; });
+  return articles;
+}
+
 const CORPUS_WINDOW_HOURS = { Morning: 24, Evening: 14 };
 
 // `withSerper` defaults on. Search earns a place here for a reason the first draft of this
@@ -1182,7 +1255,9 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   // Lane 2 — the outlet via Google, by name.
   for (const s of sources.filter(x => x.lane === 2)) {
     jobs.push(fetchFeedItems(googleOutletFeedUrl(s.domain, s.gl, s.lang), s.name, s.domain)
-      .then(items => items.map(i => ({ ...i, lane: 2, title: splitGoogleTitle(i.title).title }))));
+      // snippet dropped: Google's <description> is a link whose text is the headline and the
+      // publisher, which survives a length check while telling us nothing the title does not.
+      .then(items => items.map(i => ({ ...i, lane: 2, title: splitGoogleTitle(i.title).title, snippet: '' }))));
   }
   // Lane 3 — Google's section, advisory. Publisher comes from the title suffix, and any
   // outlet not on the allowlist is dropped below, so this cannot smuggle anyone in.
@@ -1190,7 +1265,7 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
     jobs.push(fetchFeedItems(googleSectionFeedUrl(section, language), '', '')
       .then(items => items.map(i => {
         const { title, publisher } = splitGoogleTitle(i.title);
-        return { ...i, lane: 3, title, source: publisher };
+        return { ...i, lane: 3, title, source: publisher, snippet: '' };
       })));
   }
 
@@ -1255,8 +1330,14 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   for (const a of kept.sort((x, y) => x.lane - y.lane)) {
     const key = (a.title || '').toLowerCase().replace(/[^a-z0-9\u0600-\u06FF]+/g, '').slice(0, 70);
     if (!key) continue;
-    if (seen.has(key)) { seen.get(key).alsoSeenIn.add(a.lane); continue; }
-    seen.set(key, { ...a, alsoSeenIn: new Set([a.lane]) });
+    if (seen.has(key)) {
+      const first = seen.get(key);
+      first.alsoSeenIn.add(a.lane);
+      // Kept so a blocked outlet can fall back to one that allows reading.
+      if (a.link !== first.link) first.variants.push({ link: a.link, source: a.source, domain: a.domain });
+      continue;
+    }
+    seen.set(key, { ...a, alsoSeenIn: new Set([a.lane]), variants: [] });
   }
   const articles = [...seen.values()];
 
@@ -1268,10 +1349,20 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   articles.forEach((a, i) => { a.outletCount = echo[i]?.totalCount || 1; });
   articles.sort((a, b) => (b.outletCount - a.outletCount) || (b.publishedAt || 0) - (a.publishedAt || 0));
 
+  // Read the articles we are actually going to write about.
+  await enrichWithBodies(articles, 12);
+
+  // Headline-only is stated, not hidden. A story we could not read is marked as such in the
+  // context so the model has no licence to elaborate on it — the alternative is what we have
+  // now, where a headline and a link silently become three confident bullets.
   const context = articles.map((a, i) => {
     const label = a.outletCount >= 4 ? `[${a.outletCount} OUTLETS — MAJOR STORY] `
                 : a.outletCount >= 2 ? `[${a.outletCount} OUTLETS] ` : '';
-    return `${label}[${i + 1}] Title: ${a.title}\nSource: ${a.source}\nDate: ${a.date || 'recent'}\nURL: ${a.link}\nSummary: ${a.snippet || ''}`;
+    const head = `${label}[${i + 1}] Title: ${a.title}\nSource: ${a.source}\nDate: ${a.date || 'recent'}\nURL: ${a.link}`;
+    const body = (a.snippet || '').trim();
+    return body
+      ? `${head}\nArticle: ${body}`
+      : `${head}\n[HEADLINE ONLY — the article text could not be retrieved. Use this headline as the entire story: do not add detail, context, figures or implications that are not in it.]`;
   }).join('\n\n');
 
   return {
@@ -1279,6 +1370,7 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
     articles: articles.map(a => ({
       title: a.title, source: a.source, date: a.date, url: a.link,
       snippet: a.snippet, lane: a.lane, outletCount: a.outletCount, domain: a.domain,
+      bodySource: a.bodySource || 'not-attempted', bodyFrom: a.bodyFrom || null, bodyReason: a.bodyReason || null,
     })),
     stats: {
       fetched: raw.length,
@@ -1287,6 +1379,14 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       dedupedAway: kept.length - articles.length,
       byLane: articles.reduce((m, a) => (m[a.lane] = (m[a.lane] || 0) + 1, m), {}),
       outlets: [...new Set(articles.map(a => a.source))].length,
+      // How often we are writing from a headline alone — the number Roy asked to see.
+      body: articles.slice(0, 12).reduce((m, a) => {
+        m[a.bodySource || 'none'] = (m[a.bodySource || 'none'] || 0) + 1;
+        return m;
+      }, {}),
+      headlineOnly: articles.slice(0, 12).filter(a => !(a.snippet || '').trim()).length,
+      bodyFailures: articles.slice(0, 12).filter(a => a.bodySource === 'none')
+        .map(a => ({ source: a.source, reason: a.bodyReason || 'unknown', title: (a.title || '').slice(0, 60) })),
       // Per lane, because the overall median is misleading: lane 2 carries no body text at
       // all, so a pool that is mostly lane 2 looks thin even when its lane-1 half is rich.
       medianTextByLane: [1, 2, 3].reduce((m, lane) => {

@@ -712,11 +712,14 @@ async function runCompare() {
           ${row('Non-tier-1 in pool', 0, s.skipped ? '—' : `${s.nonTier1} (${s.nonTier1Pct}%)`, false, 'corpus enforces the allowlist at ingestion, so this is zero by construction')}
           ${row('Median text per article', c.medianTextChars + ' chars', s.skipped ? '—' : s.medianTextChars + ' chars', true, 'corpus by lane — ' + laneText)}
           ${row('Time taken', c.ms + ' ms', s.skipped ? '—' : s.ms + ' ms', false)}
+          ${row('Stories we could actually read', ((c.stats||{}).body ? (12 - ((c.stats||{}).headlineOnly ?? 12)) : 0) + ' of 12', '—', true, 'the rest are headline-only — the model is told not to elaborate on those')}
           ${s.skipped ? '' : row('Tier-1 articles it contributes', '—', (d.lane4||{}).tier1Total ?? 0, true, 'of which new to the corpus: ' + ((d.lane4||{}).newToCorpus ?? 0) + ' — this is what running Serper as lane 4 buys')}
         </tbody>
       </table>
       <div style="margin-top:0.7rem;font-size:0.8rem;color:#64748b;">
-        Corpus composition: ${byLane}. Dropped at ingestion — ${st.droppedNonTier1 || 0} not tier-1, ${st.droppedStale || 0} outside the window, ${st.droppedOffLang || 0} wrong language, ${st.dedupedAway || 0} duplicates merged.
+        <strong>Body text:</strong> ${Object.entries((c.stats||{}).body || {}).map(([k,v]) => `${v} ${k}`).join(' · ') || '—'}.
+        ${((c.stats||{}).bodyFailures || []).length ? `Why not: ${Object.entries(((c.stats||{}).bodyFailures||[]).reduce((m,f)=>(m[f.reason]=(m[f.reason]||0)+1,m),{})).map(([k,v])=>`${v} ${k}`).join(' · ')}.` : ''}
+        <br>Corpus composition: ${byLane}. Dropped at ingestion — ${st.droppedNonTier1 || 0} not tier-1, ${st.droppedStale || 0} outside the window, ${st.droppedOffLang || 0} wrong language, ${st.dedupedAway || 0} duplicates merged.
       </div>
     </div>
 
