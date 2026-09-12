@@ -1160,7 +1160,17 @@ function splitGoogleTitle(title) {
 
 const CORPUS_WINDOW_HOURS = { Morning: 24, Evening: 14 };
 
-async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Morning') {
+// `withSerper` defaults on. Search earns a place here for a reason the first draft of this
+// design missed: asking Google for `site:naharnet.com when:1d` and searching Google for
+// Lebanon news hit the index differently, so search returns tier-one articles the per-outlet
+// query does not. Measured on 12 Sep: six tier-one Lebanese stories — Naharnet and L'Orient,
+// both outlets lane 2 already asks by name — appeared only in Serper's results.
+//
+// What made search unusable before was never the search; it was that its output went
+// unfiltered into the digest, which is how a Kyrgyz aggregator ended up cited. Put it behind
+// the same allowlist gate lane 3 goes through and it becomes a discovery funnel: good at
+// finding, not trusted to choose.
+async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Morning', withSerper = true) {
   const sources = sourcesFor(category, language);
   const section = GOOGLE_SECTIONS[category];
   const jobs = [];
@@ -1184,6 +1194,23 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       })));
   }
 
+  // Lane 4 — Serper, as a discovery funnel. Everything it returns is matched against the
+  // registry by domain below and dropped otherwise, so it can contribute articles but never
+  // an outlet we have not vetted.
+  if (withSerper) {
+    const catQuery = language === 'ar'
+      ? (ARABIC_CATEGORY_QUERIES[category] || category)
+      : (CATEGORY_SEARCH_QUERIES[category] || category);
+    jobs.push(
+      buildSearchContext(catQuery, day, language, REGIONAL_CATEGORIES_SET.has(category), category)
+        .then(r => (r.articles || []).map(a => ({
+          title: a.title, link: a.url, source: a.source, domain: '',
+          date: a.date || '', publishedAt: null, snippet: a.snippet || '', lane: 4,
+        })))
+        .catch(() => [])
+    );
+  }
+
   const raw = (await Promise.all(jobs)).flat();
 
   // ── Tier-one at ingestion ────────────────────────────────────────────────
@@ -1201,6 +1228,16 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       const hit = byName.get((a.source || '').toLowerCase());
       if (!hit) { droppedNonTier1++; continue; }
       a.domain = hit.domain;
+    }
+    if (a.lane === 4) {
+      // Serper returns a real publisher URL, so match on domain — stricter and less
+      // ambiguous than the name matching lane 3 needs.
+      const hit = sourceForUrl(a.link);
+      if (!hit) { droppedNonTier1++; continue; }
+      a.domain = hit.domain;
+      a.source = hit.name;
+      // Serper's own age label is the only freshness signal its articles carry.
+      if (!isArticleFresh(a.date)) { droppedStale++; continue; }
     }
     // Freshness from a real publish timestamp, not a search engine's crawl date.
     if (a.publishedAt && a.publishedAt < cutoff) { droppedStale++; continue; }
@@ -3649,7 +3686,9 @@ app.get('/admin/api/compare', async (req, res) => {
 
     const t0 = Date.now();
     const [corpus, serper] = await Promise.all([
-      buildCorpusContext(category, day, language, timeSlot).then(r => ({ ...r, ms: Date.now() - t0 }))
+      // Lanes 1–3 only. The corpus can use Serper as lane 4 in production, but a comparison
+      // where one side contains the other measures nothing — and it would bill Serper twice.
+      buildCorpusContext(category, day, language, timeSlot, false).then(r => ({ ...r, ms: Date.now() - t0 }))
         .catch(e => ({ error: e.message, articles: [], stats: {}, ms: Date.now() - t0 })),
       withSerper
         ? buildSearchContext(catQuery, day, language, isRegional, category)
@@ -3693,6 +3732,12 @@ app.get('/admin/api/compare', async (req, res) => {
         ms: serper.ms || 0,
       },
       overlap: { both: both.length, onlyCorpus: onlyCorpus.length, onlySerper: onlySerper.length },
+      // What adding Serper as lane 4 would actually contribute: its tier-one articles that
+      // lanes 1–3 did not already have. This is the number that justifies the extra credits.
+      lane4: {
+        tier1Total: (serper.articles || []).length - serperNonTier1,
+        newToCorpus: onlySerper.filter(a => !!sourceForUrl(a.url)).length,
+      },
       // The two lists that decide whether Serper can be retired.
       samples: {
         onlyCorpus: onlyCorpus.slice(0, 12).map(a => ({ title: a.title, source: a.source, lane: a.lane, outletCount: a.outletCount })),

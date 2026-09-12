@@ -461,7 +461,7 @@
 <!-- ── COMPARE ── -->
 <div id="page-compare" class="page">
   <div class="alert alert-info">
-    Runs both retrieval paths over the same category at the same moment. <strong>Serper</strong> asks a search engine what happened today. <strong>Corpus</strong> asks each trusted outlet what it published today — lane&nbsp;1 its own feed, lane&nbsp;2 the outlet by name via Google, lane&nbsp;3 Google's section as a second opinion. The list that matters is "found only by Serper": when it is empty of tier-1 stories, Serper can be retired with evidence.
+    Runs both retrieval paths over the same category at the same moment. <strong>Serper</strong> asks a search engine what happened today. <strong>Corpus</strong> asks each trusted outlet what it published today — lane&nbsp;1 its own feed, lane&nbsp;2 the outlet by name via Google, lane&nbsp;3 Google's section as a second opinion. Serper also runs as <strong>lane 4</strong> in production — a discovery funnel whose results go through the same allowlist gate, so it can contribute articles but never an outlet we have not vetted. This comparison deliberately excludes it from the corpus side, so the two are measured independently.
   </div>
 
   <div class="section" style="display:flex;gap:0.8rem;align-items:flex-end;flex-wrap:wrap;">
@@ -694,6 +694,7 @@ async function runCompare() {
           ${row('Non-tier-1 in pool', 0, s.skipped ? '—' : `${s.nonTier1} (${s.nonTier1Pct}%)`, false, 'corpus enforces the allowlist at ingestion, so this is zero by construction')}
           ${row('Median text per article', c.medianTextChars + ' chars', s.skipped ? '—' : s.medianTextChars + ' chars', true, 'corpus by lane — ' + laneText)}
           ${row('Time taken', c.ms + ' ms', s.skipped ? '—' : s.ms + ' ms', false)}
+          ${s.skipped ? '' : row('Tier-1 articles it contributes', '—', (d.lane4||{}).tier1Total ?? 0, true, 'of which new to the corpus: ' + ((d.lane4||{}).newToCorpus ?? 0) + ' — this is what running Serper as lane 4 buys')}
         </tbody>
       </table>
       <div style="margin-top:0.7rem;font-size:0.8rem;color:#64748b;">
