@@ -131,6 +131,7 @@
     <div class="tab" data-tab="costs"    onclick="switchTab(this)">API & Costs</div>
     <div class="tab" data-tab="audit"    onclick="switchTab(this)">Audit</div>
     <div class="tab" data-tab="config"   onclick="switchTab(this)">Config</div>
+    <div class="tab" data-tab="compare"  onclick="switchTab(this)">Compare</div>
   </div>
   <div class="topbar-meta">
     <span id="last-updated">—</span>
@@ -457,6 +458,29 @@
 </div>
 
 <!-- ── AUDIT ── -->
+<!-- ── COMPARE ── -->
+<div id="page-compare" class="page">
+  <div class="alert alert-info">
+    Runs both retrieval paths over the same category at the same moment. <strong>Serper</strong> asks a search engine what happened today. <strong>Corpus</strong> asks each trusted outlet what it published today — lane&nbsp;1 its own feed, lane&nbsp;2 the outlet by name via Google, lane&nbsp;3 Google's section as a second opinion. The list that matters is "found only by Serper": when it is empty of tier-1 stories, Serper can be retired with evidence.
+  </div>
+
+  <div class="section" style="display:flex;gap:0.8rem;align-items:flex-end;flex-wrap:wrap;">
+    <div><div style="font-size:0.7rem;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Category</div>
+      <select id="cmp-cat" style="padding:0.45rem 0.6rem;border:1px solid #e2e8f0;border-radius:8px;font-size:0.85rem;min-width:160px;"></select></div>
+    <div><div style="font-size:0.7rem;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Language</div>
+      <select id="cmp-lang" style="padding:0.45rem 0.6rem;border:1px solid #e2e8f0;border-radius:8px;font-size:0.85rem;">
+        <option value="en">English</option><option value="ar">العربية</option></select></div>
+    <div><div style="font-size:0.7rem;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Slot</div>
+      <select id="cmp-slot" style="padding:0.45rem 0.6rem;border:1px solid #e2e8f0;border-radius:8px;font-size:0.85rem;">
+        <option value="Morning">Morning · 24h</option><option value="Evening">Evening · 14h</option></select></div>
+    <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.85rem;color:#374151;padding-bottom:0.45rem;">
+      <input type="checkbox" id="cmp-serper" checked> run Serper too <span style="color:#9a3412;font-size:0.76rem;">(uses ~8 credits)</span></label>
+    <button class="refresh-btn" onclick="runCompare()" style="margin-left:auto;">Run comparison</button>
+  </div>
+
+  <div id="cmp-out"></div>
+</div>
+
 <!-- ── CONFIG ── -->
 <div id="page-config" class="page">
   <div class="alert alert-info">
@@ -593,6 +617,100 @@ function switchTab(el) {
 
 function refreshCurrent() { loadTab(currentTab); }
 
+
+// ── Compare ──
+const CMP_CATS = ['World News','Politics','Business','Technology','Sports','Entertainment','Science','Health','UAE','KSA','QAT','LEB','AI','Crypto','Football','Basketball'];
+let cmpInit = false;
+function initCompare() {
+  if (!cmpInit) {
+    document.getElementById('cmp-cat').innerHTML = CMP_CATS.map(c => `<option>${c}</option>`).join('');
+    cmpInit = true;
+  }
+}
+async function runCompare() {
+  const cat = document.getElementById('cmp-cat').value;
+  const lang = document.getElementById('cmp-lang').value;
+  const slot = document.getElementById('cmp-slot').value;
+  const ser  = document.getElementById('cmp-serper').checked;
+  const out  = document.getElementById('cmp-out');
+  out.innerHTML = '<div class="section" style="color:#64748b;">Running both paths — this takes 10–40 seconds…</div>';
+  let d;
+  try {
+    d = await api(`/compare?category=${encodeURIComponent(cat)}&language=${lang}&timeSlot=${slot}&serper=${ser}`);
+  } catch (e) { out.innerHTML = `<div class="section" style="color:#b91c1c;">Failed: ${e.message}</div>`; return; }
+
+  const c = d.corpus, s = d.serper, o = d.overlap;
+  const esc = t => String(t == null ? '' : t).replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));
+  const win = (a, b, higherBetter = true) => {
+    if (a === b) return ['#64748b', '#64748b'];
+    const aWins = higherBetter ? a > b : a < b;
+    return aWins ? ['#065f46', '#374151'] : ['#374151', '#065f46'];
+  };
+  const row = (label, cv, sv, higherBetter = true, note = '') => {
+    const [cc, sc] = (typeof cv === 'number' && typeof sv === 'number') ? win(cv, sv, higherBetter) : ['#374151','#374151'];
+    return `<tr><th style="text-align:left;font-weight:600;color:#374151;text-transform:none;letter-spacing:0;font-size:0.82rem;">${label}
+      ${note ? `<div style="font-weight:400;color:#94a3b8;font-size:0.72rem;">${note}</div>` : ''}</th>
+      <td style="font-weight:700;color:${cc};font-size:0.95rem;">${cv}</td>
+      <td style="font-weight:700;color:${sc};font-size:0.95rem;">${sv}</td></tr>`;
+  };
+  const laneText = Object.entries(c.medianTextByLane || {}).map(([l, v]) => `lane ${l}: ${v}`).join(' · ') || '—';
+  const st = c.stats || {};
+  const byLane = Object.entries(st.byLane || {}).map(([l, n]) => `${n} via lane ${l}`).join(' · ') || '—';
+
+  const list = (title, items, render, empty, emptyGood) => `
+    <div class="section">
+      <div class="section-title"><span class="dot"></span>${title}</div>
+      ${items.length ? `<table class="data-table">${items.map(render).join('')}</table>`
+        : `<div style="padding:0.8rem 0;color:${emptyGood ? '#065f46' : '#64748b'};font-size:0.87rem;font-weight:${emptyGood ? 600 : 400};">${empty}</div>`}
+    </div>`;
+
+  out.innerHTML = `
+    ${(c.error || s.error) ? `<div class="alert" style="background:#fef2f2;color:#991b1b;">
+        ${c.error ? `Corpus: ${esc(c.error)}<br>` : ''}${s.error ? `Serper: ${esc(s.error)}` : ''}</div>` : ''}
+
+    <div class="section">
+      <div class="section-title"><span class="dot"></span>${esc(d.category)} · ${d.language.toUpperCase()} · ${esc(d.timeSlot)}</div>
+      <table class="data-table" style="margin-top:0.5rem;">
+        <thead><tr><th style="width:42%"></th><th>Corpus (lanes 1–3)</th><th>Serper (search)</th></tr></thead>
+        <tbody>
+          ${row('Articles found', c.count, s.skipped ? '—' : s.count)}
+          ${row('Distinct outlets', (c.outlets||[]).length, s.skipped ? '—' : (s.outlets||[]).length)}
+          ${row('Non-tier-1 in pool', 0, s.skipped ? '—' : `${s.nonTier1} (${s.nonTier1Pct}%)`, false, 'corpus enforces the allowlist at ingestion, so this is zero by construction')}
+          ${row('Median text per article', c.medianTextChars + ' chars', s.skipped ? '—' : s.medianTextChars + ' chars', true, 'corpus by lane — ' + laneText)}
+          ${row('Time taken', c.ms + ' ms', s.skipped ? '—' : s.ms + ' ms', false)}
+        </tbody>
+      </table>
+      <div style="margin-top:0.7rem;font-size:0.8rem;color:#64748b;">
+        Corpus composition: ${byLane}. Dropped at ingestion — ${st.droppedNonTier1 || 0} not tier-1, ${st.droppedStale || 0} outside the window, ${st.droppedOffLang || 0} wrong language, ${st.dedupedAway || 0} duplicates merged.
+      </div>
+    </div>
+
+    ${s.skipped ? '' : `<div class="section">
+      <div class="section-title"><span class="dot"></span>Overlap</div>
+      <table class="data-table"><tbody>
+        <tr><th style="text-align:left;text-transform:none;letter-spacing:0;font-size:0.82rem;">Found by both</th><td style="font-weight:700;">${o.both}</td></tr>
+        <tr><th style="text-align:left;text-transform:none;letter-spacing:0;font-size:0.82rem;">Only the corpus found</th><td style="font-weight:700;color:#065f46;">${o.onlyCorpus}</td></tr>
+        <tr><th style="text-align:left;text-transform:none;letter-spacing:0;font-size:0.82rem;">Only Serper found</th><td style="font-weight:700;color:${o.onlySerper ? '#9a3412' : '#065f46'};">${o.onlySerper}</td></tr>
+      </tbody></table></div>`}
+
+    ${s.skipped ? '' : list('Found only by Serper — the retirement test',
+      d.samples.onlySerper,
+      a => `<tr><td style="width:70px;"><span style="font-size:0.68rem;font-weight:700;padding:2px 7px;border-radius:999px;background:${a.tier1?'#d1fae5':'#ffedd5'};color:${a.tier1?'#065f46':'#9a3412'};">${a.tier1?'tier-1':'not t1'}</span></td>
+             <td style="width:140px;color:#64748b;">${esc(a.source)}</td><td>${esc(a.title)}</td></tr>`,
+      'Nothing. Serper found no story the corpus missed — that is the condition for retiring it.', true)}
+
+    ${list('Found only by the corpus', d.samples.onlyCorpus,
+      a => `<tr><td style="width:70px;color:#64748b;font-size:0.76rem;">lane ${a.lane}</td>
+             <td style="width:140px;color:#64748b;">${esc(a.source)}</td><td>${esc(a.title)}
+             ${a.outletCount > 1 ? `<span style="color:#065f46;font-size:0.72rem;font-weight:600;"> · ${a.outletCount} outlets</span>` : ''}</td></tr>`,
+      'Nothing — Serper found everything the corpus did.', false)}
+
+    <div class="section">
+      <div class="section-title"><span class="dot"></span>Outlets in the corpus pool (${(c.outlets||[]).length})</div>
+      <div style="font-size:0.85rem;color:#374151;line-height:1.9;">${(c.outlets||[]).map(o2 => `<span style="display:inline-block;padding:2px 9px;margin:0 4px 4px 0;background:#f1f5f9;border-radius:999px;font-size:0.78rem;">${esc(o2)}</span>`).join('')}</div>
+    </div>`;
+}
+
 // ── Config ──
 const CFG_STYLE = {
   angles:   ['#065f46', '#d1fae5', 'angles'],
@@ -649,6 +767,7 @@ function loadTab(name) {
   else if (name === 'costs')    loadCosts();
   else if (name === 'audit')    loadAudit();
   else if (name === 'config')   loadConfig();
+  else if (name === 'compare')  initCompare();
 }
 
 // ── Helpers ──

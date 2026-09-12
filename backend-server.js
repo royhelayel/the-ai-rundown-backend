@@ -49,6 +49,7 @@ const TIME_SLOTS = [
 
 // === Authentication & Email Imports ===
 import { createClient } from '@supabase/supabase-js';
+import { TIER1_SOURCES, GOOGLE_SECTIONS, sourcesFor, mayFetchBody, sourceForUrl } from './tier1-sources.js';
 import { Resend } from 'resend';
 
 // === Initialize Supabase Admin Client ===
@@ -1099,6 +1100,165 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
   }));
 
   return { context, articles };
+}
+
+// ── Corpus retrieval: lanes 1, 2 and 3 ───────────────────────────────────────
+//
+// The alternative to buildSearchContext. Same inputs, same return shape — { context,
+// articles } — so it is a drop-in and, more importantly, directly comparable: the admin
+// Compare tab runs both over the same category and shows the difference.
+//
+// The difference in kind: buildSearchContext asks a search engine "what happened today?"
+// and hopes the phrasing was right. This asks each trusted outlet "what did you publish
+// today?", which has an exact answer and can only return an outlet we named.
+
+// Google News caps a feed request; asking per outlet is one request each either way.
+async function fetchFeedItems(url, outletName, domain) {
+  try {
+    const r = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RadioNewsBot/1.0; +https://the-ai-rundown.vercel.app)' },
+      redirect: 'follow', signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) return [];
+    const items = parseRssFeed(await r.text());
+    return items.filter(it => it.title && it.link).map(it => ({
+      title: it.title,
+      link: it.link,
+      source: outletName,
+      domain,
+      date: it.date ? it.date.toISOString() : '',
+      publishedAt: it.date ? it.date.getTime() : null,
+      snippet: (it.snippet || '').slice(0, 1200),
+    }));
+  } catch { return []; }
+}
+
+// Lane 2 — ask Google News for one named outlet's last day. `when:1d` pins the window at
+// source, which the section feeds cannot do. The item link is a news.google.com redirect,
+// but we already know the publisher because we asked for it by name.
+function googleOutletFeedUrl(domain, gl, lang) {
+  const q = encodeURIComponent(`site:${domain} when:1d`);
+  const hl = lang === 'ar' ? 'ar' : 'en-US';
+  const ceid = lang === 'ar' ? `${gl}:ar` : `${gl}:en`;
+  return `https://news.google.com/rss/search?q=${q}&hl=${hl}&gl=${gl}&ceid=${ceid}`;
+}
+
+function googleSectionFeedUrl(section, lang) {
+  const hl = lang === 'ar' ? 'ar' : 'en-US';
+  const gl = lang === 'ar' ? 'EG' : 'US';
+  const ceid = lang === 'ar' ? 'EG:ar' : 'US:en';
+  return `https://news.google.com/rss/headlines/section/topic/${section}?hl=${hl}&gl=${gl}&ceid=${ceid}`;
+}
+
+// Google News titles arrive as "Headline - Publisher"; the RSS also carries <source>, which
+// parseRssFeed does not pick up. Splitting the title is enough to attribute, and the
+// allowlist check below is what actually enforces tier-one.
+function splitGoogleTitle(title) {
+  const i = title.lastIndexOf(' - ');
+  return i > 20 ? { title: title.slice(0, i).trim(), publisher: title.slice(i + 3).trim() } : { title, publisher: '' };
+}
+
+const CORPUS_WINDOW_HOURS = { Morning: 24, Evening: 14 };
+
+async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Morning') {
+  const sources = sourcesFor(category, language);
+  const section = GOOGLE_SECTIONS[category];
+  const jobs = [];
+
+  // Lane 1 — the outlet's own feed, where it still runs one.
+  for (const s of sources.filter(x => x.lane === 1)) {
+    jobs.push(fetchFeedItems(s.feed, s.name, s.domain).then(items => items.map(i => ({ ...i, lane: 1 }))));
+  }
+  // Lane 2 — the outlet via Google, by name.
+  for (const s of sources.filter(x => x.lane === 2)) {
+    jobs.push(fetchFeedItems(googleOutletFeedUrl(s.domain, s.gl, s.lang), s.name, s.domain)
+      .then(items => items.map(i => ({ ...i, lane: 2, title: splitGoogleTitle(i.title).title }))));
+  }
+  // Lane 3 — Google's section, advisory. Publisher comes from the title suffix, and any
+  // outlet not on the allowlist is dropped below, so this cannot smuggle anyone in.
+  if (section) {
+    jobs.push(fetchFeedItems(googleSectionFeedUrl(section, language), '', '')
+      .then(items => items.map(i => {
+        const { title, publisher } = splitGoogleTitle(i.title);
+        return { ...i, lane: 3, title, source: publisher };
+      })));
+  }
+
+  const raw = (await Promise.all(jobs)).flat();
+
+  // ── Tier-one at ingestion ────────────────────────────────────────────────
+  // Lanes 1 and 2 are tier-one by construction — we named the outlet. Lane 3 is not, so
+  // its items are matched against the registry by publisher name and dropped otherwise.
+  // This is the line that makes an Open.kg or a Killeen Daily Herald impossible rather
+  // than merely filtered out at the end.
+  const byName = new Map(TIER1_SOURCES.map(s => [s.name.toLowerCase(), s]));
+  const kept = [];
+  let droppedNonTier1 = 0, droppedStale = 0, droppedOffLang = 0;
+  const cutoff = Date.now() - (CORPUS_WINDOW_HOURS[timeSlot] || 24) * 3600 * 1000;
+
+  for (const a of raw) {
+    if (a.lane === 3) {
+      const hit = byName.get((a.source || '').toLowerCase());
+      if (!hit) { droppedNonTier1++; continue; }
+      a.domain = hit.domain;
+    }
+    // Freshness from a real publish timestamp, not a search engine's crawl date.
+    if (a.publishedAt && a.publishedAt < cutoff) { droppedStale++; continue; }
+    // Keep the English feed English and the Arabic feed Arabic.
+    const isAr = titleIsArabic(a.title);
+    if (language === 'ar' ? !isAr : isAr) { droppedOffLang++; continue; }
+    kept.push(a);
+  }
+
+  // ── Dedupe ───────────────────────────────────────────────────────────────
+  // Same story reached by two lanes is one row. Keyed on the title, because the URLs
+  // differ by lane — a publisher link from lane 1 and a Google redirect from lane 2 are
+  // the same article. Lane 1 wins ties: it carries the most text.
+  const seen = new Map();
+  for (const a of kept.sort((x, y) => x.lane - y.lane)) {
+    const key = (a.title || '').toLowerCase().replace(/[^a-z0-9\u0600-\u06FF]+/g, '').slice(0, 70);
+    if (!key) continue;
+    if (seen.has(key)) { seen.get(key).alsoSeenIn.add(a.lane); continue; }
+    seen.set(key, { ...a, alsoSeenIn: new Set([a.lane]) });
+  }
+  const articles = [...seen.values()];
+
+  // ── Rank ─────────────────────────────────────────────────────────────────
+  // How many distinct tier-one outlets carry a story is what "how big is this" should
+  // mean. computeEchoScores already does that clustering; every outlet here is tier-one,
+  // so tier1Count is simply the breadth of coverage.
+  const echo = computeEchoScores(articles.map(a => ({ title: a.title, link: a.link, source: a.source })));
+  articles.forEach((a, i) => { a.outletCount = echo[i]?.totalCount || 1; });
+  articles.sort((a, b) => (b.outletCount - a.outletCount) || (b.publishedAt || 0) - (a.publishedAt || 0));
+
+  const context = articles.map((a, i) => {
+    const label = a.outletCount >= 4 ? `[${a.outletCount} OUTLETS — MAJOR STORY] `
+                : a.outletCount >= 2 ? `[${a.outletCount} OUTLETS] ` : '';
+    return `${label}[${i + 1}] Title: ${a.title}\nSource: ${a.source}\nDate: ${a.date || 'recent'}\nURL: ${a.link}\nSummary: ${a.snippet || ''}`;
+  }).join('\n\n');
+
+  return {
+    context,
+    articles: articles.map(a => ({
+      title: a.title, source: a.source, date: a.date, url: a.link,
+      snippet: a.snippet, lane: a.lane, outletCount: a.outletCount, domain: a.domain,
+    })),
+    stats: {
+      fetched: raw.length,
+      kept: articles.length,
+      droppedNonTier1, droppedStale, droppedOffLang,
+      dedupedAway: kept.length - articles.length,
+      byLane: articles.reduce((m, a) => (m[a.lane] = (m[a.lane] || 0) + 1, m), {}),
+      outlets: [...new Set(articles.map(a => a.source))].length,
+      // Per lane, because the overall median is misleading: lane 2 carries no body text at
+      // all, so a pool that is mostly lane 2 looks thin even when its lane-1 half is rich.
+      medianTextByLane: [1, 2, 3].reduce((m, lane) => {
+        const l = articles.filter(a => a.lane === lane).map(a => (a.snippet || '').length).sort((x, y) => x - y);
+        if (l.length) m[lane] = l[Math.floor(l.length / 2)];
+        return m;
+      }, {}),
+    },
+  };
 }
 
 // ─── Feature flag — set to false to revert to single-content generation ───────
@@ -3411,6 +3571,82 @@ Respond with ONLY a JSON array (no markdown, no prose), max 18 items:
     res.json({ country, day: day || 'recent', count: outlets.length, summary, outlets });
   } catch (err) { res.json({ ok: false, error: err.message }); }
 });
+// ── Retrieval comparison ─────────────────────────────────────────────────────
+// Runs both retrieval paths over the same category, at the same moment, and reports what
+// each found. The point is to retire Serper with evidence rather than enthusiasm: if the
+// corpus lanes never miss anything Serper catches, that is a number, not an argument.
+//
+// Costs a handful of Serper credits per run, so it is on-demand from the dashboard only.
+app.get('/admin/api/compare', async (req, res) => {
+  try {
+    const category = req.query.category || 'World News';
+    const language = req.query.language === 'ar' ? 'ar' : 'en';
+    const timeSlot = req.query.timeSlot === 'Evening' ? 'Evening' : 'Morning';
+    const day = req.query.day || getTodayDate();
+    const withSerper = req.query.serper !== 'false';
+
+    const isRegional = REGIONAL_CATEGORIES_SET.has(category);
+    const catQuery = language === 'ar'
+      ? (ARABIC_CATEGORY_QUERIES[category] || category)
+      : (CATEGORY_SEARCH_QUERIES[category] || category);
+
+    const t0 = Date.now();
+    const [corpus, serper] = await Promise.all([
+      buildCorpusContext(category, day, language, timeSlot).then(r => ({ ...r, ms: Date.now() - t0 }))
+        .catch(e => ({ error: e.message, articles: [], stats: {}, ms: Date.now() - t0 })),
+      withSerper
+        ? buildSearchContext(catQuery, day, language, isRegional, category)
+            .then(r => ({ ...r, ms: Date.now() - t0 })).catch(e => ({ error: e.message, articles: [], ms: Date.now() - t0 }))
+        : Promise.resolve({ articles: [], skipped: true, ms: 0 }),
+    ]);
+
+    // What each found that the other did not — matched on a normalised title, since the
+    // two paths return different URLs for the same article (publisher link vs redirect).
+    const norm = t => (t || '').toLowerCase().replace(/[^a-z0-9\u0600-\u06FF]+/g, '').slice(0, 60);
+    const cKeys = new Set((corpus.articles || []).map(a => norm(a.title)));
+    const sKeys = new Set((serper.articles || []).map(a => norm(a.title)));
+    const onlyCorpus = (corpus.articles || []).filter(a => !sKeys.has(norm(a.title)));
+    const onlySerper = (serper.articles || []).filter(a => !cKeys.has(norm(a.title)));
+    const both = (corpus.articles || []).filter(a => sKeys.has(norm(a.title)));
+
+    // Serper's pool graded against the same tier-one rule the corpus enforces at ingestion.
+    let serperNonTier1 = 0;
+    for (const a of serper.articles || []) if (!sourceForUrl(a.url)) serperNonTier1++;
+
+    const med = arr => { const l = arr.slice().sort((x, y) => x - y); return l.length ? l[Math.floor(l.length / 2)] : 0; };
+
+    res.json({
+      category, language, timeSlot, day,
+      corpus: {
+        error: corpus.error || null,
+        count: (corpus.articles || []).length,
+        stats: corpus.stats || {},
+        medianTextByLane: (corpus.stats || {}).medianTextByLane || {},
+        medianTextChars: med((corpus.articles || []).map(a => (a.snippet || '').length)),
+        outlets: [...new Set((corpus.articles || []).map(a => a.source))].sort(),
+        ms: corpus.ms || 0,
+      },
+      serper: {
+        error: serper.error || null, skipped: !!serper.skipped,
+        count: (serper.articles || []).length,
+        nonTier1: serperNonTier1,
+        nonTier1Pct: (serper.articles || []).length ? Math.round(serperNonTier1 / serper.articles.length * 100) : 0,
+        medianTextChars: med((serper.articles || []).map(a => (a.snippet || '').length)),
+        outlets: [...new Set((serper.articles || []).map(a => a.source))].sort(),
+        ms: serper.ms || 0,
+      },
+      overlap: { both: both.length, onlyCorpus: onlyCorpus.length, onlySerper: onlySerper.length },
+      // The two lists that decide whether Serper can be retired.
+      samples: {
+        onlyCorpus: onlyCorpus.slice(0, 12).map(a => ({ title: a.title, source: a.source, lane: a.lane, outletCount: a.outletCount })),
+        onlySerper: onlySerper.slice(0, 12).map(a => ({ title: a.title, source: a.source, tier1: !!sourceForUrl(a.url) })),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Config inspector ─────────────────────────────────────────────────────────
 // Everything that decides what a category searches for and how its digest is written, read
 // from the live constants rather than restated — so this page cannot drift from what the
