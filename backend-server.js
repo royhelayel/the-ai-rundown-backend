@@ -3608,6 +3608,120 @@ Respond with ONLY a JSON array (no markdown, no prose), max 18 items:
     res.json({ country, day: day || 'recent', count: outlets.length, summary, outlets });
   } catch (err) { res.json({ ok: false, error: err.message }); }
 });
+// ── Completeness audit ───────────────────────────────────────────────────────
+// The Compare tab measures lane 4's marginal contribution, which is a cost question, not a
+// completeness one — comparing the system against one of its own funnels cannot tell you
+// what all of them missed together. That needs a yardstick from outside the pipeline.
+//
+// GDELT is the only real candidate: it monitors hundreds of thousands of sources, updates
+// every 15 minutes, is free, and — crucially — is not a lane here, so its blind spots are
+// not ours. Its weakness is that it has no authority ranking at all, which would make it
+// useless as a source and makes it ideal as an auditor: we never publish a word of it, we
+// only ask whether a story lots of outlets covered is missing from what we published.
+//
+// "Big" is measured the way it should be: the number of DISTINCT DOMAINS carrying a story.
+// One outlet writing five times is not a big story; forty outlets writing once is.
+const GDELT_QUERIES = {
+  'World News':   '(war OR ceasefire OR summit OR election OR crisis)',
+  'Politics':     '(parliament OR election OR government OR minister OR policy)',
+  'Business':     '(markets OR earnings OR economy OR inflation OR merger)',
+  'Technology':   '(technology OR software OR chips OR smartphone OR platform)',
+  'Science':      '(research OR study OR space OR climate OR discovery)',
+  'Health':       '(health OR disease OR hospital OR vaccine OR treatment)',
+  'Sports':       '(match OR tournament OR championship OR transfer)',
+  'Entertainment':'(film OR music OR streaming OR celebrity OR award)',
+  'AI':           '("artificial intelligence" OR "machine learning" OR chatbot)',
+  'Crypto':       '(bitcoin OR cryptocurrency OR blockchain OR ethereum)',
+  'Football':     '(football OR soccer OR "premier league" OR "champions league")',
+  'Basketball':   '(basketball OR NBA)',
+  'UAE':          '("United Arab Emirates" OR Dubai OR "Abu Dhabi")',
+  'KSA':          '("Saudi Arabia" OR Riyadh OR Jeddah)',
+  'QAT':          '(Qatar OR Doha)',
+  'LEB':          '(Lebanon OR Beirut)',
+};
+
+const STOPISH = new Set(['the','and','for','with','from','that','this','have','been','will','after','over','into','their','says','said','amid','more','than','what','when','about','which','were','they','could','would']);
+const sigTokens = (t) => (t || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3 && !STOPISH.has(w));
+
+app.get('/admin/api/completeness', async (req, res) => {
+  try {
+    const category = req.query.category || 'World News';
+    const day = req.query.day || getTodayDate();
+    const timeSlot = req.query.timeSlot === 'Evening' ? 'Evening' : 'Morning';
+    const hours = req.query.hours || '24';
+
+    // What we actually published.
+    const { data: row, error } = await supabaseAdmin
+      .from('news_summaries')
+      .select('content, generated_at')
+      .eq('category', category).eq('day', day).eq('time_slot', timeSlot).eq('language', 'en')
+      .is('user_id', null).is('shared_key', null).maybeSingle();
+    if (error) throw error;
+    const published = (row?.content || '').split('\n')
+      .filter(l => /^##\s+/.test(l) && !/Sources/i.test(l))
+      .map(l => l.replace(/^##\s+/, '').trim());
+
+    // What the world covered, per an index that is not ours.
+    const q = GDELT_QUERIES[category] || category;
+    const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=${encodeURIComponent(q + ' sourcelang:english')}`
+              // 75, not 250: GDELT throttles large requests as "high traffic" and returns a
+              // plain-text 429. 75 comes back reliably and is plenty to rank the day's
+              // biggest clusters, which is all this needs.
+              + `&mode=artlist&maxrecords=75&timespan=${encodeURIComponent(hours + 'h')}&format=json&sort=hybridrel`;
+    // One request every 5 seconds is GDELT's published limit, so a throttled response is
+    // expected rather than exceptional — wait it out once rather than failing the check.
+    let gdelt = null;
+    for (let attempt = 0; attempt < 3 && gdelt === null; attempt++) {
+      if (attempt) await new Promise(r2 => setTimeout(r2, 6000));
+      try {
+        const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RadioNewsBot/1.0)' }, signal: AbortSignal.timeout(25000) });
+        const text = await r.text();
+        gdelt = JSON.parse(text).articles || [];
+      } catch { gdelt = null; }
+    }
+    if (gdelt === null) {
+      return res.json({ category, day, timeSlot, publishedStories: published.length,
+        error: 'GDELT did not answer after three tries — it rate-limits to one request every 5 seconds' });
+    }
+
+    // Cluster GDELT's articles, then rank clusters by how many distinct DOMAINS carry them.
+    const clusters = [];
+    for (const a of gdelt) {
+      const toks = new Set(sigTokens(a.title));
+      if (toks.size < 3) continue;
+      const hit = clusters.find(c => [...toks].filter(t => c.tokens.has(t)).length >= 3);
+      if (hit) { hit.domains.add(a.domain); hit.titles.push(a.title); toks.forEach(t => hit.tokens.add(t)); }
+      else clusters.push({ tokens: toks, domains: new Set([a.domain]), titles: [a.title] });
+    }
+    const big = clusters
+      .map(c => ({ outlets: c.domains.size, title: c.titles[0], tokens: c.tokens, domains: [...c.domains].slice(0, 6) }))
+      .filter(c => c.outlets >= 3)
+      .sort((a, b) => b.outlets - a.outlets)
+      .slice(0, 15);
+
+    // Did we publish it? Same token overlap test, against our own headlines.
+    const pubToks = published.map(h => new Set(sigTokens(h)));
+    const scored = big.map(c => {
+      const covered = pubToks.some(p => [...c.tokens].filter(t => p.has(t)).length >= 2);
+      return { title: c.title, outlets: c.outlets, domains: c.domains, covered };
+    });
+
+    const missed = scored.filter(x => !x.covered);
+    res.json({
+      category, day, timeSlot,
+      generatedAt: row?.generated_at || null,
+      publishedStories: published.length,
+      gdeltArticles: gdelt.length,
+      bigEvents: scored.length,
+      covered: scored.length - missed.length,
+      missRate: scored.length ? Math.round(missed.length / scored.length * 100) : 0,
+      events: scored,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Coverage gap ─────────────────────────────────────────────────────────────
 // "How do I know we have every tier-one outlet?" cannot be answered in the affirmative —
 // the registry is hand-assembled and always will be. What can be answered is how big the
