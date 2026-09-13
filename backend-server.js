@@ -1341,51 +1341,129 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   }
   const articles = [...seen.values()];
 
-  // ── Rank ─────────────────────────────────────────────────────────────────
-  // How many distinct tier-one outlets carry a story is what "how big is this" should
-  // mean. computeEchoScores already does that clustering; every outlet here is tier-one,
-  // so tier1Count is simply the breadth of coverage.
-  const echo = computeEchoScores(articles.map(a => ({ title: a.title, link: a.link, source: a.source })));
-  articles.forEach((a, i) => { a.outletCount = echo[i]?.totalCount || 1; });
-  articles.sort((a, b) => (b.outletCount - a.outletCount) || (b.publishedAt || 0) - (a.publishedAt || 0));
+  // ── Group into stories ───────────────────────────────────────────────────
+  // The step that was missing, and the one that made everything downstream wrong.
+  //
+  // Dedupe above only merges IDENTICAL headlines, which is the right job for "the same
+  // article arrived via two lanes" and no use at all for "sixteen outlets covered the same
+  // event in their own words". Twelve articles about the Saudi pipeline attack produced
+  // twelve distinct keys. computeEchoScores knew they were one story — it scored each of
+  // them 13 to 16 — but it only ever wrote a number onto each article and never grouped
+  // them, so the knowledge was thrown away between the two steps.
+  //
+  // Consequences, all of which this fixes: ranking was dominated by whichever event had the
+  // most variants, so the top twelve slots were one story; the body-fetch budget went twelve
+  // times to that story and never to anything else that happened; and **Perspectives
+  // differ** — which must contrast how named outlets framed the same event — had no way to
+  // see that AP, Al Jazeera and the Economist were describing one thing.
+  const stories = [];
+  for (const a of articles) {
+    const toks = new Set(sigTokens(a.title));
+    if (toks.size < 2) { stories.push({ lead: a, members: [a], tokens: toks }); continue; }
+    // Three shared significant words, not two. Two is what computeEchoScores uses for a
+    // loose "is this echoed" signal; for merging it is too eager — "Saudi" plus "Iran" would
+    // fold unrelated stories together, and a wrong merge silently deletes a story.
+    const hit = stories.find(st => [...toks].filter(t => st.tokens.has(t)).length >= 3);
+    if (hit) {
+      hit.members.push(a);
+      toks.forEach(t => hit.tokens.add(t));
+      // The lead is the member most worth reading: prose already in hand beats a headline,
+      // and a fetchable publisher URL beats a Google redirect we cannot resolve.
+      const better = (x, y) => ((x.snippet || '').length > 400 ? 2 : 0) + (x.lane <= 1 ? 1 : 0)
+                             > ((y.snippet || '').length > 400 ? 2 : 0) + (y.lane <= 1 ? 1 : 0);
+      if (better(a, hit.lead)) hit.lead = a;
+    } else {
+      stories.push({ lead: a, members: [a], tokens: toks });
+    }
+  }
 
-  // Read the articles we are actually going to write about.
-  await enrichWithBodies(articles, 12);
+  // A story's weight is the number of DISTINCT OUTLETS carrying it — not the number of
+  // articles, so one outlet filing five updates does not outrank five outlets filing once.
+  for (const st of stories) {
+    st.outlets = [...new Set(st.members.map(m => m.source).filter(Boolean))];
+    st.outletCount = st.outlets.length;
+    st.publishedAt = Math.max(...st.members.map(m => m.publishedAt || 0));
+  }
+  stories.sort((a, b) => (b.outletCount - a.outletCount) || (b.publishedAt - a.publishedAt));
+
+  // ── Read the stories we are going to write about ─────────────────────────
+  // Several members per story, not one. Perspectives differ needs more than a single
+  // outlet's account, and a story carried by sixteen outlets is exactly where framing
+  // diverges most. Three distinct outlets per story is enough to contrast and keeps the
+  // fetch count roughly where it was — twelve stories x up to 3 rather than twelve copies
+  // of one event.
+  const TOP_STORIES = 12, PER_STORY = 3;
+  const toRead = [];
+  for (const st of stories.slice(0, TOP_STORIES)) {
+    const byOutlet = new Map();
+    for (const m of st.members) if (!byOutlet.has(m.source)) byOutlet.set(m.source, m);
+    st.readable = [...byOutlet.values()].slice(0, PER_STORY);
+    toRead.push(...st.readable);
+  }
+  await enrichWithBodies(toRead, toRead.length);
+
+  // Flattened back to an article list for the callers that still expect one, lead first so
+  // the ordering reflects stories rather than duplicates.
+  const articlesOut = stories.map(st => ({ ...st.lead, outletCount: st.outletCount,
+    storyOutlets: st.outlets, memberCount: st.members.length }));
 
   // Headline-only is stated, not hidden. A story we could not read is marked as such in the
   // context so the model has no licence to elaborate on it — the alternative is what we have
   // now, where a headline and a link silently become three confident bullets.
-  const context = articles.map((a, i) => {
-    const label = a.outletCount >= 4 ? `[${a.outletCount} OUTLETS — MAJOR STORY] `
-                : a.outletCount >= 2 ? `[${a.outletCount} OUTLETS] ` : '';
-    const head = `${label}[${i + 1}] Title: ${a.title}\nSource: ${a.source}\nDate: ${a.date || 'recent'}\nURL: ${a.link}`;
-    const body = (a.snippet || '').trim();
-    return body
-      ? `${head}\nArticle: ${body}`
-      : `${head}\n[HEADLINE ONLY — the article text could not be retrieved. Use this headline as the entire story: do not add detail, context, figures or implications that are not in it.]`;
+  // One entry per STORY, carrying each outlet's own account of it. That shape is what the
+  // digest prompt has always asked for and never been given: Coverage wants every outlet on
+  // the story, and Perspectives differ wants to contrast how they framed it. Handing the
+  // model twelve separate rows about one pipeline attack could only ever produce twelve
+  // headlines or an invented contrast.
+  const context = stories.map((st, i) => {
+    const label = st.outletCount >= 4 ? `[${st.outletCount} OUTLETS — MAJOR STORY] `
+                : st.outletCount >= 2 ? `[${st.outletCount} OUTLETS] ` : '';
+    const accounts = (st.readable || [st.lead]).map(m => {
+      const body = (m.snippet || '').trim();
+      return body
+        ? `  — ${m.source} (${m.link})\n    ${body}`
+        : `  — ${m.source} (${m.link})\n    [HEADLINE ONLY: "${m.title}" — the article text could not be retrieved]`;
+    }).join('\n');
+    const unread = st.members.length > (st.readable || []).length
+      ? `\n  also carried by: ${st.outlets.filter(o => !(st.readable || []).some(r => r.source === o)).join(', ')}`
+      : '';
+    const anyBody = (st.readable || []).some(m => (m.snippet || '').trim());
+    return `${label}[${i + 1}] ${st.lead.title}\nDate: ${st.lead.date || 'recent'}\n`
+         + `Accounts from ${(st.readable || []).length} of ${st.outletCount} outlet(s):\n${accounts}${unread}`
+         + (anyBody ? '' : '\n  [NO ARTICLE TEXT for this story — write only what the headlines above support, and omit Perspectives differ rather than inferring one.]');
   }).join('\n\n');
 
   return {
     context,
-    articles: articles.map(a => ({
+    articles: articlesOut.map(a => ({
       title: a.title, source: a.source, date: a.date, url: a.link,
       snippet: a.snippet, lane: a.lane, outletCount: a.outletCount, domain: a.domain,
+      storyOutlets: a.storyOutlets, memberCount: a.memberCount,
       bodySource: a.bodySource || 'not-attempted', bodyFrom: a.bodyFrom || null, bodyReason: a.bodyReason || null,
     })),
     stats: {
       fetched: raw.length,
-      kept: articles.length,
+      kept: articlesOut.length,
+      articlesBeforeGrouping: articles.length,
+      storiesAfterGrouping: stories.length,
       droppedNonTier1, droppedStale, droppedOffLang,
       dedupedAway: kept.length - articles.length,
-      byLane: articles.reduce((m, a) => (m[a.lane] = (m[a.lane] || 0) + 1, m), {}),
-      outlets: [...new Set(articles.map(a => a.source))].length,
+      groupedAway: articles.length - stories.length,
+      byLane: articlesOut.reduce((m, a) => (m[a.lane] = (m[a.lane] || 0) + 1, m), {}),
+      outlets: [...new Set(articlesOut.map(a => a.source))].length,
       // How often we are writing from a headline alone — the number Roy asked to see.
-      body: articles.slice(0, 12).reduce((m, a) => {
+      body: toRead.reduce((m, a) => {
         m[a.bodySource || 'none'] = (m[a.bodySource || 'none'] || 0) + 1;
         return m;
       }, {}),
-      headlineOnly: articles.slice(0, 12).filter(a => !(a.snippet || '').trim()).length,
-      bodyFailures: articles.slice(0, 12).filter(a => a.bodySource === 'none')
+      // Per STORY now, which is the number that matters: a story is readable if any of its
+      // outlets gave us text, and only fully unreadable ones force a headline-only digest.
+      storiesRead: stories.slice(0, TOP_STORIES).filter(st => (st.readable || []).some(m => (m.snippet || '').trim())).length,
+      storiesTried: Math.min(TOP_STORIES, stories.length),
+      storiesWithMultipleAccounts: stories.slice(0, TOP_STORIES)
+        .filter(st => (st.readable || []).filter(m => (m.snippet || '').trim()).length >= 2).length,
+      headlineOnly: stories.slice(0, TOP_STORIES).filter(st => !(st.readable || []).some(m => (m.snippet || '').trim())).length,
+      bodyFailures: toRead.filter(a => a.bodySource === 'none')
         .map(a => ({ source: a.source, reason: a.bodyReason || 'unknown', title: (a.title || '').slice(0, 60) })),
       // Per lane, because the overall median is misleading: lane 2 carries no body text at
       // all, so a pool that is mostly lane 2 looks thin even when its lane-1 half is rich.
@@ -3952,6 +4030,9 @@ app.get('/admin/api/compare', async (req, res) => {
         tier1Total: (serper.articles || []).length - serperNonTier1,
         newToCorpus: onlySerper.filter(a => !!sourceForUrl(a.url)).length,
       },
+      // Full article list on request — needed to ask questions like "for each story we
+      // could not read, was the same story available from an outlet that sends text?"
+      corpusArticles: req.query.full === '1' ? (corpus.articles || []) : undefined,
       // The two lists that decide whether Serper can be retired.
       samples: {
         onlyCorpus: onlyCorpus.slice(0, 12).map(a => ({ title: a.title, source: a.source, lane: a.lane, outletCount: a.outletCount })),
