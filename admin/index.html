@@ -520,6 +520,18 @@
   <div class="alert alert-info">
     Every setting that decides what a category searches for and how its digest is written, read live from the running code. If a rule appears here, it is the rule being sent to the model.
   </div>
+  <div class="section" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
+    <div>
+      <div class="section-title" style="margin-bottom:0.3rem;"><span class="dot"></span>Retrieval path</div>
+      <div style="font-size:0.82rem;color:#64748b;" id="retr-sub">Loading…</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:0.6rem;">
+      <span style="font-size:0.82rem;font-weight:700;color:#374151;" id="retr-label">—</span>
+      <span id="retr-switch" onclick="toggleRetrieval()" style="width:42px;height:24px;border-radius:999px;background:#e2e8f0;position:relative;cursor:pointer;transition:background 0.15s;">
+        <span id="retr-knob" style="position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.3);transition:left 0.15s;"></span>
+      </span>
+    </div>
+  </div>
   <div id="config-meta" style="font-size:0.82rem;color:#64748b;margin-bottom:1rem;">Loading…</div>
   <div id="config-body"></div>
 </div>
@@ -809,6 +821,27 @@ async function loadCompleteness() {
     <div style="margin-top:0.6rem;font-size:0.78rem;color:#94a3b8;">Sampled ${d.gdeltArticles} GDELT articles. It caps request size, so this catches the day's biggest events rather than every story — which is the right sensitivity for "did we miss something important?"</div>`;
 }
 
+
+async function loadRetrieval() {
+  try {
+    const d = await api('/retrieval/status');
+    const on = !!d.enabled;
+    document.getElementById('retr-label').textContent = on ? 'Corpus lanes' : 'Serper only';
+    document.getElementById('retr-sub').innerHTML = on
+      ? 'Generation asks each trusted outlet what it published, with Serper as lane 4. <strong>This is what produces the news.</strong>'
+      : 'Generation searches with Serper alone — the original behaviour.';
+    const sw = document.getElementById('retr-switch'), kn = document.getElementById('retr-knob');
+    sw.style.background = on ? '#065f46' : '#e2e8f0';
+    kn.style.left = on ? '20px' : '2px';
+  } catch (e) { document.getElementById('retr-sub').textContent = 'Could not read: ' + e.message; }
+}
+async function toggleRetrieval() {
+  const on = document.getElementById('retr-label').textContent === 'Corpus lanes';
+  if (on && !confirm('Switch generation back to Serper-only search? This changes what gets published on the next run.')) return;
+  await fetch('/admin/api/retrieval/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !on }) });
+  loadRetrieval();
+}
+
 // ── Config ──
 const CFG_STYLE = {
   angles:   ['#065f46', '#d1fae5', 'angles'],
@@ -816,6 +849,7 @@ const CFG_STYLE = {
   suffixes: ['#9a3412', '#ffedd5', 'suffix variants'],
 };
 async function loadConfig() {
+  loadRetrieval();
   const meta = document.getElementById('config-meta');
   const body = document.getElementById('config-body');
   body.innerHTML = '';

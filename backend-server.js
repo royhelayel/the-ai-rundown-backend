@@ -1685,9 +1685,20 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   console.log(`Generating digest for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
   // Fetch search results — reuse prebuiltContext if provided (shared with stories)
-  let searchContext, sourceArticles = [];
+  let searchContext, sourceArticles = [], usedCorpus = false;
   if (prebuiltContext) {
     searchContext = prebuiltContext;
+  } else if (await isCorpusRetrievalEnabled()) {
+    // Ask each trusted outlet what it published, rather than asking a search engine what
+    // happened. Serper stays on inside it as lane 4 — it is the only lane returning real
+    // publisher URLs, which is what lets the rest be read.
+    const { context, articles, stats } = await buildCorpusContext(category, day, language, timeSlot, true);
+    searchContext = context;
+    sourceArticles = articles;
+    usedCorpus = true;
+    console.log(`📚 ${category}: ${stats.storiesAfterGrouping} stories from ${stats.outlets} outlets · `
+      + `read ${stats.storiesRead}/${stats.storiesTried} · ${stats.headlineOnly} headline-only · `
+      + `${stats.storiesWithMultipleAccounts} with 2+ accounts`);
   } else {
     const { context, articles } = await buildSearchContext(categoryQuery, day, language, isRegional, category);
     searchContext = context;
@@ -1713,7 +1724,18 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     ? `\n\nREGION FILTER (CRITICAL): Only include stories specifically about ${regionSubject} — its government, economy, society, security, diplomacy, or people. DISCARD any story that is not centrally about ${regionSubject}, even if it comes from a major international outlet or is widely covered globally.`
     : '';
 
-  const prioritisationRules = isRegional
+  // The corpus emits only [N OUTLETS] labels, because every outlet in it is already one we
+  // chose — there is no tier to sort and no local-versus-international distinction to make.
+  // Instructing the model to look for [NATIONAL AGENCY] or [LOCAL OUTLET] labels that the
+  // context does not contain would be telling it to prioritise on something invisible.
+  const corpusPrioritisation = `PRIORITISATION RULES:
+1. Every outlet below is one we already trust — there is no source quality to weigh. Judge on what happened, not on who reported it.
+2. The [N OUTLETS] label counts DISTINCT outlets carrying that story. More outlets means a bigger story; treat [MAJOR STORY] as the day's leading items.
+3. Each story lists several outlets' own accounts of it. Use them together, and use the differences between them for **Perspectives differ:**.
+4. A story marked [NO ARTICLE TEXT] must be written from its headline alone.${isRegional ? `
+5. DIVERSITY (REQUIRED): this is ${regionSubject || 'a local'} feed and must reflect the full life of it — business, sport, culture, society, health, education, infrastructure — not only politics, security and diplomacy.` : ''}`;
+
+  const serperPrioritisation = isRegional
     ? `PRIORITISATION RULES (LOCAL NEWS):
 1. Articles labelled [NATIONAL AGENCY], [N LOCAL OUTLETS — TOP LOCAL STORY], or [LOCAL OUTLET] are LOCAL coverage — include these FIRST, prioritising stories covered by the most local outlets.
 2. Then include [INTERNATIONAL TIER-1] stories, but ONLY when they are specifically about ${regionSubject || 'the region'}.
@@ -1725,6 +1747,9 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
 2. Articles with broad multi-outlet coverage (e.g. [4 OUTLETS — MAJOR STORY]) are widely reported — include these unless clearly less important than tier-1 stories.
 3. Prefer stories covered by multiple outlets over single-source stories.
 4. Single-source stories should only be included if clearly significant and from a tier-1 outlet.`;
+
+  // Which block the prompt gets depends on which retrieval produced the context above.
+  const prioritisationRules = usedCorpus ? corpusPrioritisation : serperPrioritisation;
 
   // Regional categories get the region gate; the three global ones that concentrate get a
   // spread rule. Nothing gets both — they pull in opposite directions.
@@ -1806,7 +1831,12 @@ async function generateEveningUpdate(category, day, priorDigestContent, language
 
   console.log(`Generating evening update for ${category} on ${day}${language === 'ar' ? ' [AR]' : ''}`);
 
-  const { context: searchContext, articles: sourceArticles } = await buildSearchContext(categoryQuery, day, language, isRegional, category);
+  // Evening takes the same retrieval as Morning, on the Evening window — 14 hours, which
+  // overlaps the morning run rather than abutting it, so a story that broke just before the
+  // morning cutoff is still present when its follow-up lands.
+  const { context: searchContext, articles: sourceArticles } = await isCorpusRetrievalEnabled()
+    ? await buildCorpusContext(category, day, language, 'Evening', true)
+    : await buildSearchContext(categoryQuery, day, language, isRegional, category);
   const serper_searches = 5;
   const serper_cost = serper_searches * 0.001;
 
@@ -1987,6 +2017,12 @@ const setGenerationEnabled = (enabled) => setSettingEnabled('generation_enabled'
 // (the scheduled GitHub Actions cron and the watchdog's self-correct) — manual "Generate
 // Evening" clicks from the admin dashboard still work while this is off. Default true.
 const isEveningAutoEnabled  = () => isSettingEnabled('evening_auto_enabled', true);
+
+// Which retrieval path generation uses. Default true — the corpus lanes are what's in
+// production now — with a switch back to Serper-only if a run goes wrong, since this changes
+// what gets published and not merely how it is found.
+const isCorpusRetrievalEnabled = () => isSettingEnabled('corpus_retrieval_enabled', true);
+const setCorpusRetrievalEnabled = (enabled) => setSettingEnabled('corpus_retrieval_enabled', enabled);
 const setEveningAutoEnabled = (enabled) => setSettingEnabled('evening_auto_enabled', enabled);
 
 // Generate shorter, punchier stories content by reformatting the already-generated digest.
@@ -3594,6 +3630,22 @@ app.post('/admin/api/audit/toggle', async (req, res) => {
     const enabled = !!req.body?.enabled;
     const result = await setAuditEnabled(enabled);
     res.json({ enabled, ...result });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ── Retrieval switch — which path generation uses to find the news.
+// On: the corpus lanes (each trusted outlet asked what it published, Serper as lane 4).
+// Off: Serper search alone, the original behaviour. Here because this one changes what gets
+// published, so it needs an obvious way back.
+app.get('/admin/api/retrieval/status', async (req, res) => {
+  try {
+    res.json({ enabled: await isCorpusRetrievalEnabled(), persisted: !appSettingsTableMissing });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+app.post('/admin/api/retrieval/toggle', async (req, res) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    res.json({ enabled, ...(await setCorpusRetrievalEnabled(enabled)) });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
