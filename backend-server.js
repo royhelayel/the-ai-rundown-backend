@@ -1246,6 +1246,7 @@ const CORPUS_WINDOW_HOURS = { Morning: 24, Evening: 14 };
 async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Morning', withSerper = true) {
   const sources = sourcesFor(category, language);
   const section = GOOGLE_SECTIONS[category];
+  let lane4Raw = 0, lane4Error = null, lane4Dropped = { nonTier1: 0, stale: 0 };
   const jobs = [];
 
   // Lane 1 — the outlet's own feed, where it still runs one.
@@ -1278,11 +1279,16 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       : (CATEGORY_SEARCH_QUERIES[category] || category);
     jobs.push(
       buildSearchContext(catQuery, day, language, REGIONAL_CATEGORIES_SET.has(category), category)
-        .then(r => (r.articles || []).map(a => ({
-          title: a.title, link: a.url, source: a.source, domain: '',
-          date: a.date || '', publishedAt: null, snippet: a.snippet || '', lane: 4,
-        })))
-        .catch(() => [])
+        .then(r => {
+          lane4Raw = (r.articles || []).length;
+          return (r.articles || []).map(a => ({
+            title: a.title, link: a.url, source: a.source, domain: '',
+            date: a.date || '', publishedAt: null, snippet: a.snippet || '', lane: 4,
+          }));
+        })
+        // Logged, not swallowed. A silent catch here is what made lane 4 look like it was
+        // contributing nothing when the real answer was something else entirely.
+        .catch(e => { lane4Error = e.message; return []; })
     );
   }
 
@@ -1308,11 +1314,11 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       // Serper returns a real publisher URL, so match on domain — stricter and less
       // ambiguous than the name matching lane 3 needs.
       const hit = sourceForUrl(a.link);
-      if (!hit) { droppedNonTier1++; continue; }
+      if (!hit) { droppedNonTier1++; lane4Dropped.nonTier1++; continue; }
       a.domain = hit.domain;
       a.source = hit.name;
       // Serper's own age label is the only freshness signal its articles carry.
-      if (!isArticleFresh(a.date)) { droppedStale++; continue; }
+      if (!isArticleFresh(a.date)) { droppedStale++; lane4Dropped.stale++; continue; }
     }
     // Freshness from a real publish timestamp, not a search engine's crawl date.
     if (a.publishedAt && a.publishedAt < cutoff) { droppedStale++; continue; }
@@ -1451,6 +1457,8 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       groupedAway: articles.length - stories.length,
       byLane: articlesOut.reduce((m, a) => (m[a.lane] = (m[a.lane] || 0) + 1, m), {}),
       outlets: [...new Set(articlesOut.map(a => a.source))].length,
+      lane4: { requested: withSerper, raw: lane4Raw, error: lane4Error, dropped: lane4Dropped,
+               survived: articlesOut.filter(a => a.lane === 4).length },
       // How often we are writing from a headline alone — the number Roy asked to see.
       body: toRead.reduce((m, a) => {
         m[a.bodySource || 'none'] = (m[a.bodySource || 'none'] || 0) + 1;
