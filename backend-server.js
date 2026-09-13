@@ -4183,7 +4183,7 @@ app.get('/admin/api/debug-serper', async (req, res) => {
       return {
         count: items.length,
         staleCount: stale,
-        all: items.map(it => ({ date: it.date || '', source: it.source || '', title: (it.title || '').slice(0, 70) })),
+        all: items.map(it => ({ date: it.date || '', source: it.source || '', link: it.link || '', title: (it.title || '').slice(0, 70) })),
       };
     };
     const [news, search] = await Promise.all([call('news'), call('search')]);
