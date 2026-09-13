@@ -1399,10 +1399,27 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   // fetch count roughly where it was — twelve stories x up to 3 rather than twelve copies
   // of one event.
   const TOP_STORIES = 12, PER_STORY = 3;
+  // A member is only worth reading if its URL can actually be opened. Lane 2 and 3 links
+  // point at news.google.com and resolve to nothing, so picking members by lane order —
+  // which put lane 1 first and lane 4 last — meant the only fetchable articles in a story
+  // were the ones cut by the PER_STORY limit. Measured on Lebanon: Serper contributed 12
+  // articles with real publisher URLs and not one of them was chosen to read.
+  const fetchable = (m) => {
+    try {
+      const h = new URL(m.link).hostname.replace(/^www\./, '');
+      return !(h === 'news.google.com' || h.endsWith('.google.com'));
+    } catch { return false; }
+  };
   const toRead = [];
   for (const st of stories.slice(0, TOP_STORIES)) {
     const byOutlet = new Map();
-    for (const m of st.members) if (!byOutlet.has(m.source)) byOutlet.set(m.source, m);
+    // Prose already in hand first, then anything we could open, then the rest — so a story's
+    // three slots go to members that can actually yield text.
+    const ranked = [...st.members].sort((x, y) => {
+      const score = (m) => ((m.snippet || '').length > 400 ? 4 : 0) + (fetchable(m) ? 2 : 0) + (m.lane <= 1 ? 1 : 0);
+      return score(y) - score(x);
+    });
+    for (const m of ranked) if (!byOutlet.has(m.source)) byOutlet.set(m.source, m);
     st.readable = [...byOutlet.values()].slice(0, PER_STORY);
     toRead.push(...st.readable);
   }
