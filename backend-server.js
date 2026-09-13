@@ -3978,9 +3978,12 @@ app.get('/admin/api/compare', async (req, res) => {
 
     const t0 = Date.now();
     const [corpus, serper] = await Promise.all([
-      // Lanes 1–3 only. The corpus can use Serper as lane 4 in production, but a comparison
-      // where one side contains the other measures nothing — and it would bill Serper twice.
-      buildCorpusContext(category, day, language, timeSlot, false).then(r => ({ ...r, ms: Date.now() - t0 }))
+      // Lanes 1–3 only by default: a comparison where one side contains the other measures
+      // nothing, and it would bill Serper twice. `corpusSerper=1` turns lane 4 on inside the
+      // corpus, which is how we test whether Serper's real publisher URLs can supply the
+      // article text that lanes 2 and 3 structurally cannot.
+      buildCorpusContext(category, day, language, timeSlot, req.query.corpusSerper === '1')
+        .then(r => ({ ...r, ms: Date.now() - t0 }))
         .catch(e => ({ error: e.message, articles: [], stats: {}, ms: Date.now() - t0 })),
       withSerper
         ? buildSearchContext(catQuery, day, language, isRegional, category)
