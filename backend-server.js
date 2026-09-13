@@ -1177,6 +1177,49 @@ function splitGoogleTitle(title) {
 //   · stop at any paywall or gate, and never work around one
 const PAYWALL_SIGNALS = /subscribe to (continue|read)|sign in to (read|continue)|already a subscriber|this article is for subscribers|register to continue/i;
 
+// ── Resolving a headline to its real URL ─────────────────────────────────────
+// Roy's idea, and the thing that unlocks regional text. The two sources we have are
+// complementary in exactly the right way: lane 2 knows WHAT every trusted outlet published
+// but hands back a news.google.com link that resolves to nothing, while Serper returns real
+// publisher URLs but only for the subset of stories its queries happened to surface.
+//
+// So stop asking Serper what happened and start asking it where one specific article lives:
+// `site:naharnet.com <headline>`. Verified — that query returns
+// naharnet.com/stories/en/322441-aoun-inspects-nabatieh-and-zawtar-al-gharbiyeh as its
+// first hit, which is precisely the page lane 2 could not point at.
+//
+// One search per article we intend to read, so cost scales with what we publish rather than
+// with the size of the pool.
+const urlResolveCache = new Map();
+
+async function resolveArticleUrl(domain, headline) {
+  if (!domain || !headline || !process.env.SERPER_API_KEY) return null;
+  const key = `${domain}|${headline}`.slice(0, 180);
+  if (urlResolveCache.has(key)) return urlResolveCache.get(key);
+  try {
+    const r = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q: `site:${domain} ${headline}`, num: 4, gl: 'us', hl: 'en' }),
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) { urlResolveCache.set(key, null); return null; }
+    const j = await r.json();
+    // Only a URL on the outlet we asked about, and not a section or tag page — those come
+    // back for a headline the index has not caught up with yet, and fetching one would give
+    // the model a page of links instead of the story.
+    const hit = (j.organic || []).map(o => o.link).find(u => {
+      try {
+        const h = new URL(u).hostname.replace(/^www\./, '');
+        if (!(h === domain || h.endsWith('.' + domain))) return false;
+        return !/\/(tags?|category|categories|section|topics?|search|author)\//i.test(u) && new URL(u).pathname.length > 12;
+      } catch { return false; }
+    }) || null;
+    urlResolveCache.set(key, hit);
+    return hit;
+  } catch { urlResolveCache.set(key, null); return null; }
+}
+
 async function fetchArticleBody(url) {
   // Lane 2 and 3 links point at news.google.com, and Google no longer exposes the publisher
   // URL behind them: the token does not decode and the page carries no static link. So those
@@ -1224,6 +1267,24 @@ async function enrichWithBodies(articles, limit = 12) {
         return;
       }
       a.bodyReason = reason;
+    }
+    // Nothing openable among them — which for a lane-2 story is every candidate, since they
+    // all point at Google. Ask Serper where this specific article lives, then read that.
+    if (a.domain) {
+      const real = await resolveArticleUrl(a.domain, a.title);
+      if (real) {
+        const { text, reason } = await fetchArticleBody(real);
+        if (text) {
+          a.snippet = text;
+          a.link = real;              // keep the real URL: Coverage should cite the publisher
+          a.bodySource = 'resolved';
+          a.bodyFrom = a.source;
+          return;
+        }
+        a.bodyReason = 'resolved-but-' + reason;
+      } else {
+        a.bodyReason = 'unresolvable';
+      }
     }
     a.bodySource = 'none';
   }));
