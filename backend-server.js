@@ -1504,7 +1504,7 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   // the story, and Perspectives differ wants to contrast how they framed it. Handing the
   // model twelve separate rows about one pipeline attack could only ever produce twelve
   // headlines or an invented contrast.
-  const context = stories.map((st, i) => {
+  const storyBlocks = stories.map((st, i) => {
     const label = st.outletCount >= 4 ? `[${st.outletCount} OUTLETS — MAJOR STORY] `
                 : st.outletCount >= 2 ? `[${st.outletCount} OUTLETS] ` : '';
     const accounts = (st.readable || [st.lead]).map(m => {
@@ -1520,7 +1520,8 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
     return `${label}[${i + 1}] ${st.lead.title}\nDate: ${st.lead.date || 'recent'}\n`
          + `Accounts from ${(st.readable || []).length} of ${st.outletCount} outlet(s):\n${accounts}${unread}`
          + (anyBody ? '' : '\n  [NO ARTICLE TEXT for this story — write only what the headlines above support, and omit Perspectives differ rather than inferring one.]');
-  }).join('\n\n');
+  });
+  const context = storyBlocks.join('\n\n');
 
   return {
     context,
@@ -1590,6 +1591,17 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
           reasons: [...new Set((st.readable || [])
             .filter(m => !(m.snippet || '').trim())
             .map(m => m.bodyReason || 'unknown'))],
+          // Every outlet we chose to read for this story, and what each one gave back.
+          members: (st.readable || []).map(m => ({
+            source: m.source, domain: m.domain, lane: m.lane, url: m.link,
+            ingestChars: m.ingestLen ?? null,
+            bodySource: m.bodySource || 'not-attempted',
+            bodyFrom: m.bodyFrom || null,
+            bodyReason: m.bodyReason || null,
+            finalChars: (m.snippet || '').length,
+          })),
+          alsoCarriedBy: (st.outlets || []).filter(o => !(st.readable || []).some(r => r.source === o)),
+          contextBlock: storyBlocks[i] || null,
         };
       }),
       bodyFailures: toRead.filter(a => a.bodySource === 'none')
@@ -4164,6 +4176,62 @@ app.get('/admin/api/completeness', async (req, res) => {
 // appear there but are NOT in the registry, by how often they turn up. Real outlets rise
 // to the top of that list and obvious noise stays visibly noise, so the judgement call is
 // reduced to reading a ranked list rather than trying to recall the world's newspapers.
+// One story, followed the whole way: which outlets were asked, what each call returned, how
+// the body cascade went outlet by outlet, and the exact text the model was handed for it.
+// Built for reading a single case end to end rather than for aggregate stats.
+app.get('/admin/api/trace', async (req, res) => {
+  try {
+    const category = req.query.category || 'World News';
+    const language = req.query.language === 'ar' ? 'ar' : 'en';
+    const timeSlot = req.query.timeSlot === 'Evening' ? 'Evening' : 'Morning';
+    const day = req.query.day || getTodayDate();
+    const rank = Math.max(1, Math.min(parseInt(req.query.rank, 10) || 1, 12));
+
+    // Step 1 — who we ask. Lane 1 outlets have a feed for this category; lane 2 outlets are
+    // in the registry for it but run no feed, so they are reached through Google by name.
+    const registry = sourcesFor(category, language);
+    const inventory = {
+      lane1_feeds: registry.filter(r => r.feed).map(r => ({ outlet: r.name, feed: r.feed })),
+      lane2_byName: registry.filter(r => !r.feed).map(r => r.name),
+      lane3_googleSection: GOOGLE_SECTIONS[category] || null,
+      lane4_serper: 'site-agnostic query, results matched back against the tier-one registry',
+    };
+
+    const t0 = Date.now();
+    const { stats } = await buildCorpusContext(category, day, language, timeSlot, true);
+    const story = (stats.storyRetrieval || [])[rank - 1] || null;
+
+    res.json({
+      category, language, timeSlot, day, rank, ms: Date.now() - t0,
+      step1_whoWeAsk: inventory,
+      step2_poolFunnel: {
+        fetchedRaw:            stats.fetched,
+        droppedNonTier1:       stats.droppedNonTier1,
+        droppedStale:          stats.droppedStale,
+        droppedOffLang:        stats.droppedOffLang,
+        articlesAfterGates:    stats.articlesBeforeGrouping,
+        storiesAfterGrouping:  stats.storiesAfterGrouping,
+        readBudget:            `top 12 stories x up to 3 outlets`,
+      },
+      step3_whatEachLaneGave: stats.laneYield,
+      step4_thisStory: story && {
+        rank: story.rank,
+        headline: story.headline,
+        carriedBy: story.outletCount,
+        outlets: story.outlets,
+        chosenToRead: story.members,
+        notRead: story.alsoCarriedBy,
+        accountsWithText: story.accountsRead,
+        headlineOnly: story.bodyMissing,
+        failureReasons: story.reasons,
+      },
+      step5_whatTheModelSaw: story ? story.contextBlock : null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Which published stories were written without ever reading an article, read back from the
 // rows themselves rather than from a log line that scrolls away. Answers "is this happening,
 // where, and why" — the question the console counter could only answer while you were watching.
