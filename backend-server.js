@@ -1294,6 +1294,26 @@ async function enrichWithBodies(articles, limit = 12) {
   return articles;
 }
 
+// Coverage may only carry links we handed over. A published digest cited
+// "[Financial Times](https://www.ft.com)" and "[Reuters](reuters.com/news/articles/CBMiuAF…)"
+// — one an outlet named with no URL, the other a Google token with a publisher domain grafted
+// on. The prompt now forbids both; this removes them when it happens anyway, because a rule
+// the model is asked to follow is not the same as one it cannot break.
+function stripInventedLinks(content, offeredUrls) {
+  if (!content || !offeredUrls || !offeredUrls.length) return { content, removed: [] };
+  const allowed = new Set(offeredUrls);
+  const removed = [];
+  const out = content.split('\n').map(line => {
+    if (!/^\s*\*\*(Coverage|التغطية|المصادر):\*\*/.test(line)) return line;
+    const head = line.slice(0, line.indexOf(':**') + 3);
+    const kept = [...line.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)]
+      .filter(m => { if (allowed.has(m[2])) return true; removed.push(`${m[1]} → ${m[2]}`); return false; })
+      .map(m => `[${m[1]}](${m[2]})`);
+    return kept.length ? `${head} ${kept.join(' · ')}` : null;
+  }).filter(l => l !== null).join('\n');
+  return { content: out, removed };
+}
+
 const CORPUS_WINDOW_HOURS = { Morning: 24, Evening: 14 };
 
 // `withSerper` defaults on. Search earns a place here for a reason the first draft of this
@@ -1449,8 +1469,16 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   // A story's weight is the number of DISTINCT OUTLETS carrying it — not the number of
   // articles, so one outlet filing five updates does not outrank five outlets filing once.
   for (const st of stories) {
-    st.outlets = [...new Set(st.members.map(m => m.source).filter(Boolean))];
+    // Paywalled outlets are excluded from the story's identity entirely — not named and not
+    // counted. Counting them inflated the [N OUTLETS] label above the number of citable
+    // sources, and the model closed that gap by inventing URLs: a real digest cited
+    // "[Financial Times](https://www.ft.com)" because the label promised seven outlets and
+    // only three came with links.
+    st.outlets = [...new Set(st.members.filter(m => !isPaywalledDomain(m.domain))
+                                       .map(m => m.source).filter(Boolean))];
     st.outletCount = st.outlets.length;
+    st.paywalledOutlets = [...new Set(st.members.filter(m => isPaywalledDomain(m.domain))
+                                                .map(m => m.source).filter(Boolean))];
     st.publishedAt = Math.max(...st.members.map(m => m.publishedAt || 0));
   }
   stories.sort((a, b) => (b.outletCount - a.outletCount) || (b.publishedAt - a.publishedAt));
@@ -1568,18 +1596,26 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   // the story, and Perspectives differ wants to contrast how they framed it. Handing the
   // model twelve separate rows about one pipeline attack could only ever produce twelve
   // headlines or an invented contrast.
+  const offeredUrls = new Set();
   const storyBlocks = stories.map((st, i) => {
     const label = st.outletCount >= 4 ? `[${st.outletCount} OUTLETS — MAJOR STORY] `
                 : st.outletCount >= 2 ? `[${st.outletCount} OUTLETS] ` : '';
-    const accounts = (st.readable || [st.lead]).map(m => {
+    // A member earns a place here only with a URL a reader can open. Lane 2 and 3 links point
+    // at news.google.com; handing one over produced a digest citing
+    // "reuters.com/news/articles/CBMiuAF…" — the Google token with a publisher domain grafted
+    // on. Unciteable and unread is nothing but a name, so it is left out.
+    const cite = (st.readable || [st.lead]).filter(m => fetchable(m) || (m.snippet || '').trim());
+    for (const m of cite) if (fetchable(m) && m.link) offeredUrls.add(m.link);
+    const accounts = cite.map(m => {
       const body = (m.snippet || '').trim();
+      const url = fetchable(m) ? ` (${m.link})` : '';
       return body
-        ? `  — ${m.source} (${m.link})\n    ${body}`
-        : `  — ${m.source} (${m.link})\n    [HEADLINE ONLY: "${m.title}" — the article text could not be retrieved]`;
+        ? `  — ${m.source}${url}\n    ${body}`
+        : `  — ${m.source}${url}\n    [HEADLINE ONLY: "${m.title}" — the article text could not be retrieved]`;
     }).join('\n');
-    const unread = st.members.length > (st.readable || []).length
-      ? `\n  also carried by: ${st.outlets.filter(o => !(st.readable || []).some(r => r.source === o)).join(', ')}`
-      : '';
+    // No "also carried by" line. It listed outlet names with no URLs beside them, and the
+    // model turned those names into Coverage entries with invented links.
+    const unread = '';
     const anyBody = (st.readable || []).some(m => (m.snippet || '').trim());
     return `${label}[${i + 1}] ${st.lead.title}\nDate: ${st.lead.date || 'recent'}\n`
          + `Accounts from ${(st.readable || []).length} of ${st.outletCount} outlet(s):\n${accounts}${unread}`
@@ -1589,6 +1625,7 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
 
   return {
     context,
+    offeredUrls: [...offeredUrls],
     articles: articlesOut.map(a => ({
       title: a.title, source: a.source, date: a.date, url: a.link,
       snippet: a.snippet, lane: a.lane, outletCount: a.outletCount, domain: a.domain,
@@ -1804,18 +1841,19 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   console.log(`Generating digest for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
   // Fetch search results — reuse prebuiltContext if provided (shared with stories)
-  let searchContext, sourceArticles = [], usedCorpus = false, retrievalStats = null;
+  let searchContext, sourceArticles = [], usedCorpus = false, retrievalStats = null, citableUrls = [];
   if (prebuiltContext) {
     searchContext = prebuiltContext;
   } else if (await isCorpusRetrievalEnabled()) {
     // Ask each trusted outlet what it published, rather than asking a search engine what
     // happened. Serper stays on inside it as lane 4 — it is the only lane returning real
     // publisher URLs, which is what lets the rest be read.
-    const { context, articles, stats } = await buildCorpusContext(category, day, language, timeSlot, true);
+    const { context, articles, stats, offeredUrls } = await buildCorpusContext(category, day, language, timeSlot, true);
     searchContext = context;
     sourceArticles = articles;
     usedCorpus = true;
     retrievalStats = stats;
+    citableUrls = offeredUrls || [];
     console.log(`📚 ${category}: ${stats.storiesAfterGrouping} stories from ${stats.outlets} outlets · `
       + `read ${stats.storiesRead}/${stats.storiesTried} · ${stats.headlineOnly} headline-only · `
       + `${stats.storiesWithMultipleAccounts} with 2+ accounts`);
@@ -1852,7 +1890,8 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
 1. Every outlet below is one we already trust — there is no source quality to weigh. Judge on what happened, not on who reported it.
 2. The [N OUTLETS] label counts DISTINCT outlets carrying that story. More outlets means a bigger story; treat [MAJOR STORY] as the day's leading items.
 3. Each story lists several outlets' own accounts of it. Use them together, and use the differences between them for **Perspectives differ:**.
-4. A story marked [NO ARTICLE TEXT] must be written from its headline alone.${isRegional ? `
+4. A story marked [NO ARTICLE TEXT] must be written from its headline alone.
+5. **Coverage:** may name ONLY the outlets listed above for that story, and only those shown with a URL in brackets. Copy each URL character for character. Never invent, shorten, complete or guess a URL, never link an outlet to its homepage, and never add an outlet you were not given. Fewer, correct sources beat a longer list.${isRegional ? `
 5. DIVERSITY (REQUIRED): this is ${regionSubject || 'a local'} feed and must reflect the full life of it — business, sport, culture, society, health, education, infrastructure — not only politics, security and diplomacy.` : ''}`;
 
   const serperPrioritisation = isRegional
@@ -1930,7 +1969,11 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
     }, err => console.warn('Could not track API usage:', err.message));
   }
 
-  return { summary, searchContext, sourceArticles, retrievalStats };
+  const guarded = stripInventedLinks(summary, citableUrls);
+  if (guarded.removed.length) {
+    console.warn(`🔗 ${category}: dropped ${guarded.removed.length} invented Coverage link(s) — ${guarded.removed.slice(0, 4).join(' | ')}`);
+  }
+  return { summary: guarded.content, searchContext, sourceArticles, retrievalStats };
 }
 
 // ── Evening incremental update ──────────────────────────────────────────────
@@ -1978,7 +2021,7 @@ Produce an updated digest by working through the ALREADY PUBLISHED stories one a
    - If there IS a genuine new development: reproduce the story using the EXACT SAME headline text as published (copy it verbatim, do not reword it), keep every existing bullet, and add one or two new bullets covering only the new development. Extend its **Coverage:** line with the new outlet(s) — keep every outlet already listed, only add to it. End the story with a line **Status:** Updated
    - If there is NO genuine new development: reproduce the story completely unchanged — same headline, same bullets, same **Coverage:**, same **Perspectives differ:**/**Why this matters:** lines if present. End the story with a line **Status:** Unchanged
 2. After all already-published stories, add any genuinely new story from the fresh search results that is NOT a continuation of one of them — a distinct topic not covered above. Write it in the normal digest format (own ## headline, **Coverage:**, bullets, **Perspectives differ:** / **Why this matters:** where applicable) and end it with **Status:** New
-3. Never reorder, merge, drop, or rewrite an already-published story beyond what rule 1 allows. Never invent a development that the fresh search results don't support.
+3. Never reorder, merge, drop, or rewrite an already-published story beyond what rule 1 allows. Never invent a development that the fresh search results don't support. Never invent, complete or guess a URL, and never add an outlet that is not in the fresh results with a URL beside it.
 
 Use this EXACT format for every story:
 
