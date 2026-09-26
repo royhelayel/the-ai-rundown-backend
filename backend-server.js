@@ -1551,6 +1551,23 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       storiesWithMultipleAccounts: stories.slice(0, TOP_STORIES)
         .filter(st => (st.readable || []).filter(m => (m.snippet || '').trim()).length >= 2).length,
       headlineOnly: stories.slice(0, TOP_STORIES).filter(st => !(st.readable || []).some(m => (m.snippet || '').trim())).length,
+      // Per-story retrieval state, so "we wrote this one from the headline alone" survives
+      // the run instead of living only in a console line. Stored on the row by storeNews;
+      // the model never sees this and cannot smooth it away.
+      storyRetrieval: stories.slice(0, TOP_STORIES).map((st, i) => {
+        const read = (st.readable || []).filter(m => (m.snippet || '').trim());
+        return {
+          rank: i + 1,
+          headline: st.lead.title,
+          outlets: st.outlets || [],
+          outletCount: st.outletCount || 1,
+          accountsRead: read.length,
+          bodyMissing: read.length === 0,
+          reasons: [...new Set((st.readable || [])
+            .filter(m => !(m.snippet || '').trim())
+            .map(m => m.bodyReason || 'unknown'))],
+        };
+      }),
       bodyFailures: toRead.filter(a => a.bodySource === 'none')
         .map(a => ({ source: a.source, reason: a.bodyReason || 'unknown', title: (a.title || '').slice(0, 60) })),
       // Per lane, because the overall median is misleading: lane 2 carries no body text at
@@ -1687,7 +1704,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   console.log(`Generating digest for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
   // Fetch search results — reuse prebuiltContext if provided (shared with stories)
-  let searchContext, sourceArticles = [], usedCorpus = false;
+  let searchContext, sourceArticles = [], usedCorpus = false, retrievalStats = null;
   if (prebuiltContext) {
     searchContext = prebuiltContext;
   } else if (await isCorpusRetrievalEnabled()) {
@@ -1698,6 +1715,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     searchContext = context;
     sourceArticles = articles;
     usedCorpus = true;
+    retrievalStats = stats;
     console.log(`📚 ${category}: ${stats.storiesAfterGrouping} stories from ${stats.outlets} outlets · `
       + `read ${stats.storiesRead}/${stats.storiesTried} · ${stats.headlineOnly} headline-only · `
       + `${stats.storiesWithMultipleAccounts} with 2+ accounts`);
@@ -1812,7 +1830,7 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
     }, err => console.warn('Could not track API usage:', err.message));
   }
 
-  return { summary, searchContext, sourceArticles };
+  return { summary, searchContext, sourceArticles, retrievalStats };
 }
 
 // ── Evening incremental update ──────────────────────────────────────────────
@@ -1836,7 +1854,7 @@ async function generateEveningUpdate(category, day, priorDigestContent, language
   // Evening takes the same retrieval as Morning, on the Evening window — 14 hours, which
   // overlaps the morning run rather than abutting it, so a story that broke just before the
   // morning cutoff is still present when its follow-up lands.
-  const { context: searchContext, articles: sourceArticles } = await isCorpusRetrievalEnabled()
+  const { context: searchContext, articles: sourceArticles, stats: retrievalStats = null } = await isCorpusRetrievalEnabled()
     ? await buildCorpusContext(category, day, language, 'Evening', true)
     : await buildSearchContext(categoryQuery, day, language, isRegional, category);
   const serper_searches = 5;
@@ -1904,7 +1922,7 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
     }, err => console.warn('Could not track API usage:', err.message));
   }
 
-  return { summary, searchContext, sourceArticles };
+  return { summary, searchContext, sourceArticles, retrievalStats };
 }
 
 // ── Audit agent ──────────────────────────────────────────────────────────────
@@ -2282,7 +2300,7 @@ The ${spec.label} is over by the time anyone hears this. Write in the past tense
 }
 
 // Function to store news in Supabase
-async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en', briefing = null, leadImageUrl = null, auditResult = null) {
+async function storeNews(category, day, timeSlot, content, userId = null, sharedKey = null, storiesContent = null, sourceArticles = null, language = 'en', briefing = null, leadImageUrl = null, auditResult = null, retrievalStats = null) {
   try {
     const generated_at = new Date().toISOString();
 
@@ -2316,6 +2334,20 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     if (briefing !== null)       updatePayload.briefing = briefing;
     if (leadImageUrl !== null)   updatePayload.lead_image_url = leadImageUrl;
     if (auditResult !== null)    updatePayload.audit_result = auditResult;
+    // Which stories we could actually read, kept per story rather than as a log line, so
+    // "written from the headline alone" is a queryable fact about the row the reader sees.
+    // Trimmed deliberately: the full stats object carries per-lane debris nobody reads back.
+    if (retrievalStats && retrievalStats.storyRetrieval) {
+      updatePayload.retrieval_stats = {
+        headlineOnly:               retrievalStats.headlineOnly ?? null,
+        storiesRead:                retrievalStats.storiesRead ?? null,
+        storiesTried:               retrievalStats.storiesTried ?? null,
+        storiesWithMultipleAccounts: retrievalStats.storiesWithMultipleAccounts ?? null,
+        stories:                    retrievalStats.storyRetrieval,
+        bodyFailures:               (retrievalStats.bodyFailures || []).slice(0, 40),
+        measuredAt:                 generated_at,
+      };
+    }
 
     const runUpsert = async (payload) => {
       if (existing) {
@@ -2336,6 +2368,13 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
       const { briefing: _omit, ...withoutBriefing } = updatePayload;
       console.warn(`⚠️  'briefing' column missing — storing without it. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS briefing text;`);
       ({ error } = await runUpsert(withoutBriefing));
+    }
+
+    // Same treatment for retrieval_stats: a missing column must not cost us the digest.
+    if (error && error.message?.includes('retrieval_stats')) {
+      const { retrieval_stats: _drop, ...withoutRetrieval } = updatePayload;
+      console.warn(`⚠️  'retrieval_stats' column missing — storing without it. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS retrieval_stats jsonb;`);
+      ({ error } = await runUpsert(withoutRetrieval));
     }
 
     // Graceful fallback: if optional columns don't exist yet, retry with just the core fields
@@ -2488,6 +2527,12 @@ async function pregenerateTTSForContent(content, label) {
 }
 
 // Helper: generate and store one category, returns { storiesContent } on success, throws on failure
+// Filled by generateAndStoreCategory, drained by generateAllNewsForTimeSlot into the run's
+// generation_logs row. A module-scoped tally rather than a return value because three call
+// sites invoke the category function and none of them currently read anything back.
+let runRetrievalTally = { headlineOnly: 0, storiesRead: 0, storiesTried: 0, byCategory: [] };
+const resetRetrievalTally = () => { runRetrievalTally = { headlineOnly: 0, storiesRead: 0, storiesTried: 0, byCategory: [] }; };
+
 async function generateAndStoreCategory(category, targetDay, timeSlot, language = 'en') {
   // Evening builds on Morning's digest when one exists for this category/day — see
   // generateEveningUpdate. No Morning digest (backfills, or Morning never ran that day)
@@ -2503,7 +2548,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     if (morningRow?.content) priorDigest = morningRow.content;
   }
 
-  const { summary: digestContent, sourceArticles, searchContext } = priorDigest
+  const { summary: digestContent, sourceArticles, searchContext, retrievalStats } = priorDigest
     ? await generateEveningUpdate(category, targetDay, priorDigest, language)
     : await generateNews(category, targetDay, timeSlot, 3, null, null, language);
 
@@ -2535,7 +2580,25 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     console.warn(`Briefing generation failed for ${category}:`, err.message);
   }
 
-  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl, auditResult);
+  await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl, auditResult, retrievalStats);
+
+  if (retrievalStats && typeof retrievalStats.headlineOnly === 'number') {
+    runRetrievalTally.headlineOnly += retrievalStats.headlineOnly;
+    runRetrievalTally.storiesRead  += retrievalStats.storiesRead  || 0;
+    runRetrievalTally.storiesTried += retrievalStats.storiesTried || 0;
+    runRetrievalTally.byCategory.push({
+      category, language,
+      headlineOnly: retrievalStats.headlineOnly,
+      storiesTried: retrievalStats.storiesTried || 0,
+    });
+    if (retrievalStats.headlineOnly > 0) {
+      const which = (retrievalStats.storyRetrieval || [])
+        .filter(st => st.bodyMissing)
+        .map(st => `#${st.rank} "${(st.headline || '').slice(0, 50)}" (${st.reasons.join(', ') || 'unknown'})`);
+      console.log(`📰 ${category}${language === 'ar' ? ' [AR]' : ''}: ${retrievalStats.headlineOnly} of `
+        + `${retrievalStats.storiesTried} written from the headline alone — ${which.join(' · ')}`);
+    }
+  }
 
   // Only pre-generate TTS for English (Arabic TTS not supported yet)
   if (language === 'en') {
@@ -2585,6 +2648,7 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   const targetCategories = categories || (language === 'ar' ? DEFAULT_CATEGORIES.filter(c => ARABIC_CATEGORY_QUERIES[c]) : DEFAULT_CATEGORIES);
   const langLabel = language === 'ar' ? ' [AR]' : '';
   const startedAt = new Date();
+  resetRetrievalTally();
 
   // Written immediately, not at the end — the watchdog workflow needs "started" to flip
   // true within seconds of a real run beginning, not ~19 minutes later when the full log
@@ -2759,15 +2823,35 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
       categories_failed:      failed,
       retry_succeeded:        retrySucceeded,
       retry_failed:           allFailed,
+      // How much of this run was written without ever reading an article.
+      headline_only_count:    runRetrievalTally.headlineOnly,
+      stories_read_count:     runRetrievalTally.storiesRead,
+      stories_tried_count:    runRetrievalTally.storiesTried,
     };
     // Fill in the row written at the top of this function (see generationLogId) rather
     // than inserting a second one — falls back to insert if that row is missing for any
     // reason (e.g. the start-of-run write failed).
-    const { error: updateErr } = generationLogId
-      ? await supabaseAdmin.from('generation_logs').update(payload).eq('id', generationLogId)
-      : { error: 'no id' };
-    if (updateErr) await supabaseAdmin.from('generation_logs').insert(payload);
-    console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${targetCategories.length} ok)`);
+    const write = (body) => generationLogId
+      ? supabaseAdmin.from('generation_logs').update(body).eq('id', generationLogId)
+      : supabaseAdmin.from('generation_logs').insert(body);
+
+    let { error: updateErr } = await write(payload);
+    // The retrieval columns are new. Without them the run log must still be written —
+    // losing the duration and the success counts to track a nice-to-have would be a poor trade.
+    if (updateErr && (updateErr.message?.includes('headline_only_count')
+                   || updateErr.message?.includes('stories_read_count')
+                   || updateErr.message?.includes('stories_tried_count')
+                   || updateErr.code === '42703')) {
+      console.warn(`⚠️  Retrieval columns missing on generation_logs — storing without them. Run in Supabase:
+  ALTER TABLE generation_logs ADD COLUMN IF NOT EXISTS headline_only_count integer;
+  ALTER TABLE generation_logs ADD COLUMN IF NOT EXISTS stories_read_count integer;
+  ALTER TABLE generation_logs ADD COLUMN IF NOT EXISTS stories_tried_count integer;`);
+      const { headline_only_count: _a, stories_read_count: _b, stories_tried_count: _c, ...core } = payload;
+      ({ error: updateErr } = await write(core));
+    }
+    if (updateErr && generationLogId) await supabaseAdmin.from('generation_logs').insert(payload);
+    console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${targetCategories.length} ok, `
+      + `${runRetrievalTally.headlineOnly} headline-only of ${runRetrievalTally.storiesTried} stories)`);
   } catch (err) {
     console.warn(`Could not save generation log:`, err.message);
   }
@@ -4056,6 +4140,79 @@ app.get('/admin/api/completeness', async (req, res) => {
 // appear there but are NOT in the registry, by how often they turn up. Real outlets rise
 // to the top of that list and obvious noise stays visibly noise, so the judgement call is
 // reduced to reading a ranked list rather than trying to recall the world's newspapers.
+// Which published stories were written without ever reading an article, read back from the
+// rows themselves rather than from a log line that scrolls away. Answers "is this happening,
+// where, and why" — the question the console counter could only answer while you were watching.
+app.get('/admin/api/headline-only', async (req, res) => {
+  try {
+    const days = Math.min(parseInt(req.query.days, 10) || 3, 30);
+    const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+
+    let q = supabaseAdmin
+      .from('news_summaries')
+      .select('category, day, time_slot, language, retrieval_stats')
+      .gte('day', since)
+      .neq('category', '__completed__')
+      .order('day', { ascending: false });
+    if (req.query.language) q = q.eq('language', req.query.language);
+    if (req.query.timeSlot) q = q.eq('time_slot', req.query.timeSlot);
+
+    const { data, error } = await q;
+    if (error) {
+      if (error.code === '42703' || error.message?.includes('retrieval_stats')) {
+        return res.json({
+          ready: false,
+          message: 'retrieval_stats column does not exist yet — run: ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS retrieval_stats jsonb;',
+          rows: [], stories: [],
+        });
+      }
+      throw error;
+    }
+
+    const rows = (data || []).filter(r => r.retrieval_stats);
+    const stories = [];
+    for (const r of rows) {
+      for (const st of (r.retrieval_stats.stories || [])) {
+        if (!st.bodyMissing) continue;
+        stories.push({
+          day: r.day, timeSlot: r.time_slot, language: r.language, category: r.category,
+          rank: st.rank, headline: st.headline,
+          outlets: st.outlets, outletCount: st.outletCount,
+          reasons: st.reasons || [],
+        });
+      }
+    }
+
+    const reasonCounts = stories.reduce((m, st) => {
+      for (const reason of (st.reasons.length ? st.reasons : ['unknown'])) m[reason] = (m[reason] || 0) + 1;
+      return m;
+    }, {});
+
+    const tried = rows.reduce((n, r) => n + (r.retrieval_stats.storiesTried || 0), 0);
+    const missing = rows.reduce((n, r) => n + (r.retrieval_stats.headlineOnly || 0), 0);
+
+    res.json({
+      ready: true,
+      since, daysRequested: days,
+      rowsWithStats: rows.length,
+      totals: { storiesTried: tried, headlineOnly: missing,
+                percent: tried ? Math.round((missing / tried) * 1000) / 10 : 0 },
+      reasonCounts,
+      // Worst categories first: that is the list worth acting on.
+      byCategory: Object.values(rows.reduce((m, r) => {
+        const k = `${r.category}|${r.language}`;
+        m[k] = m[k] || { category: r.category, language: r.language, storiesTried: 0, headlineOnly: 0 };
+        m[k].storiesTried += r.retrieval_stats.storiesTried || 0;
+        m[k].headlineOnly += r.retrieval_stats.headlineOnly || 0;
+        return m;
+      }, {})).sort((a, b) => b.headlineOnly - a.headlineOnly),
+      stories,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/admin/api/coverage', async (req, res) => {
   try {
     const days = Math.min(30, Math.max(1, parseInt(req.query.days, 10) || 7));
