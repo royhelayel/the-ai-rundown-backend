@@ -681,7 +681,9 @@ const STOP_WORDS = new Set([
 function computeEchoScores(articles, region = null) {
   const tokenize = (title) =>
     (title || '').toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
+      // \u0600-\u06FF keeps Arabic. Without it every Arabic title tokenised to nothing, so
+      // no Arabic story ever matched another and outletCount was 1 for all of them.
+      .replace(/[^a-z0-9\u0600-\u06FF\s]/g, ' ')
       .split(/\s+/)
       .filter(w => w.length > 3 && !STOP_WORDS.has(w));
 
@@ -3957,7 +3959,14 @@ const GDELT_QUERIES = {
 };
 
 const STOPISH = new Set(['the','and','for','with','from','that','this','have','been','will','after','over','into','their','says','said','amid','more','than','what','when','about','which','were','they','could','would']);
-const sigTokens = (t) => (t || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3 && !STOPISH.has(w));
+// Arabic kept, and given its own stop list: without one, "من" "في" "على" behave like
+// English "the" and match everything. Measured before the fix — 505 Arabic KSA articles
+// produced 505 stories, because every Arabic title tokenised to an empty set.
+const AR_STOP = new Set(['من','في','على','إلى','عن','مع','أن','إنّ','إن','التي','الذي','هذا','هذه','كان','قال','بعد','بين','خلال','الى','ما','لا','هو','هي','كما','عند','لدى','ضد','أو','او','كل','بعض','حول','منذ','حتى','قبل']);
+const sigTokens = (t) => (t || '').toLowerCase()
+  .replace(/[^a-z0-9\u0600-\u06FF\s]/g, ' ')
+  .split(/\s+/)
+  .filter(w => w.length > 3 && !STOPISH.has(w) && !AR_STOP.has(w));
 
 app.get('/admin/api/completeness', async (req, res) => {
   try {
