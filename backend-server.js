@@ -1486,6 +1486,9 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
     st.readable = [...byOutlet.values()].slice(0, PER_STORY);
     toRead.push(...st.readable);
   }
+  // enrichWithBodies overwrites a.snippet with the fetched body, so what each lane handed
+  // us at ingestion has to be recorded before the call or it is lost.
+  for (const a of articles) a.ingestLen = (a.snippet || '').trim().length;
   await enrichWithBodies(toRead, toRead.length);
 
   // Flattened back to an article list for the callers that still expect one, lead first so
@@ -1554,6 +1557,27 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       // Per-story retrieval state, so "we wrote this one from the headline alone" survives
       // the run instead of living only in a console line. Stored on the row by storeNews;
       // the model never sees this and cannot smooth it away.
+      // What each lane contributes, split into what it hands over at ingestion versus what
+      // it yields once we try to read it. The distinction matters: no lane returns article
+      // bodies — lane 1 returns a blurb, lanes 2 and 3 return nothing, and every real body
+      // comes from step 7 fetching a URL that the lane made openable.
+      laneYield: [1, 2, 3, 4].map(lane => {
+        const ing = articles.filter(a => a.lane === lane);
+        const att = toRead.filter(a => a.lane === lane);
+        const got = (a) => ['feed', 'fetched', 'sibling', 'resolved'].includes(a.bodySource);
+        return {
+          lane,
+          headlines:      ing.length,
+          withAnyText:    ing.filter(a => (a.ingestLen || 0) > 0).length,
+          withRealBody:   ing.filter(a => (a.ingestLen || 0) > 400).length,
+          readAttempted:  att.length,
+          bodiesObtained: att.filter(got).length,
+          medianIngestChars: (() => {
+            const l = ing.map(a => a.ingestLen || 0).sort((x, y) => x - y);
+            return l.length ? l[Math.floor(l.length / 2)] : 0;
+          })(),
+        };
+      }),
       storyRetrieval: stories.slice(0, TOP_STORIES).map((st, i) => {
         const read = (st.readable || []).filter(m => (m.snippet || '').trim());
         return {
