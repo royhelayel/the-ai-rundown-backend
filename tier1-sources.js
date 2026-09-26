@@ -75,7 +75,8 @@ export const TIER1_SOURCES = [
   // These were all in the original TIER1_DOMAINS and absent from the first draft of this
   // registry, which is exactly the gap the coverage report is meant to surface. Feeds
   // tested 12 Sep; the ones without a working feed fall to lane 2 like anyone else.
-  { domain: 'nytimes.com',       name: 'The New York Times', lang: 'en', gl: 'US', fetch: true,
+  { domain: 'nytimes.com',       name: 'The New York Times', lang: 'en', gl: 'US', fetch: false, paywall: true,
+    note: 'metered paywall — headlines only, never fetched, never cited',
     cats: { 'World News': 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
             'Business':   'https://rss.nytimes.com/services/xml/rss/nyt/Business.xml',
             'Technology': 'https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml',
@@ -100,11 +101,13 @@ export const TIER1_SOURCES = [
     cats: { 'Business': 'https://www.businessinsider.com/rss', 'Technology': null } },
   { domain: 'usatoday.com',      name: 'USA Today',     lang: 'en', gl: 'US', fetch: true,
     cats: { 'World News': null, 'Health': null, 'Entertainment': null } },
-  { domain: 'wired.com',         name: 'WIRED',         lang: 'en', gl: 'US', fetch: true,
+  { domain: 'wired.com',         name: 'WIRED',         lang: 'en', gl: 'US', fetch: false, paywall: true,
+    note: 'metered paywall — headlines only, never fetched, never cited',
     cats: { 'Technology': 'https://www.wired.com/feed/rss', 'AI': null, 'Science': null } },
   { domain: 'engadget.com',      name: 'Engadget',      lang: 'en', gl: 'US', fetch: true,
     cats: { 'Technology': 'https://www.engadget.com/rss.xml' } },
-  { domain: 'theatlantic.com',   name: 'The Atlantic',  lang: 'en', gl: 'US', fetch: true,
+  { domain: 'theatlantic.com',   name: 'The Atlantic',  lang: 'en', gl: 'US', fetch: false, paywall: true,
+    note: 'metered paywall — headlines only, never fetched, never cited',
     cats: { 'Politics': null, 'World News': null } },
   { domain: 'forbes.com',        name: 'Forbes',        lang: 'en', gl: 'US', fetch: true,
     cats: { 'Business': null, 'Technology': null, 'Crypto': null, 'AI': null } },
@@ -115,19 +118,19 @@ export const TIER1_SOURCES = [
 
   // Paywalled — lane 2 only. Their own feeds are behind the wall, and we never fetch
   // bodies from them, so these contribute headlines and the fact that they ran the story.
-  { domain: 'wsj.com',           name: 'The Wall Street Journal', lang: 'en', gl: 'US', fetch: false,
+  { domain: 'wsj.com',           name: 'The Wall Street Journal', lang: 'en', gl: 'US', fetch: false, paywall: true,
     note: 'paywalled — headlines only, never fetched',
     cats: { 'Business': null, 'World News': null, 'Politics': null, 'Technology': null } },
-  { domain: 'ft.com',            name: 'Financial Times', lang: 'en', gl: 'GB', fetch: false,
+  { domain: 'ft.com',            name: 'Financial Times', lang: 'en', gl: 'GB', fetch: false, paywall: true,
     note: 'paywalled — headlines only, never fetched',
     cats: { 'Business': null, 'World News': null } },
-  { domain: 'bloomberg.com',     name: 'Bloomberg',     lang: 'en', gl: 'US', fetch: false,
+  { domain: 'bloomberg.com',     name: 'Bloomberg',     lang: 'en', gl: 'US', fetch: false, paywall: true,
     note: 'paywalled — headlines only, never fetched',
     cats: { 'Business': null, 'Technology': null, 'Crypto': null } },
-  { domain: 'economist.com',     name: 'The Economist', lang: 'en', gl: 'GB', fetch: false,
+  { domain: 'economist.com',     name: 'The Economist', lang: 'en', gl: 'GB', fetch: false, paywall: true,
     note: 'paywalled — headlines only, never fetched',
     cats: { 'World News': null, 'Business': null } },
-  { domain: 'washingtonpost.com', name: 'The Washington Post', lang: 'en', gl: 'US', fetch: false,
+  { domain: 'washingtonpost.com', name: 'The Washington Post', lang: 'en', gl: 'US', fetch: false, paywall: true,
     note: 'paywalled — headlines only, never fetched',
     cats: { 'World News': 'https://feeds.washingtonpost.com/rss/world', 'Politics': null } },
 
@@ -266,4 +269,27 @@ export function sourceForUrl(url) {
     const host = new URL(url).hostname.replace(/^www\./, '');
     return TIER1_SOURCES.find(s => host === s.domain || host.endsWith('.' + s.domain)) || null;
   } catch { return null; }
+}
+
+// Registry entry for a bare domain. Lane 2 and 3 members carry a Google redirect as their
+// link but the real publisher in `domain`, so URL-keyed lookups cannot classify them.
+export function sourceForDomain(domain) {
+  if (!domain) return null;
+  const host = String(domain).replace(/^www\./, '').toLowerCase();
+  return TIER1_SOURCES.find(s => host === s.domain || host.endsWith('.' + s.domain)) || null;
+}
+
+// Behind a paywall: never fetched, and never cited either — a reader cannot open it, so a
+// link to it is a dead end rather than a source.
+export function isPaywalledDomain(domain) {
+  const s = sourceForDomain(domain);
+  return !!s && s.paywall === true;
+}
+
+// Worth spending one of the story's read slots on. False for a paywalled outlet and for one
+// whose robots.txt disallows us — both are knowable before the request, and a slot spent on
+// either is a slot another outlet covering the same story could have had.
+export function worthReading(domain) {
+  const s = sourceForDomain(domain);
+  return !!s && s.fetch === true && s.paywall !== true;
 }

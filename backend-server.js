@@ -49,7 +49,7 @@ const TIME_SLOTS = [
 
 // === Authentication & Email Imports ===
 import { createClient } from '@supabase/supabase-js';
-import { TIER1_SOURCES, GOOGLE_SECTIONS, sourcesFor, mayFetchBody, sourceForUrl } from './tier1-sources.js';
+import { TIER1_SOURCES, GOOGLE_SECTIONS, sourcesFor, mayFetchBody, sourceForUrl, isPaywalledDomain, worthReading } from './tier1-sources.js';
 import { Resend } from 'resend';
 
 // === Initialize Supabase Admin Client ===
@@ -1455,6 +1455,22 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   }
   stories.sort((a, b) => (b.outletCount - a.outletCount) || (b.publishedAt - a.publishedAt));
 
+  // A story carried only by paywalled outlets has no source a reader can open, so it is
+  // dropped here rather than published with an empty Coverage line — the twelfth slot goes
+  // to the next story instead. Measured when the paywall rule first landed: three of the
+  // twelve Technology stories came out with zero accounts because WSJ and Bloomberg were
+  // the only outlets on them.
+  let droppedPaywallOnly = 0;
+  const droppedPaywallOnlyByOutlets = {};   // so a drop that costs a well-carried story is visible
+  for (let i = stories.length - 1; i >= 0; i--) {
+    if (!stories[i].members.some(m => !isPaywalledDomain(m.domain))) {
+      const n = stories[i].outletCount || 1;
+      droppedPaywallOnlyByOutlets[n] = (droppedPaywallOnlyByOutlets[n] || 0) + 1;
+      stories.splice(i, 1);
+      droppedPaywallOnly++;
+    }
+  }
+
   // ── Read the stories we are going to write about ─────────────────────────
   // Several members per story, not one. Perspectives differ needs more than a single
   // outlet's account, and a story carried by sixteen outlets is exactly where framing
@@ -1473,23 +1489,71 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       return !(h === 'news.google.com' || h.endsWith('.google.com'));
     } catch { return false; }
   };
+  // Prose already in hand first, then an outlet we are actually permitted to read, then an
+  // openable URL, then lane. worthReading outranks fetchable because a Bloomberg link is
+  // perfectly openable and still certain to fail.
+  const rank = (m) => ((m.snippet || '').length > 400 ? 8 : 0)
+                    + (worthReading(m.domain) ? 4 : 0)
+                    + (fetchable(m) ? 2 : 0)
+                    + (m.lane <= 1 ? 1 : 0);
+  const REAL_BODY = 400;   // same bar enrichWithBodies uses to call feed text a body
+
   const toRead = [];
   for (const st of stories.slice(0, TOP_STORIES)) {
     const byOutlet = new Map();
-    // Prose already in hand first, then anything we could open, then the rest — so a story's
-    // three slots go to members that can actually yield text.
-    const ranked = [...st.members].sort((x, y) => {
-      const score = (m) => ((m.snippet || '').length > 400 ? 4 : 0) + (fetchable(m) ? 2 : 0) + (m.lane <= 1 ? 1 : 0);
-      return score(y) - score(x);
-    });
-    for (const m of ranked) if (!byOutlet.has(m.source)) byOutlet.set(m.source, m);
-    st.readable = [...byOutlet.values()].slice(0, PER_STORY);
-    toRead.push(...st.readable);
+    for (const m of [...st.members].sort((x, y) => rank(y) - rank(x))) {
+      if (!byOutlet.has(m.source)) byOutlet.set(m.source, m);
+    }
+    const distinct = [...byOutlet.values()];
+
+    // A paywalled outlet leaves the story altogether — not read, and not offered as a source,
+    // because a link a reader cannot open is worse than no link. It still counts towards
+    // outletCount and still shows up under "also carried by", so the story's weight is honest.
+    const citable = distinct.filter(m => !isPaywalledDomain(m.domain));
+
+    // Slots go only to outlets we are allowed to read. Refusals are knowable before the
+    // request: spending a slot on one costs a slot another outlet on this story could use.
+    const targets = citable.filter(m => worthReading(m.domain)).slice(0, PER_STORY);
+
+    // Accounts are what the model sees: everything we will try to read, then any remaining
+    // readable-by-the-reader outlet to fill the three, marked headline-only in the context.
+    st.readable = [...targets, ...citable.filter(m => !targets.includes(m))].slice(0, PER_STORY);
+    st.paywalledDropped = distinct.filter(m => isPaywalledDomain(m.domain)).map(m => m.source);
+    toRead.push(...targets);
   }
   // enrichWithBodies overwrites a.snippet with the fetched body, so what each lane handed
   // us at ingestion has to be recorded before the call or it is lost.
   for (const a of articles) a.ingestLen = (a.snippet || '').trim().length;
   await enrichWithBodies(toRead, toRead.length);
+
+  // A story whose chosen outlets all came back empty gets one more attempt, against the
+  // outlets the PER_STORY cut left behind. Grouping already knows a story is carried by
+  // four to sixteen outlets; giving up after three of them was leaving readable text on the
+  // table. Costs nothing on a story that already has a body, which is most of them.
+  const rescue = [];
+  for (const st of stories.slice(0, TOP_STORIES)) {
+    if ((st.readable || []).some(m => (m.snippet || '').length > REAL_BODY)) continue;
+    const tried = new Set((st.readable || []).map(m => m.link));
+    const spare = new Map();
+    for (const m of st.members) {
+      if (tried.has(m.link) || spare.has(m.source)) continue;
+      if (isPaywalledDomain(m.domain) || !worthReading(m.domain)) continue;
+      spare.set(m.source, m);
+    }
+    const extra = [...spare.values()].slice(0, PER_STORY);
+    if (extra.length) { st.rescue = extra; rescue.push(...extra); }
+  }
+  if (rescue.length) {
+    await enrichWithBodies(rescue, rescue.length);
+    toRead.push(...rescue);            // so laneYield counts these attempts too
+    for (const st of stories.slice(0, TOP_STORIES)) {
+      if (!st.rescue) continue;
+      const won = st.rescue.filter(m => (m.snippet || '').length > REAL_BODY);
+      if (won.length) st.readable = [...won, ...(st.readable || [])].slice(0, PER_STORY);
+    }
+    console.log(`🔁 ${category}: second pass on ${rescue.length} spare outlets for `
+      + `${stories.slice(0, TOP_STORIES).filter(st => st.rescue).length} unread stories`);
+  }
 
   // Flattened back to an article list for the callers that still expect one, lead first so
   // the ordering reflects stories rather than duplicates.
@@ -1536,7 +1600,7 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       kept: articlesOut.length,
       articlesBeforeGrouping: articles.length,
       storiesAfterGrouping: stories.length,
-      droppedNonTier1, droppedStale, droppedOffLang,
+      droppedNonTier1, droppedStale, droppedOffLang, droppedPaywallOnly, droppedPaywallOnlyByOutlets,
       dedupedAway: kept.length - articles.length,
       groupedAway: articles.length - stories.length,
       byLane: articlesOut.reduce((m, a) => (m[a.lane] = (m[a.lane] || 0) + 1, m), {}),
