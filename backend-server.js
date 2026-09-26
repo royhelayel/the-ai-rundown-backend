@@ -1723,6 +1723,10 @@ const GENERATE_STORIES_CONTENT = true;
 
 // Shared Claude caller — used by both digest and stories generators
 async function callClaude(prompt, maxTokens = 4000, retries = 3) {
+  return callClaudeMessages([{ role: 'user', content: prompt }], maxTokens, retries);
+}
+
+async function callClaudeMessages(messages, maxTokens = 4000, retries = 3) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -1733,7 +1737,7 @@ async function callClaude(prompt, maxTokens = 4000, retries = 3) {
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
       max_tokens: maxTokens,
-      messages: [{ role: "user", content: prompt }]
+      messages
     })
   });
 
@@ -1741,13 +1745,50 @@ async function callClaude(prompt, maxTokens = 4000, retries = 3) {
     const retryAfter = parseInt(response.headers.get('retry-after') || '65', 10);
     console.log(`⏳ Rate limited. Waiting ${retryAfter}s (${retries} retries left)...`);
     await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-    return callClaude(prompt, maxTokens, retries - 1);
+    return callClaudeMessages(messages, maxTokens, retries - 1);
   }
   if (!response.ok) {
     const errData = await response.json();
     throw new Error(`Claude API error: ${response.status} - ${JSON.stringify(errData)}`);
   }
   return response.json();
+}
+
+// One call, continued until the model stops because it is finished rather than because it ran
+// out of room. Before this, generateNews asked for 12 stories inside a 5,000-token ceiling and
+// nobody read stop_reason: Business published 5 of its 12, Sports was cut mid-tennis-score
+// ("Brandon Nakashima's 6-1, 3-6, 10-"), World News ended on "confidence that they". The
+// retrieval work for the missing stories had already been paid for.
+async function callClaudeComplete(prompt, maxTokens, { maxContinuations = 3, label = '' } = {}) {
+  const messages = [{ role: 'user', content: prompt }];
+  let text = '', usage = { input_tokens: 0, output_tokens: 0 }, continuations = 0;
+
+  for (;;) {
+    const data = await callClaudeMessages(messages, maxTokens);
+    const part = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+    text += part;
+    usage.input_tokens  += data.usage?.input_tokens  || 0;
+    usage.output_tokens += data.usage?.output_tokens || 0;
+
+    if (data.stop_reason !== 'max_tokens' || continuations >= maxContinuations) {
+      if (data.stop_reason === 'max_tokens') {
+        console.warn(`✂️  ${label}: still truncated after ${continuations} continuation(s) — output may be incomplete`);
+      }
+      return { text, usage, truncated: data.stop_reason === 'max_tokens', continuations };
+    }
+    // Hand back everything written so far and ask for the remainder. Assistant prefill means
+    // the model resumes mid-document instead of starting a second, overlapping digest.
+    continuations++;
+    console.log(`↪️  ${label}: hit the token ceiling, asking for the rest (${continuations})`);
+    // The API rejects an assistant prefill that ends in whitespace, and a chunk cut mid-word
+    // rejoins badly ("ph" + " ytoplankton"). Rewinding to the last line break costs a few
+    // words and makes the seam land where a seam is invisible.
+    const cut = text.lastIndexOf('\n');
+    if (cut > text.length - 400 && cut > 0) text = text.slice(0, cut);
+    text = text.replace(/\s+$/, '');
+    messages.length = 1;
+    messages.push({ role: 'assistant', content: text });
+  }
 }
 
 // Detect when Claude returned an error/refusal instead of a news digest
@@ -1830,7 +1871,13 @@ function cleanRawSummary(rawSummary) {
   const fixedHeadings = joined
     .replace(/^(#{1,3} )(?!\[)([^\n]+\]\(https?:\/\/)/gm, '$1[$2')
     .replace(/^(#{1,3} )(.+)\n(https?:\/\/[^\s]+)/gm, '$1[$2]($3)');
-  return (usefulSentence ? `_${usefulSentence}_\n\n` : '') + fixedHeadings;
+  // Technology shipped a digest whose headings were all single-# — every downstream reader
+  // splits on "## ", so it contained zero stories as far as the app was concerned. If there
+  // is not a single ## heading but there are # ones, they were meant to be stories.
+  const normalised = /^## /m.test(fixedHeadings) || !/^# /m.test(fixedHeadings)
+    ? fixedHeadings
+    : fixedHeadings.replace(/^# /gm, '## ');
+  return (usefulSentence ? `_${usefulSentence}_\n\n` : '') + normalised;
 }
 
 async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null, language = 'en') {
@@ -1949,9 +1996,18 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
 - Be precise about what type of agreement or deal is under discussion. A shipping/navigation deal and a nuclear deal are different things — do not conflate them in the headline or body, even when both tracks are active simultaneously.
 - Do not attribute a quote or claim to an official unless a source in the search results directly attributes it to that person.`;
 
-  const data = await callClaude(prompt, 5000);
-  const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+  // 5,000 tokens could not hold twelve stories with Coverage, bullets, Summary, Why this
+  // matters and Perspectives differ. 16,000 fits them with room to spare, and the helper
+  // continues anyway if a category runs long, so the ceiling stops being a content decision.
+  const { text: rawSummary, usage, truncated } = await callClaudeComplete(prompt, 16000, { label: category });
+  const data = { usage };
   const summary = filterCoverageTier1(cleanRawSummary(rawSummary), isRegional ? category : null);
+  if (truncated) console.warn(`✂️  ${category}: digest still truncated after continuations`);
+  const written = (summary.match(/^## /gm) || []).length;
+  const prepared = retrievalStats?.storiesTried ?? null;
+  if (prepared && written < prepared) {
+    console.warn(`📉 ${category}: ${written} stories written from ${prepared} prepared — ${prepared - written} lost at the writing step`);
+  }
 
   // Track usage
   if (data.usage) {
@@ -2046,9 +2102,13 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
 - **Perspectives differ:** must contrast positions held by named tier-1 news organisations or official government/institutional sources only.
 - Do not attribute a quote or claim to an official unless a source in the fresh search results directly attributes it to that person.`;
 
-  const data = await callClaude(prompt, 5000);
-  const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+  // 5,000 tokens could not hold twelve stories with Coverage, bullets, Summary, Why this
+  // matters and Perspectives differ. 16,000 fits them with room to spare, and the helper
+  // continues anyway if a category runs long, so the ceiling stops being a content decision.
+  const { text: rawSummary, usage, truncated } = await callClaudeComplete(prompt, 16000, { label: category });
+  const data = { usage };
   const summary = filterCoverageTier1(cleanRawSummary(rawSummary), isRegional ? category : null);
+  if (truncated) console.warn(`✂️  ${category}: digest still truncated after continuations`);
 
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
@@ -2214,8 +2274,11 @@ For each story in the digest, use this EXACT format — no preamble:
 
 Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence. The **Summary:** field is mandatory for every single story — never skip it.`;
 
-  const data = await callClaude(prompt, 5000);
-  const rawSummary = data.content.filter(item => item.type === "text").map(item => item.text).join("\n");
+  // The cards are written from the digest, so the digest's length is inherited here: a
+  // truncated digest used to become truncated cards and a story_count that recorded the loss
+  // as if it were the real number.
+  const { text: rawSummary, usage } = await callClaudeComplete(prompt, 16000, { label: `${category} cards` });
+  const data = { usage };
   const summary = cleanRawSummary(rawSummary);
 
   // Track usage (search cost = 0, context reused from digest)
