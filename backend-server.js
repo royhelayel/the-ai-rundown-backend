@@ -49,7 +49,7 @@ const TIME_SLOTS = [
 
 // === Authentication & Email Imports ===
 import { createClient } from '@supabase/supabase-js';
-import { TIER1_SOURCES, GOOGLE_SECTIONS, sourcesFor, mayFetchBody, sourceForUrl, isPaywalledDomain, worthReading } from './tier1-sources.js';
+import { TIER1_SOURCES, GOOGLE_SECTIONS, sourcesFor, mayFetchBody, sourceForUrl, isPaywalledDomain, worthReading, relatedCategories, belongsToChild } from './tier1-sources.js';
 import { Resend } from 'resend';
 
 // === Initialize Supabase Admin Client ===
@@ -641,7 +641,13 @@ function parseRssFeed(xml) {
     const d = dateStr ? new Date(dateStr) : null;
     const snippet = (pick('description') || pick('summary') || pick('content'))
       .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
-    out.push({ title, link, date: (d && !isNaN(d)) ? d : null, snippet });
+    // The outlet's own filing, straight off the feed. Guardian tags a match report
+    // <category>Football</category>; that is a better signal about the subject than anything
+    // we can infer, and it costs one regex.
+    const categories = [...b.matchAll(/<category\b[^>]*>([\s\S]*?)<\/category>/gi)]
+      .map(m => decodeXmlEntities(m[1]).replace(/<[^>]+>/g, ' ').trim())
+      .filter(Boolean).slice(0, 8);
+    out.push({ title, link, date: (d && !isNaN(d)) ? d : null, snippet, categories });
   }
   return out;
 }
@@ -1137,6 +1143,7 @@ async function fetchFeedItems(url, outletName, domain) {
         const plain = (it.snippet || '').replace(/<[^>]+>/g, ' ').replace(/https?:\/\/\S+/g, ' ').replace(/\s+/g, ' ').trim();
         return plain.length > 60 ? plain.slice(0, 1200) : '';
       })(),
+      outletCategories: it.categories || [],
     }));
   } catch { return []; }
 }
@@ -1327,21 +1334,45 @@ const CORPUS_WINDOW_HOURS = { Morning: 24, Evening: 14 };
 // the same allowlist gate lane 3 goes through and it becomes a discovery funnel: good at
 // finding, not trusted to choose.
 async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Morning', withSerper = true) {
-  const sources = sourcesFor(category, language);
+  // ── Who to ask, widened by the category tree ─────────────────────────────
+  // The registry was too literal: Football had three outlets because only three had a
+  // 'Football' key, while eight more cover football under 'Sports'. So a category also reads
+  // its parent's feeds and its children's.
+  //
+  //   child -> parent   kept as-is. Every football story is a sports story.
+  //   parent -> child   kept only if the article is about the child's subject, because a
+  //                     sports feed is mostly not football.
+  //
+  // Each article remembers which category's feed produced it, so that test can be applied
+  // after ingestion rather than trusting the feed's name.
+  const rel = relatedCategories(category);
+  const askFor = [category, ...(rel.parent ? [rel.parent] : []), ...rel.children];
+  const seenFeed = new Set();
+  const sources = [];
+  for (const c of askFor) {
+    for (const src of sourcesFor(c, language)) {
+      const key = `${src.domain}|${src.feed || 'google'}`;
+      if (seenFeed.has(key)) continue;          // one outlet's feed is fetched once
+      seenFeed.add(key);
+      sources.push({ ...src, forCategory: c });
+    }
+  }
   const section = GOOGLE_SECTIONS[category];
   let lane4Raw = 0, lane4Error = null, lane4Dropped = { nonTier1: 0, stale: 0 };
   const jobs = [];
 
   // Lane 1 — the outlet's own feed, where it still runs one.
   for (const s of sources.filter(x => x.lane === 1)) {
-    jobs.push(fetchFeedItems(s.feed, s.name, s.domain).then(items => items.map(i => ({ ...i, lane: 1 }))));
+    jobs.push(fetchFeedItems(s.feed, s.name, s.domain)
+      .then(items => items.map(i => ({ ...i, lane: 1, feedCategory: s.forCategory }))));
   }
   // Lane 2 — the outlet via Google, by name.
   for (const s of sources.filter(x => x.lane === 2)) {
     jobs.push(fetchFeedItems(googleOutletFeedUrl(s.domain, s.gl, s.lang), s.name, s.domain)
       // snippet dropped: Google's <description> is a link whose text is the headline and the
       // publisher, which survives a length check while telling us nothing the title does not.
-      .then(items => items.map(i => ({ ...i, lane: 2, title: splitGoogleTitle(i.title).title, snippet: '' }))));
+      .then(items => items.map(i => ({ ...i, lane: 2, feedCategory: s.forCategory,
+                                      title: splitGoogleTitle(i.title).title, snippet: '' }))));
   }
   // Lane 3 — Google's section, advisory. Publisher comes from the title suffix, and any
   // outlet not on the allowlist is dropped below, so this cannot smuggle anyone in.
@@ -1387,7 +1418,19 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   let droppedNonTier1 = 0, droppedStale = 0, droppedOffLang = 0;
   const cutoff = Date.now() - (CORPUS_WINDOW_HOURS[timeSlot] || 24) * 3600 * 1000;
 
+  let droppedOffSubject = 0, widenedIn = 0;
   for (const a of raw) {
+    // An article that arrived through the PARENT's feed has to earn its place here: a sports
+    // feed is mostly not football. One that arrived through a CHILD's feed is already inside
+    // this category by definition and passes untested.
+    if (a.feedCategory && a.feedCategory !== category) {
+      if (a.feedCategory === rel.parent) {
+        if (!belongsToChild(category, a.title, a.outletCategories)) { droppedOffSubject++; continue; }
+        widenedIn++;
+      } else if (rel.children.includes(a.feedCategory)) {
+        widenedIn++;
+      }
+    }
     if (a.lane === 3) {
       const hit = byName.get((a.source || '').toLowerCase());
       if (!hit) { droppedNonTier1++; continue; }
@@ -1638,6 +1681,8 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       articlesBeforeGrouping: articles.length,
       storiesAfterGrouping: stories.length,
       droppedNonTier1, droppedStale, droppedOffLang, droppedPaywallOnly, droppedPaywallOnlyByOutlets,
+      // How much the category tree contributed, and what it cost to keep it on-subject.
+      widenedIn, droppedOffSubject, askedCategories: askFor,
       dedupedAway: kept.length - articles.length,
       groupedAway: articles.length - stories.length,
       byLane: articlesOut.reduce((m, a) => (m[a.lane] = (m[a.lane] || 0) + 1, m), {}),

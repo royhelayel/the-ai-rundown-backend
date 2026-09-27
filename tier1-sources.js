@@ -293,3 +293,48 @@ export function worthReading(domain) {
   const s = sourceForDomain(domain);
   return !!s && s.fetch === true && s.paywall !== true;
 }
+
+// ── How our categories relate to each other ────────────────────────────────
+// A child is wholly inside its parent: every football story is a sports story, every AI
+// story is a technology story. The reverse does not hold, and that asymmetry is what makes
+// widening safe — a child's articles flow up unconditionally, a parent's flow down only if
+// they are actually about the child's subject.
+//
+// This is also the fix for a registry that was too literal. Football had three outlets
+// because only three had a 'Football' key, while Al Jazeera, France 24, Sky News, CNN, CBS,
+// NBC, ABC and USA Today all cover football under 'Sports'. AI had four, of which one is
+// paywalled and one blocks us, while thirteen outlets file AI stories under 'Technology'.
+export const CATEGORY_PARENT = {
+  Football:   'Sports',
+  Basketball: 'Sports',
+  AI:         'Technology',
+  Crypto:     'Business',
+};
+
+export const parentOf = (c) => CATEGORY_PARENT[c] || null;
+export const childrenOf = (c) => Object.keys(CATEGORY_PARENT).filter(k => CATEGORY_PARENT[k] === c);
+
+// The categories whose feeds are worth reading when building `c`: itself, its parent (whose
+// articles must then pass the subject test) and its children (whose articles need no test).
+export function relatedCategories(c) {
+  const p = parentOf(c);
+  return { self: c, parent: p, children: childrenOf(c) };
+}
+
+// Does this article belong to `child` rather than merely to the parent it arrived under?
+// Deliberately keyword-based and deliberately narrow: a wrong include puts tennis in the
+// football feed, which is worse than missing one story. Checked against the headline and
+// against whatever categories the outlet itself put on the item.
+const CHILD_SUBJECT = {
+  Football: /\b(football|soccer|premier league|la liga|serie a|bundesliga|ligue 1|champions league|europa league|uefa|fifa|world cup|epl|man (city|utd|united)|arsenal|chelsea|liverpool|tottenham|barcelona|real madrid|bayern|psg|juventus|striker|midfielder|goalkeeper|transfer window)\b/i,
+  Basketball: /\b(basketball|nba|wnba|ncaa (men'?s|women'?s) basketball|euroleague|lakers|celtics|warriors|knicks|bucks|nuggets|slam dunk|three-pointer|point guard)\b/i,
+  AI: /\b(a\.?i\.?|artificial intelligence|machine learning|neural network|large language model|llm|chatgpt|openai|anthropic|claude|gemini|copilot|deepmind|hugging face|generative ai|ai model|ai agent)\b/i,
+  Crypto: /\b(crypto|cryptocurrency|bitcoin|btc|ethereum|eth|blockchain|stablecoin|defi|nft|binance|coinbase|solana|ripple|xrp|token sale)\b/i,
+};
+
+export function belongsToChild(child, title, outletCategories = []) {
+  const re = CHILD_SUBJECT[child];
+  if (!re) return false;
+  if (re.test(title || '')) return true;
+  return (outletCategories || []).some(c => re.test(c));
+}
