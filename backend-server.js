@@ -1258,6 +1258,92 @@ async function fetchArticleBody(url) {
   } catch { return { text: null, reason: 'fetch-failed' }; }
 }
 
+// ── Lane 5 — Anthropic's fetcher, for pages our own cannot open ───────────
+// Our fetcher identifies as RadioNewsBot/1.0 and Forbes answers it with 403 every time —
+// ten of AI's twelve stories died on exactly that. Anthropic's server-side web_fetch is a
+// different client with its own standing, and it is served where we are not: tested against
+// the same Forbes URL, ours got 403 and web_fetch got the page.
+//
+// This is not a disguise and not a paywall bypass. We do not pretend to be a browser, and a
+// paywalled outlet stays refused — web_fetch is served whatever the publisher serves it.
+// It runs only where our own attempt already failed, so it fills gaps rather than replacing
+// a fetcher that works for most of the web.
+const LANE5_MODEL = 'claude-haiku-4-5-20251001';
+let lane5Tally = { attempted: 0, succeeded: 0, chars: 0, byOutlet: {}, byPrevReason: {} };
+const resetLane5Tally = () => { lane5Tally = { attempted: 0, succeeded: 0, chars: 0, byOutlet: {}, byPrevReason: {} }; };
+
+async function fetchBodyViaClaude(url, outlet) {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'anthropic-beta': 'web-fetch-2025-09-10',
+    },
+    body: JSON.stringify({
+      model: LANE5_MODEL,
+      max_tokens: 2000,
+      tools: [{ type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 1 }],
+      messages: [{ role: 'user', content:
+        `Fetch ${url} and return the article's body text only — the reporting itself. `
+        + `Do not summarise, do not add commentary, and leave out navigation, adverts, `
+        + `newsletter prompts, cookie notices and related-article lists. `
+        + `If the page is a paywall, a login wall, an error or otherwise carries no article, `
+        + `reply with exactly: NO_ARTICLE` }],
+    }),
+    signal: AbortSignal.timeout(45000),
+  });
+  if (!r.ok) return { text: null, reason: `claude-http-${r.status}` };
+  const d = await r.json();
+  const text = (d.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
+  if (!text || /^NO_ARTICLE/i.test(text)) return { text: null, reason: 'claude-no-article' };
+  if (text.length < 250) return { text: null, reason: 'claude-too-short' };
+  return { text: text.slice(0, 4000), reason: 'ok' };
+}
+
+// Second chance for the members a normal read could not open. Paywalled outlets are not
+// offered one: the rule is that they are excluded everywhere, and asking a different client
+// to try the same locked door would be the opposite of that.
+async function enrichViaLaneFive(articles, limit = 12) {
+  const byLink = new Map();
+  for (const a of articles) {
+    if (a.bodySource !== 'none' || !a.link || isPaywalledDomain(a.domain)) continue;
+    if (!byLink.has(a.link)) byLink.set(a.link, a);
+  }
+  const targets = [...byLink.values()].slice(0, limit);
+  if (!targets.length) return 0;
+
+  let won = 0;
+  await Promise.all(targets.map(async (a) => {
+    const before = a.bodyReason || 'unknown';
+    lane5Tally.attempted++;
+    lane5Tally.byPrevReason[before] = (lane5Tally.byPrevReason[before] || 0) + 1;
+    try {
+      // The story's own link may be a Google redirect; prefer a real publisher URL if the
+      // resolution step found one earlier.
+      const url = /(^|\.)google\.com/.test(new URL(a.link).hostname) ? (a.resolvedUrl || null) : a.link;
+      if (!url) { a.bodyReason = before + ' + lane5-no-publisher-url'; return; }
+      const { text, reason } = await fetchBodyViaClaude(url, a.source);
+      if (text) {
+        a.snippet = text;
+        a.link = url;
+        a.bodySource = 'claude-fetch';
+        a.bodyFrom = a.source;
+        a.bodyReason = null;
+        a.lane5Filled = before;          // what lane 5 rescued, and from which failure
+        won++; lane5Tally.succeeded++; lane5Tally.chars += text.length;
+        lane5Tally.byOutlet[a.source] = (lane5Tally.byOutlet[a.source] || 0) + 1;
+      } else {
+        a.bodyReason = before + ' + lane5-' + reason;
+      }
+    } catch (e) {
+      a.bodyReason = before + ' + lane5-' + (e.name === 'TimeoutError' ? 'timeout' : 'error');
+    }
+  }));
+  return won;
+}
+
 // Enrich the stories we are actually going to write about. `variants` carries the other
 // outlets that ran the same story, so when the first one blocks us we try a sibling that
 // does not — a story on both Khaleej Times (blocks Claude) and The National (does not)
@@ -1290,6 +1376,7 @@ async function enrichWithBodies(articles, limit = 12) {
           a.bodyFrom = a.source;
           return;
         }
+        a.resolvedUrl = real;        // lane 5 needs a publisher URL, not a Google redirect
         a.bodyReason = 'resolved-but-' + reason;
       } else {
         a.bodyReason = 'unresolvable';
@@ -1626,6 +1713,25 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       + `${stories.slice(0, TOP_STORIES).filter(st => st.rescue).length} unread stories`);
   }
 
+  // Lane 5 last, on what neither pass could open.
+  resetLane5Tally();
+  if (await isLaneFiveEnabled()) {
+    const stillEmpty = [...toRead, ...rescue].filter(a => a.bodySource === 'none');
+    if (stillEmpty.length) {
+      const won = await enrichViaLaneFive(stillEmpty, 24);
+      // Promote a story that lane 5 rescued into its accounts, so the win reaches the digest
+      // rather than only the statistics.
+      for (const st of stories.slice(0, TOP_STORIES)) {
+        if ((st.readable || []).some(m => (m.snippet || '').length > REAL_BODY)) continue;
+        const rescued = [...(st.readable || []), ...(st.rescue || [])]
+          .filter(m => m.bodySource === 'claude-fetch');
+        if (rescued.length) st.readable = [...rescued, ...(st.readable || [])].slice(0, PER_STORY);
+      }
+      console.log(`🌐 ${category}: lane 5 tried ${lane5Tally.attempted} page(s) our fetcher could not open, `
+        + `got ${won} — ${Object.entries(lane5Tally.byOutlet).map(([k, v]) => `${k} x${v}`).join(', ') || 'none'}`);
+    }
+  }
+
   // Flattened back to an article list for the callers that still expect one, lead first so
   // the ordering reflects stories rather than duplicates.
   const articlesOut = stories.map(st => ({ ...st.lead, outletCount: st.outletCount,
@@ -1683,6 +1789,8 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
       droppedNonTier1, droppedStale, droppedOffLang, droppedPaywallOnly, droppedPaywallOnlyByOutlets,
       // How much the category tree contributed, and what it cost to keep it on-subject.
       widenedIn, droppedOffSubject, askedCategories: askFor,
+      // What lane 5 filled, and which failure it filled it from.
+      lane5: { ...lane5Tally },
       dedupedAway: kept.length - articles.length,
       groupedAway: articles.length - stories.length,
       byLane: articlesOut.reduce((m, a) => (m[a.lane] = (m[a.lane] || 0) + 1, m), {}),
@@ -1745,6 +1853,7 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
             bodyFrom: m.bodyFrom || null,
             bodyReason: m.bodyReason || null,
             finalChars: (m.snippet || '').length,
+            lane5Filled: m.lane5Filled || null,   // the failure lane 5 rescued this from
           })),
           alsoCarriedBy: (st.outlets || []).filter(o => !(st.readable || []).some(r => r.source === o)),
           contextBlock: storyBlocks[i] || null,
@@ -2290,6 +2399,7 @@ const isEveningAutoEnabled  = () => isSettingEnabled('evening_auto_enabled', tru
 // production now — with a switch back to Serper-only if a run goes wrong, since this changes
 // what gets published and not merely how it is found.
 const isCorpusRetrievalEnabled = () => isSettingEnabled('corpus_retrieval_enabled', true);
+const isLaneFiveEnabled = () => isSettingEnabled('lane5_enabled', true);
 const setCorpusRetrievalEnabled = (enabled) => setSettingEnabled('corpus_retrieval_enabled', enabled);
 const setEveningAutoEnabled = (enabled) => setSettingEnabled('evening_auto_enabled', enabled);
 
@@ -3979,6 +4089,19 @@ app.get('/admin/api/retrieval/status', async (req, res) => {
     res.json({ enabled: await isCorpusRetrievalEnabled(), persisted: !appSettingsTableMissing });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
+app.get('/admin/api/lane5/status', async (req, res) => {
+  try { res.json({ enabled: await isLaneFiveEnabled() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/admin/api/lane5/toggle', async (req, res) => {
+  try {
+    const enabled = req.body?.enabled !== false;
+    await setSettingEnabled('lane5_enabled', enabled);
+    res.json({ enabled });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/admin/api/retrieval/toggle', async (req, res) => {
   try {
     const enabled = !!req.body?.enabled;
