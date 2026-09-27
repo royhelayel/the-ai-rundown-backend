@@ -1246,9 +1246,12 @@ async function fetchArticleBody(url) {
     });
     if (!r.ok) return { text: null, reason: 'http-' + r.status };
     const html = await r.text();
-    if (PAYWALL_SIGNALS.test(html)) return { text: null, reason: 'paywalled' };
-
     const stripped = html.replace(/<(script|style|nav|header|footer|aside|form)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+    // Test the prose, not the bundle. CNN ships the string "This article is for subscribers
+    // only" inside its JavaScript on every page, paywalled or not, so scanning raw HTML
+    // marked all of CNN paywalled — seven accounts thrown away in Business alone.
+    if (PAYWALL_SIGNALS.test(stripped)) return { text: null, reason: 'paywalled' };
+
     const paras = [...stripped.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
       .map(m => decodeXmlEntities(m[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim())
       .filter(t => t.length > 40);
@@ -1306,9 +1309,16 @@ async function fetchBodyViaClaude(url, outlet) {
 // offered one: the rule is that they are excluded everywhere, and asking a different client
 // to try the same locked door would be the opposite of that.
 async function enrichViaLaneFive(articles, limit = 12) {
+  // Both the members we tried and failed, and the ones we never tried because our own
+  // robots check said no. AP News is the case that matters: its robots.txt allows everyone
+  // (`Disallow:` with nothing after it) and it still answers our fetcher with 403, so it was
+  // marked unreadable and skipped before any attempt — lane 5 never saw it. Reuters, which
+  // really does disallow every bot, will simply be refused, which is the correct outcome.
   const byLink = new Map();
   for (const a of articles) {
-    if (a.bodySource !== 'none' || !a.link || isPaywalledDomain(a.domain)) continue;
+    if (!a.link || isPaywalledDomain(a.domain)) continue;
+    if (a.bodySource !== 'none' && a.bodySource !== 'not-attempted') continue;
+    if ((a.snippet || '').length > 400) continue;          // already has prose
     if (!byLink.has(a.link)) byLink.set(a.link, a);
   }
   const targets = [...byLink.values()].slice(0, limit);
@@ -1716,7 +1726,13 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   // Lane 5 last, on what neither pass could open.
   resetLane5Tally();
   if (await isLaneFiveEnabled()) {
-    const stillEmpty = [...toRead, ...rescue].filter(a => a.bodySource === 'none');
+    const stillEmpty = [...new Set([
+      ...toRead, ...rescue,
+      // members of a story that still has no body, including ones never attempted
+      ...stories.slice(0, TOP_STORIES)
+        .filter(st => !(st.readable || []).some(m => (m.snippet || '').length > REAL_BODY))
+        .flatMap(st => st.readable || []),
+    ])].filter(a => a.bodySource === 'none' || a.bodySource === 'not-attempted');
     if (stillEmpty.length) {
       const won = await enrichViaLaneFive(stillEmpty, 24);
       // Promote a story that lane 5 rescued into its accounts, so the win reaches the digest
