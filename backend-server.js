@@ -1184,6 +1184,14 @@ function splitGoogleTitle(title) {
 //   · only the articles that actually became stories, not the whole pool — fetching all 57
 //     costs 57% more and means sixty page requests a day at each outlet instead of twenty
 //   · stop at any paywall or gate, and never work around one
+// Paragraphs that are the page talking about itself, not the story. Our extractor takes any
+// <p> over 40 characters, which swept up a conference ticket advert as the opening of a
+// TechCrunch story, a YouTube consent notice as France 24's, and — worst — MTV Lebanon's
+// login form as the entire body of a story about airstrikes on Khiam.
+const FURNITURE = /^(it looks like your subscription|we sent a \d|an email with a reset|please refresh the page|to display this content|by (signing up|subscribing)|sign (in|up) to |already a subscriber|this is [^.]{0,70}\bnewsletter\b|subscribe to |support the guardian|follow us on|download the app|enable (advertisement|javascript)|accept all cookies|we use cookies|your privacy|advertisement$)/i;
+const PROMO = /(\d{1,3}% off|tickets? (now|from|on sale)|save \$\d|register (now|today) (for|to)|book your (seat|place|ticket))/i;
+const looksLikeFurniture = (t) => FURNITURE.test(t.trim()) || (PROMO.test(t) && t.length < 400);
+
 const PAYWALL_SIGNALS = /subscribe to (continue|read)|sign in to (read|continue)|already a subscriber|this article is for subscribers|register to continue/i;
 
 // ── Resolving a headline to its real URL ─────────────────────────────────────
@@ -1254,7 +1262,7 @@ async function fetchArticleBody(url) {
 
     const paras = [...stripped.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
       .map(m => decodeXmlEntities(m[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim())
-      .filter(t => t.length > 40);
+      .filter(t => t.length > 40 && !looksLikeFurniture(t));
     const text = paras.join(' ').slice(0, 4000);
     // A handful of words is boilerplate or a JS shell, not an article.
     return text.length > 250 ? { text, reason: 'ok' } : { text: null, reason: 'too-short' };
