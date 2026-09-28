@@ -1282,7 +1282,11 @@ const fetchable = (m) => {
 };
 
 const POOL_EMBED_MODEL = 'voyage-3-lite';
-const POOL_EMBED_BATCH = 128;
+// Voyage limits requests per minute far more tightly than inputs per request, so the way to
+// embed a whole pool is one big call, not many small ones. Exactly 128 of 295 articles came
+// back embedded — the first batch, with the rest rate-limited — until this went up.
+const POOL_EMBED_BATCH = 1000;
+const POOL_EMBED_TOKEN_BUDGET = 100000;   // approx per request, counted as chars/4
 const POOL_SIM_THRESHOLD = 0.80;     // cosine, above which two articles are one story
 const POOL_LABEL_SUPPORT = 2;        // outlets that must agree before a category sticks
 
@@ -1294,11 +1298,20 @@ async function embedBatch(texts) {
   if (!process.env.VOYAGE_API_KEY) { console.warn('⚠️  VOYAGE_API_KEY not set — grouping falls back to word overlap'); return texts.map(() => null); }
   const out = [];
   const errors = {};
-  for (let i = 0; i < texts.length; i += POOL_EMBED_BATCH) {
-    const chunk = texts.slice(i, i + POOL_EMBED_BATCH);
+  // Pack each request up to whichever limit comes first: inputs or tokens.
+  const chunks = [];
+  let cur = [], curTok = 0;
+  for (const t of texts) {
+    const tok = Math.ceil((t || '').length / 4);
+    if (cur.length >= POOL_EMBED_BATCH || curTok + tok > POOL_EMBED_TOKEN_BUDGET) { chunks.push(cur); cur = []; curTok = 0; }
+    cur.push(t); curTok += tok;
+  }
+  if (cur.length) chunks.push(cur);
+
+  for (const chunk of chunks) {
     let got = null;
     for (let attempt = 0; attempt < 3 && !got; attempt++) {
-      if (attempt) await new Promise(r => setTimeout(r, 1200 * attempt));
+      if (attempt) await new Promise(r => setTimeout(r, 20000 * attempt));   // the limit is per minute
       try {
         const r = await fetch('https://api.voyageai.com/v1/embeddings', {
           method: 'POST',
@@ -1327,7 +1340,7 @@ async function embedBatch(texts) {
       }
     }
     out.push(...(got || chunk.map(() => null)));
-    await new Promise(r => setTimeout(r, 250));                   // stay under the rate limit
+    if (chunks.length > 1) await new Promise(r => setTimeout(r, 21000));   // requests per minute, not inputs
   }
   if (Object.keys(errors).length) console.warn('⚠️  voyage batch errors:', JSON.stringify(errors));
   return out;
