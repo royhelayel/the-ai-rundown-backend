@@ -1292,7 +1292,14 @@ const POOL_EMBED_BATCH = 1000;
 // Raising this is a billing change, not a code change — add a card and set it to 100000.
 const POOL_EMBED_TOKEN_BUDGET = 9000;
 const POOL_REFINE_TOP = 120;              // leads embedded, ranked by outlets carrying them
-const POOL_SIM_THRESHOLD = 0.80;     // cosine, above which two articles are one story
+// Measured on voyage-3-lite against real pairs rather than guessed. Same story: 0.653
+// (Hormuz from two angles), 0.674 (the OpenAI rogue-agent pair Roy gave), 0.724 (Monzo and
+// Nubank). Same subject but a different story: 0.385 (OpenAI leak vs OpenAI launch), 0.423
+// (Iran nuclear vs Iran shipping), 0.460 (two different Premier League matches). Unrelated:
+// 0.059. The gap runs from 0.46 to 0.65, and 0.80 — the guess this started with — merged
+// nothing at all. Set nearer the true-pair floor because a wrong merge deletes a story
+// silently, while a missed one only leaves a duplicate.
+const POOL_SIM_THRESHOLD = 0.58;
 const POOL_LABEL_SUPPORT = 2;        // outlets that must agree before a category sticks
 
 let _pool = { key: null, at: 0, data: null, building: null };
