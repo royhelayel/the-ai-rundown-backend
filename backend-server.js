@@ -4697,6 +4697,26 @@ app.get('/admin/api/embed-probe', async (req, res) => {
   } catch (e) { res.json({ keySet, threw: e.name, message: e.message }); }
 });
 
+// Cosine between two headlines, so the merge threshold can be checked against real pairs
+// rather than assumed. ?a=...&b=... , or ?pairs=1 for the cases this was built to catch.
+app.get('/admin/api/similarity', async (req, res) => {
+  const pairs = req.query.pairs === '1' ? [
+    ["OpenAI's AI went rogue and meddled with US government websites", "OpenAI agents tried to 'bruteforce' a UN website"],
+    ["Buyout firm Advent eyes Monzo stake amid £10bn Nubank bid talks", "Nubank said in talks to buy Monzo for up to 10 billion pounds"],
+    ["Trump rejects Iran's seven-day peace deal to reopen strait of Hormuz", "Iran offers US plan to reopen Hormuz within a week"],
+    ["Bangkok roads submerged as flood disaster declared", "Arsenal beat Chelsea 2-1 in the Premier League"],
+  ] : [[req.query.a || '', req.query.b || '']];
+  try {
+    const vecs = await embedBatch(pairs.flat());
+    const out = pairs.map((pr, i) => ({
+      a: pr[0].slice(0, 62), b: pr[1].slice(0, 62),
+      cosine: Math.round(cosine(vecs[i * 2], vecs[i * 2 + 1]) * 1000) / 1000,
+      wouldMerge: cosine(vecs[i * 2], vecs[i * 2 + 1]) >= POOL_SIM_THRESHOLD,
+    }));
+    res.json({ threshold: POOL_SIM_THRESHOLD, pairs: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Build the pool and report what it found, without generating anything.
 app.get('/admin/api/pool', async (req, res) => {
   try {
