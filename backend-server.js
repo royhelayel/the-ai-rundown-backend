@@ -1613,8 +1613,15 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
   const attempted = [];
   const filled = [];
   const droppedNoBody = [];
-  for (const st of shortlist) {
-    if (filled.length >= TOP_STORIES) break;
+  const laneFiveOn = await isLaneFiveEnabled();
+
+  // Read a wave of candidates at a time, not one after another. Serially this took 37 minutes
+  // for a single category: eighteen candidates, each waiting on its own fetches and then on
+  // lane 5's 45-second timeout before the next one started. In waves the same work runs in
+  // three rounds, and the overshoot still costs nothing because a wave is only drawn when the
+  // quota is short.
+  const WAVE = 6;
+  const readOne = async (st) => {
     const byOutlet = new Map();
     for (const m of [...st.members].sort((x, y) => rank(y) - rank(x))) {
       if (!isPaywalledDomain(m.domain) && !byOutlet.has(m.source)) byOutlet.set(m.source, m);
@@ -1624,17 +1631,27 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
     for (const a of citable) a.ingestLen = (a.snippet || '').trim().length;
     await enrichWithBodies(targets, targets.length);
     let read = targets.filter(m => (m.snippet || '').length > REAL_BODY);
-    if (!read.length) {
+    if (!read.length && laneFiveOn) {
       const stillEmpty = targets.filter(m => m.bodySource === 'none' || m.bodySource === 'not-attempted');
-      if (stillEmpty.length && await isLaneFiveEnabled()) await enrichViaLaneFive(stillEmpty, PER_STORY);
+      if (stillEmpty.length) await enrichViaLaneFive(stillEmpty, PER_STORY);
       read = targets.filter(m => (m.snippet || '').length > REAL_BODY);
     }
     attempted.push(...targets);
-    if (!read.length) { droppedNoBody.push(st.lead.title); continue; }   // take the next candidate
+    if (!read.length) return null;
     st.readable = read;
     // Citing is not reading: every outlet with a URL a reader can open is listed.
     st.citable = citable.filter(m => fetchable(m) || (m.snippet || '').trim());
-    filled.push(st);
+    return st;
+  };
+
+  for (let i = 0; i < shortlist.length && filled.length < TOP_STORIES; i += WAVE) {
+    const wave = shortlist.slice(i, i + WAVE);
+    const results = await Promise.all(wave.map(readOne));
+    for (const r of results) {
+      if (!r) continue;
+      if (filled.length < TOP_STORIES) filled.push(r);
+    }
+    for (let k = 0; k < wave.length; k++) if (!results[k]) droppedNoBody.push(wave[k].lead.title);
   }
 
   const offeredUrls = new Set();
