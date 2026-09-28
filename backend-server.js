@@ -4602,6 +4602,30 @@ app.post('/admin/api/pool/toggle', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// One embedding call, reported raw. Coverage figures alone could not say whether the key was
+// missing, the model name wrong, or the rate limit hit.
+app.get('/admin/api/embed-probe', async (req, res) => {
+  const keySet = !!process.env.VOYAGE_API_KEY;
+  if (!keySet) return res.json({ keySet, note: 'VOYAGE_API_KEY is not set on this instance' });
+  try {
+    const r = await fetch('https://api.voyageai.com/v1/embeddings', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: ['a test headline about football', 'a test headline about markets'], model: req.query.model || POOL_EMBED_MODEL }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const body = await r.text();
+    let parsed = null; try { parsed = JSON.parse(body); } catch {}
+    res.json({
+      keySet, status: r.status, model: req.query.model || POOL_EMBED_MODEL,
+      ok: r.ok,
+      vectors: parsed?.data?.length ?? 0,
+      dims: parsed?.data?.[0]?.embedding?.length ?? 0,
+      error: parsed?.detail || parsed?.error || (r.ok ? null : body.slice(0, 300)),
+    });
+  } catch (e) { res.json({ keySet, threw: e.name, message: e.message }); }
+});
+
 // Build the pool and report what it found, without generating anything.
 app.get('/admin/api/pool', async (req, res) => {
   try {
