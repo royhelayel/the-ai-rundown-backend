@@ -1286,7 +1286,12 @@ const POOL_EMBED_MODEL = 'voyage-3-lite';
 // embed a whole pool is one big call, not many small ones. Exactly 128 of 295 articles came
 // back embedded — the first batch, with the rest rate-limited — until this went up.
 const POOL_EMBED_BATCH = 1000;
-const POOL_EMBED_TOKEN_BUDGET = 100000;   // approx per request, counted as chars/4
+// The Voyage account has no payment method, so it is capped at 3 requests and 10,000 tokens
+// per minute. A whole pool is ~16k tokens and is refused outright. Rather than embed nothing,
+// we embed where it changes the output: the leads of the stories that could reach a feed.
+// Raising this is a billing change, not a code change — add a card and set it to 100000.
+const POOL_EMBED_TOKEN_BUDGET = 9000;
+const POOL_REFINE_TOP = 120;              // leads embedded, ranked by outlets carrying them
 const POOL_SIM_THRESHOLD = 0.80;     // cosine, above which two articles are one story
 const POOL_LABEL_SUPPORT = 2;        // outlets that must agree before a category sticks
 
@@ -1361,6 +1366,33 @@ const cosine = (a, b) => {
 // Greedy clustering against each cluster's first member. Word overlap could not tell that
 // "OpenAI went rogue and meddled with US government websites" and "OpenAI agents tried to
 // bruteforce a UN website" were one story — they share one significant word. Meaning can.
+function groupByTokens(articles) {
+  const stories = [];
+  for (const a of articles) {
+    const toks = new Set(sigTokens(a.title));
+    const hit = toks.size >= 2 ? stories.find(st => [...toks].filter(t => st.tokens.has(t)).length >= 3) : null;
+    if (hit) { hit.members.push(a); toks.forEach(t => hit.tokens.add(t)); continue; }
+    stories.push({ lead: a, members: [a], tokens: toks, embedding: null });
+  }
+  return stories;
+}
+
+// Second pass: two stories the word test kept apart but that mean the same thing. This is the
+// case word overlap cannot see — "OpenAI went rogue and meddled with US government websites"
+// and "OpenAI agents tried to bruteforce a UN website" share one significant word.
+function mergeSemanticDuplicates(stories) {
+  const out = [];
+  for (const st of stories) {
+    if (!st.embedding) { out.push(st); continue; }
+    const twin = out.find(o => o.embedding && cosine(o.embedding, st.embedding) >= POOL_SIM_THRESHOLD);
+    if (twin) {
+      twin.members.push(...st.members);
+      st.tokens.forEach(t => twin.tokens.add(t));
+    } else out.push(st);
+  }
+  return out;
+}
+
 function groupByEmbedding(articles) {
   const stories = [];
   for (const a of articles) {
@@ -1445,11 +1477,22 @@ async function buildSharedPool(day, language, timeSlot) {
   }
   const articles = [...seen.values()];
 
-  const vecs = await embedBatch(articles.map(a => `${a.title}. ${(a.snippet || '').slice(0, 180)}`));
-  articles.forEach((a, i) => { a.embedding = vecs[i]; });
+  // Cheap grouping over everything, then meaning applied where it decides what gets published.
+  // Embedding the whole pool is the ideal and costs nothing at standard rate limits; within
+  // the free tier it returns nothing at all, which is worse than doing it in two passes.
+  let stories = groupByTokens(articles);
+  for (const st of stories) {
+    st.outlets = [...new Set(st.members.map(m => m.source).filter(Boolean))];
+    st.outletCount = st.outlets.length;
+  }
+  stories.sort((a, b) => b.outletCount - a.outletCount);
+  const refineSet = stories.slice(0, POOL_REFINE_TOP);
+  const vecs = await embedBatch(refineSet.map(st => `${st.lead.title}. ${(st.lead.snippet || '').slice(0, 140)}`));
+  refineSet.forEach((st, i) => { st.embedding = vecs[i]; });
   const embedded = vecs.filter(Boolean).length;
-
-  const stories = groupByEmbedding(articles);
+  const beforeMerge = stories.length;
+  stories = mergeSemanticDuplicates(stories);
+  const mergedBySemantics = beforeMerge - stories.length;
   for (const st of stories) {
     st.outlets = [...new Set(st.members.filter(m => !isPaywalledDomain(m.domain)).map(m => m.source).filter(Boolean))];
     st.outletCount = st.outlets.length;
@@ -1467,7 +1510,8 @@ async function buildSharedPool(day, language, timeSlot) {
   const stats = {
     feeds: seenFeed.size, raw: raw.length, kept: kept.length, articles: articles.length,
     droppedStale, droppedOffLang, droppedUnlabelled,
-    stories: stories.length, embedded, embedCoverage: articles.length ? Math.round(100 * embedded / articles.length) : 0,
+    stories: stories.length, embedded, embedCoverage: refineSet.length ? Math.round(100 * embedded / refineSet.length) : 0,
+    refined: refineSet.length, mergedBySemantics,
     embedErrors: lastEmbedErrors,
     perCategory: Object.fromEntries(Object.entries(byCategory).map(([c, v]) => [c, v.length])),
     ms: Date.now() - t0,
