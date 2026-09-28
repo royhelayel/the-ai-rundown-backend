@@ -1281,6 +1281,12 @@ const fetchable = (m) => {
   } catch { return false; }
 };
 
+// What counts as an article rather than a teaser. Below this a story is written from its
+// headline, whatever the text looks like: an RSS blurb is 130 characters at the median and
+// was being handed to the writer as prose. Shared by both retrieval paths so they cannot
+// drift apart on the question.
+const REAL_BODY = 400;
+
 const POOL_EMBED_MODEL = 'voyage-3-lite';
 // Voyage limits requests per minute far more tightly than inputs per request, so the way to
 // embed a whole pool is one big call, not many small ones. Exactly 128 of 295 articles came
@@ -1593,7 +1599,6 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
   const rank = (m) => ((m.snippet || '').length > 400 ? 8 : 0)
                     + (worthReading(m.domain) ? 4 : 0)
                     + (fetchable(m) ? 2 : 0) + (m.lane <= 1 ? 1 : 0);
-  const REAL_BODY = 400;
 
   // Read down the ranked list until the quota is full. The spares below it are never fetched
   // unless something above them comes back empty, so carrying them costs nothing.
@@ -2146,7 +2151,6 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
                     + (worthReading(m.domain) ? 4 : 0)
                     + (fetchable(m) ? 2 : 0)
                     + (m.lane <= 1 ? 1 : 0);
-  const REAL_BODY = 400;   // same bar enrichWithBodies uses to call feed text a body
 
   const toRead = [];
   for (const st of stories.slice(0, TOP_STORIES)) {
@@ -2251,10 +2255,11 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
     // at news.google.com; handing one over produced a digest citing
     // "reuters.com/news/articles/CBMiuAF…" — the Google token with a publisher domain grafted
     // on. Unciteable and unread is nothing but a name, so it is left out.
-    const cite = (st.readable || [st.lead]).filter(m => fetchable(m) || (m.snippet || '').trim());
+    const hasBody = (m) => (m.snippet || '').trim().length > REAL_BODY;
+    const cite = (st.readable || [st.lead]).filter(m => fetchable(m) || hasBody(m));
     for (const m of cite) if (fetchable(m) && m.link) offeredUrls.add(m.link);
     const accounts = cite.map(m => {
-      const body = (m.snippet || '').trim();
+      const body = hasBody(m) ? (m.snippet || '').trim() : '';
       const url = fetchable(m) ? ` (${m.link})` : '';
       return body
         ? `  — ${m.source}${url}\n    ${body}`
@@ -2263,7 +2268,7 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
     // No "also carried by" line. It listed outlet names with no URLs beside them, and the
     // model turned those names into Coverage entries with invented links.
     const unread = '';
-    const anyBody = (st.readable || []).some(m => (m.snippet || '').trim());
+    const anyBody = (st.readable || []).some(hasBody);
     return `${label}[${i + 1}] ${st.lead.title}\nDate: ${st.lead.date || 'recent'}\n`
          + `Accounts from ${(st.readable || []).length} of ${st.outletCount} outlet(s):\n${accounts}${unread}`
          + (anyBody ? '' : '\n  [NO ARTICLE TEXT for this story — write only what the headlines above support, and omit Perspectives differ rather than inferring one.]');
@@ -2302,11 +2307,11 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
       }, {}),
       // Per STORY now, which is the number that matters: a story is readable if any of its
       // outlets gave us text, and only fully unreadable ones force a headline-only digest.
-      storiesRead: stories.slice(0, TOP_STORIES).filter(st => (st.readable || []).some(m => (m.snippet || '').trim())).length,
+      storiesRead: stories.slice(0, TOP_STORIES).filter(st => (st.readable || []).some(m => (m.snippet || '').trim().length > REAL_BODY)).length,
       storiesTried: Math.min(TOP_STORIES, stories.length),
       storiesWithMultipleAccounts: stories.slice(0, TOP_STORIES)
-        .filter(st => (st.readable || []).filter(m => (m.snippet || '').trim()).length >= 2).length,
-      headlineOnly: stories.slice(0, TOP_STORIES).filter(st => !(st.readable || []).some(m => (m.snippet || '').trim())).length,
+        .filter(st => (st.readable || []).filter(m => (m.snippet || '').trim().length > REAL_BODY).length >= 2).length,
+      headlineOnly: stories.slice(0, TOP_STORIES).filter(st => !(st.readable || []).some(m => (m.snippet || '').trim().length > REAL_BODY)).length,
       // Per-story retrieval state, so "we wrote this one from the headline alone" survives
       // the run instead of living only in a console line. Stored on the row by storeNews;
       // the model never sees this and cannot smooth it away.
@@ -2341,7 +2346,7 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
           accountsRead: read.length,
           bodyMissing: read.length === 0,
           reasons: [...new Set((st.readable || [])
-            .filter(m => !(m.snippet || '').trim())
+            .filter(m => (m.snippet || '').trim().length <= REAL_BODY)
             .map(m => m.bodyReason || 'unknown'))],
           // Every outlet we chose to read for this story, and what each one gave back.
           members: (st.readable || []).map(m => ({
