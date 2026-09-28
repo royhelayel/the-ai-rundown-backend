@@ -1612,6 +1612,7 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
   // unless something above them comes back empty, so carrying them costs nothing.
   const attempted = [];
   const filled = [];
+  const droppedNoBody = [];
   for (const st of shortlist) {
     if (filled.length >= TOP_STORIES) break;
     const byOutlet = new Map();
@@ -1629,7 +1630,7 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
       read = targets.filter(m => (m.snippet || '').length > REAL_BODY);
     }
     attempted.push(...targets);
-    if (!read.length) continue;                    // nothing readable — take the next candidate
+    if (!read.length) { droppedNoBody.push(st.lead.title); continue; }   // take the next candidate
     st.readable = read;
     // Citing is not reading: every outlet with a URL a reader can open is listed.
     st.citable = citable.filter(m => fetchable(m) || (m.snippet || '').trim());
@@ -1672,8 +1673,15 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
       candidates: candidates.length,
       shortlist: shortlist.length,
       storiesTried: filled.length,
+      // Every published story rests on at least one real article: the pool drops the others
+      // rather than writing them from a headline. fromArticle and fromHeadline are the two
+      // numbers Roy asked to see, and here the second is zero by construction.
       storiesRead: filled.length,
-      headlineOnly: 0,                       // a story with no body is never published now
+      fromArticle: filled.length,
+      fromHeadline: 0,
+      headlineOnly: 0,
+      droppedForNoBody: droppedNoBody.length,
+      droppedForNoBodyTitles: droppedNoBody.slice(0, 12),
       storiesWithMultipleAccounts: filled.filter(st => st.readable.length >= 2).length,
       readAttempts: attempted.length,
       bodiesObtained: attempted.filter(m => (m.snippet || '').length > REAL_BODY).length,
@@ -2320,6 +2328,8 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
       storiesWithMultipleAccounts: stories.slice(0, TOP_STORIES)
         .filter(st => (st.readable || []).filter(m => (m.snippet || '').trim().length > REAL_BODY).length >= 2).length,
       headlineOnly: stories.slice(0, TOP_STORIES).filter(st => !(st.readable || []).some(m => (m.snippet || '').trim().length > REAL_BODY)).length,
+      fromArticle: stories.slice(0, TOP_STORIES).filter(st => (st.readable || []).some(m => (m.snippet || '').trim().length > REAL_BODY)).length,
+      fromHeadline: stories.slice(0, TOP_STORIES).filter(st => !(st.readable || []).some(m => (m.snippet || '').trim().length > REAL_BODY)).length,
       // Per-story retrieval state, so "we wrote this one from the headline alone" survives
       // the run instead of living only in a console line. Stored on the row by storeNews;
       // the model never sees this and cannot smooth it away.
@@ -3273,6 +3283,10 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     if (retrievalStats && retrievalStats.storyRetrieval) {
       updatePayload.retrieval_stats = {
         headlineOnly:               retrievalStats.headlineOnly ?? null,
+        fromArticle:                retrievalStats.fromArticle ?? null,
+        fromHeadline:               retrievalStats.fromHeadline ?? null,
+        droppedForNoBody:           retrievalStats.droppedForNoBody ?? null,
+        retrievalPath:              retrievalStats.source || 'per-category',
         storiesRead:                retrievalStats.storiesRead ?? null,
         storiesTried:               retrievalStats.storiesTried ?? null,
         storiesWithMultipleAccounts: retrievalStats.storiesWithMultipleAccounts ?? null,
@@ -3536,11 +3550,19 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     runRetrievalTally.headlineOnly += retrievalStats.headlineOnly;
     runRetrievalTally.storiesRead  += retrievalStats.storiesRead  || 0;
     runRetrievalTally.storiesTried += retrievalStats.storiesTried || 0;
+    runRetrievalTally.fromArticle  = (runRetrievalTally.fromArticle  || 0) + (retrievalStats.fromArticle  || 0);
+    runRetrievalTally.fromHeadline = (runRetrievalTally.fromHeadline || 0) + (retrievalStats.fromHeadline || 0);
+    runRetrievalTally.droppedNoBody = (runRetrievalTally.droppedNoBody || 0) + (retrievalStats.droppedForNoBody || 0);
     runRetrievalTally.byCategory.push({
       category, language,
       headlineOnly: retrievalStats.headlineOnly,
+      fromArticle: retrievalStats.fromArticle ?? null,
+      fromHeadline: retrievalStats.fromHeadline ?? null,
       storiesTried: retrievalStats.storiesTried || 0,
     });
+    console.log(`📊 ${category}${language === 'ar' ? ' [AR]' : ''}: `
+      + `${retrievalStats.fromArticle ?? '?'} from articles, ${retrievalStats.fromHeadline ?? '?'} from headlines`
+      + (retrievalStats.droppedForNoBody ? `, ${retrievalStats.droppedForNoBody} dropped for having no article` : ''));
     if (retrievalStats.headlineOnly > 0) {
       const which = (retrievalStats.storyRetrieval || [])
         .filter(st => st.bodyMissing)
@@ -3800,8 +3822,9 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
       ({ error: updateErr } = await write(core));
     }
     if (updateErr && generationLogId) await supabaseAdmin.from('generation_logs').insert(payload);
-    console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${targetCategories.length} ok, `
-      + `${runRetrievalTally.headlineOnly} headline-only of ${runRetrievalTally.storiesTried} stories)`);
+    console.log(`📝 Generation log saved (${durationSeconds}s, ${totalSucceeded}/${targetCategories.length} ok) — `
+      + `${runRetrievalTally.fromArticle || 0} stories from articles, ${runRetrievalTally.fromHeadline || 0} from headlines, `
+      + `${runRetrievalTally.droppedNoBody || 0} dropped for having no article`);
   } catch (err) {
     console.warn(`Could not save generation log:`, err.message);
   }
