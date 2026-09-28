@@ -1946,6 +1946,30 @@ const GENERATE_STORIES_CONTENT = true;
 // Haiku 4.5 is $1.00 per million input and $5.00 per million output. The old constants said
 // $0.80 and $4.00 — the rates of an earlier model — so every figure in the back office was
 // about 20% low: a run that reported $1.47 had actually cost $1.82.
+// One writer for every usage row. Seven copies of this insert meant the language column —
+// which does not exist yet — failed seven different times and silently dropped the row, so a
+// run's cost vanished rather than being recorded imperfectly. Losing the language is
+// acceptable; losing the cost is not.
+let _usageHasLanguage = true;
+function trackUsage(row) {
+  const write = (body) => supabaseAdmin.from('api_usage').insert(body);
+  const body = _usageHasLanguage ? row : (({ language, ...rest }) => rest)(row);
+  write(body).then(({ error }) => {
+    if (!error) return;
+    if (error.message?.includes('language') || error.code === '42703') {
+      if (_usageHasLanguage) {
+        _usageHasLanguage = false;
+        console.warn(`⚠️  api_usage has no 'language' column — recording without it. Run in Supabase:\n  ALTER TABLE api_usage ADD COLUMN IF NOT EXISTS language text DEFAULT 'en';`);
+      }
+      const { language, ...rest } = row;
+      write(rest).then(({ error: e2 }) => { if (e2) console.warn('Could not track API usage:', e2.message); },
+                       e2 => console.warn('Could not track API usage:', e2.message));
+      return;
+    }
+    console.warn('Could not track API usage:', error.message);
+  }, err => console.warn('Could not track API usage:', err.message));
+}
+
 const CLAUDE_RATES = { input: 1.00 / 1_000_000, output: 5.00 / 1_000_000 };
 const claudeCost = (inTok = 0, outTok = 0, cacheWrite = 0, cacheRead = 0) =>
   inTok * CLAUDE_RATES.input
@@ -2280,15 +2304,13 @@ No Coverage lines and no Sources section in the cards.`;
     const { input_tokens, output_tokens } = data.usage;
     const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
     const estimated_cost_usd = token_cost_usd + serper_cost;
-    supabaseAdmin.from('api_usage').insert({
+    trackUsage({
       service: 'anthropic', model: 'claude-haiku-4-5-20251001',
       input_tokens, output_tokens,
       web_searches: serper_searches, search_cost_usd: serper_cost, token_cost_usd, estimated_cost_usd,
       category, time_slot: timeSlot, content_type: 'digest', language,
       created_at: new Date().toISOString()
-    }).then(({ error }) => {
-      if (error) console.warn('Could not track API usage:', error.message);
-    }, err => console.warn('Could not track API usage:', err.message));
+    });
   }
 
   const guarded = stripInventedLinks(summary, citableUrls);
@@ -2380,15 +2402,13 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
     const { input_tokens, output_tokens } = data.usage;
     const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
     const estimated_cost_usd = token_cost_usd + serper_cost;
-    supabaseAdmin.from('api_usage').insert({
+    trackUsage({
       service: 'anthropic', model: 'claude-haiku-4-5-20251001',
       input_tokens, output_tokens,
       web_searches: serper_searches, search_cost_usd: serper_cost, token_cost_usd, estimated_cost_usd,
       category, time_slot: 'Evening', content_type: 'digest', language,
       created_at: new Date().toISOString()
-    }).then(({ error }) => {
-      if (error) console.warn('Could not track API usage:', error.message);
-    }, err => console.warn('Could not track API usage:', err.message));
+    });
   }
 
   return { summary, cards, searchContext, sourceArticles, retrievalStats };
@@ -2430,15 +2450,13 @@ If every claim in the digest is grounded in the search results, return {"passed"
     if (data.usage) {
       const { input_tokens, output_tokens } = data.usage;
       const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-      supabaseAdmin.from('api_usage').insert({
+      trackUsage({
         service: 'anthropic', model: 'claude-haiku-4-5-20251001',
         input_tokens, output_tokens,
         web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
         category, time_slot: timeSlot, content_type: 'audit', language,
         created_at: new Date().toISOString()
-      }).then(({ error }) => {
-        if (error) console.warn('Could not track audit API usage:', error.message);
-      }, err => console.warn('Could not track audit API usage:', err.message));
+      });
     }
 
     return {
@@ -2552,15 +2570,13 @@ Rules: Cover the same stories as the digest, in the same order. Start immediatel
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
     const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-    supabaseAdmin.from('api_usage').insert({
+    trackUsage({
       service: 'anthropic', model: 'claude-haiku-4-5-20251001',
       input_tokens, output_tokens,
       web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
       category, time_slot: timeSlot, content_type: 'stories', language,
       created_at: new Date().toISOString()
-    }).then(({ error }) => {
-      if (error) console.warn('Could not track stories API usage:', error.message);
-    }, err => console.warn('Could not track stories API usage:', err.message));
+    });
   }
 
   return summary;
@@ -2607,12 +2623,12 @@ Rules: Flowing prose in one or two short paragraphs — not a list. NO headings,
   if (data.usage) {
     const { input_tokens, output_tokens } = data.usage;
     const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-    supabaseAdmin.from('api_usage').insert({
+    trackUsage({
       service: 'anthropic', model: 'claude-haiku-4-5-20251001',
       input_tokens, output_tokens,
       web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
       category, time_slot: timeSlot, content_type: 'briefing', language, created_at: new Date().toISOString()
-    }).then(({ error }) => { if (error) console.warn('Could not track briefing API usage:', error.message); }, () => {});
+    });
   }
 
   return text;
@@ -2747,13 +2763,13 @@ The ${spec.label} is over by the time anyone hears this. Write in the past tense
       if (data.usage) {
         const { input_tokens, output_tokens } = data.usage;
         const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-        supabaseAdmin.from('api_usage').insert({
+        trackUsage({
           service: 'anthropic', model: 'claude-haiku-4-5-20251001',
           input_tokens, output_tokens, web_searches: 0, search_cost_usd: 0,
           token_cost_usd, estimated_cost_usd: token_cost_usd,
           category, time_slot: period, content_type: 'period_recap', language,
           created_at: new Date().toISOString(),
-        }).then(({ error: e }) => { if (e) console.warn('Could not track period recap usage:', e.message); }, () => {});
+        });
       }
 
       // content and briefing both carry the prose: the reader renders `content`, the player
@@ -2887,16 +2903,14 @@ function cleanForTTS(text) {
 const TTS_RATE_PER_CHAR = 8.0 / 1_000_000;
 function trackTTSUsage(chars, { category = null, timeSlot = null, language = 'en', label = '' } = {}) {
   const cost = chars * TTS_RATE_PER_CHAR;
-  supabaseAdmin.from('api_usage').insert({
+  trackUsage({
     service: 'unrealspeech', model: process.env.UNREALSPEECH_VOICE_ID || 'Scarlett',
     input_tokens: chars, output_tokens: 0,
     web_searches: 0, search_cost_usd: 0,
     token_cost_usd: cost, estimated_cost_usd: cost,
     category, time_slot: timeSlot, content_type: 'tts', language,
     created_at: new Date().toISOString(),
-  }).then(({ error }) => {
-    if (error) console.warn('Could not track TTS usage:', error.message);
-  }, err => console.warn('Could not track TTS usage:', err.message));
+  });
 }
 
 // ── Unreal Speech TTS helper ──
