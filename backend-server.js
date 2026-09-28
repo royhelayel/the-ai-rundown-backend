@@ -1314,8 +1314,14 @@ async function embedBatch(texts) {
           break;
         }
         const d = await r.json();
-        const byIndex = new Map((d.data || []).map(x => [x.index, x.embedding]));
+        // Take them in the order they came back. Keying on an `index` field returned nothing
+        // when the field was absent, and a whole pool embedded to null without one error.
+        const rows = d.data || [];
+        const byIndex = new Map(rows.map((x, k) => [Number.isInteger(x.index) ? x.index : k, x.embedding]));
         got = chunk.map((_, j) => byIndex.get(j) || null);
+        if (!got.some(Boolean) && rows.length) {
+          console.warn(`⚠️  voyage returned ${rows.length} rows for ${chunk.length} inputs but none matched — keys: ${Object.keys(rows[0] || {}).join(',')}`);
+        }
       } catch (e) {
         errors[e.name === 'TimeoutError' ? 'timeout' : 'error'] = (errors[e.name === 'TimeoutError' ? 'timeout' : 'error'] || 0) + 1;
       }
@@ -4621,6 +4627,8 @@ app.get('/admin/api/embed-probe', async (req, res) => {
       ok: r.ok,
       vectors: parsed?.data?.length ?? 0,
       dims: parsed?.data?.[0]?.embedding?.length ?? 0,
+      rowKeys: parsed?.data?.[0] ? Object.keys(parsed.data[0]) : [],
+      firstIndex: parsed?.data?.[0]?.index ?? null,
       error: parsed?.detail || parsed?.error || (r.ok ? null : body.slice(0, 300)),
     });
   } catch (e) { res.json({ keySet, threw: e.name, message: e.message }); }
