@@ -49,7 +49,7 @@ const TIME_SLOTS = [
 
 // === Authentication & Email Imports ===
 import { createClient } from '@supabase/supabase-js';
-import { TIER1_SOURCES, GOOGLE_SECTIONS, sourcesFor, mayFetchBody, sourceForUrl, isPaywalledDomain, worthReading, relatedCategories, belongsToChild } from './tier1-sources.js';
+import { TIER1_SOURCES, GOOGLE_SECTIONS, sourcesFor, mayFetchBody, sourceForUrl, isPaywalledDomain, worthReading, relatedCategories, belongsToChild, ourCategoriesFor, categoriesFromFeedUrl, TOPICAL_CATEGORIES, parentOf, childrenOf } from './tier1-sources.js';
 import { Resend } from 'resend';
 
 // === Initialize Supabase Admin Client ===
@@ -1261,6 +1261,338 @@ async function fetchArticleBody(url) {
   } catch { return { text: null, reason: 'fetch-failed' }; }
 }
 
+// ══ The shared pool ═══════════════════════════════════════════════════════
+// Every category used to build its own pool from its own sources. That made 154 requests
+// against a registry holding 64 distinct feeds, and it meant an outlet only reached a
+// category if someone had typed that category into its registry entry — which is why
+// Football had three outlets while eight more cover football under Sports.
+//
+// Now: fetch everything once, let each publisher's own label say what a story is about, and
+// let a category be a filter over the result. Regional categories are not in here — no
+// outlet files a story under "LEB", that is a property of the outlet — so those keep the
+// per-category path below.
+
+// A link a reader — or our fetcher — can actually open. Lane 2 and 3 links point at
+// news.google.com and resolve to nothing, so they are citable to nobody.
+const fetchable = (m) => {
+  try {
+    const h = new URL(m.link).hostname.replace(/^www\./, '');
+    return !(h === 'news.google.com' || h.endsWith('.google.com'));
+  } catch { return false; }
+};
+
+const POOL_EMBED_MODEL = 'voyage-3-lite';
+const POOL_EMBED_BATCH = 128;
+const POOL_SIM_THRESHOLD = 0.80;     // cosine, above which two articles are one story
+const POOL_LABEL_SUPPORT = 2;        // outlets that must agree before a category sticks
+
+let _pool = { key: null, at: 0, data: null, building: null };
+
+async function embedBatch(texts) {
+  if (!process.env.VOYAGE_API_KEY) return texts.map(() => null);
+  const out = [];
+  for (let i = 0; i < texts.length; i += POOL_EMBED_BATCH) {
+    const chunk = texts.slice(i, i + POOL_EMBED_BATCH);
+    try {
+      const r = await fetch('https://api.voyageai.com/v1/embeddings', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: chunk, model: POOL_EMBED_MODEL }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!r.ok) { out.push(...chunk.map(() => null)); continue; }
+      const d = await r.json();
+      const byIndex = new Map((d.data || []).map(x => [x.index, x.embedding]));
+      chunk.forEach((_, j) => out.push(byIndex.get(j) || null));
+    } catch { out.push(...chunk.map(() => null)); }
+  }
+  return out;
+}
+
+const cosine = (a, b) => {
+  if (!a || !b) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot;                        // voyage returns unit vectors, so this is the cosine
+};
+
+// Greedy clustering against each cluster's first member. Word overlap could not tell that
+// "OpenAI went rogue and meddled with US government websites" and "OpenAI agents tried to
+// bruteforce a UN website" were one story — they share one significant word. Meaning can.
+function groupByEmbedding(articles) {
+  const stories = [];
+  for (const a of articles) {
+    if (!a.embedding) {              // no vector: fall back to the token test rather than drop it
+      const toks = new Set(sigTokens(a.title));
+      const hit = stories.find(st => [...toks].filter(t => st.tokens?.has(t)).length >= 3);
+      if (hit) { hit.members.push(a); toks.forEach(t => hit.tokens.add(t)); continue; }
+      stories.push({ lead: a, members: [a], tokens: toks, embedding: null });
+      continue;
+    }
+    let best = null, bestSim = 0;
+    for (const st of stories) {
+      if (!st.embedding) continue;
+      const sim = cosine(a.embedding, st.embedding);
+      if (sim > bestSim) { bestSim = sim; best = st; }
+    }
+    if (best && bestSim >= POOL_SIM_THRESHOLD) best.members.push(a);
+    else stories.push({ lead: a, members: [a], tokens: new Set(sigTokens(a.title)), embedding: a.embedding });
+  }
+  return stories;
+}
+
+// What each outlet called this story, mapped onto our categories. A label needs backing from
+// more than one outlet before it opens a feed slot, so one idiosyncratic filing cannot.
+function assignCategories(story) {
+  const votes = new Map();
+  for (const m of story.members) {
+    const labels = new Set([...(m.feedCategories || []), ...(m.outletCategories || []).flatMap(ourCategoriesFor)]);
+    for (const c of labels) votes.set(c, (votes.get(c) || 0) + 1);
+  }
+  const need = Math.min(POOL_LABEL_SUPPORT, story.members.length);
+  const kept = [...votes.entries()].filter(([, n]) => n >= need).map(([c]) => c);
+  // A single-outlet story would otherwise never qualify; take its own word for it.
+  if (!kept.length && votes.size) kept.push([...votes.entries()].sort((a, b) => b[1] - a[1])[0][0]);
+  // A child implies its parent: a football story is a sports story.
+  const withParents = new Set(kept);
+  for (const c of kept) { const p = parentOf(c); if (p) withParents.add(p); }
+  return [...withParents];
+}
+
+async function buildSharedPool(day, language, timeSlot) {
+  const t0 = Date.now();
+  const jobs = [];
+  const seenFeed = new Set();
+
+  // Every feed in the registry once, remembering which of our categories it announces.
+  for (const src of TIER1_SOURCES.filter(x => x.lang === language)) {
+    for (const [ourCat, feed] of Object.entries(src.cats || {})) {
+      if (!feed || seenFeed.has(feed)) continue;
+      seenFeed.add(feed);
+      const declared = [...new Set([ourCat, ...categoriesFromFeedUrl(feed)])].filter(c => TOPICAL_CATEGORIES.includes(c));
+      jobs.push(fetchFeedItems(feed, src.name, src.domain)
+        .then(items => items.map(i => ({ ...i, lane: 1, feedCategories: declared }))));
+    }
+  }
+  const raw = (await Promise.all(jobs)).flat();
+
+  const cutoff = Date.now() - (CORPUS_WINDOW_HOURS[timeSlot] || 24) * 3600 * 1000;
+  let droppedStale = 0, droppedOffLang = 0, droppedUnlabelled = 0;
+  const kept = [];
+  for (const a of raw) {
+    if (!isArticleFresh(a.date) || (a.publishedAt && a.publishedAt < cutoff)) { droppedStale++; continue; }
+    const isAr = /[\u0600-\u06FF]/.test(a.title || '');
+    if (language === 'ar' ? !isAr : isAr) { droppedOffLang++; continue; }
+    const labels = [...(a.feedCategories || []), ...(a.outletCategories || []).flatMap(ourCategoriesFor)];
+    if (!labels.length) { droppedUnlabelled++; continue; }   // nothing to file it under
+    kept.push(a);
+  }
+
+  // Same article via two feeds is one row.
+  const seen = new Map();
+  for (const a of kept) {
+    const key = (a.title || '').toLowerCase().replace(/[^a-z0-9\u0600-\u06FF]+/g, '').slice(0, 70);
+    if (!key) continue;
+    const first = seen.get(key);
+    if (first) {
+      first.feedCategories = [...new Set([...(first.feedCategories || []), ...(a.feedCategories || [])])];
+      if (a.link !== first.link) (first.variants = first.variants || []).push({ link: a.link, source: a.source, domain: a.domain });
+      continue;
+    }
+    seen.set(key, { ...a, variants: [] });
+  }
+  const articles = [...seen.values()];
+
+  const vecs = await embedBatch(articles.map(a => `${a.title}. ${(a.snippet || '').slice(0, 180)}`));
+  articles.forEach((a, i) => { a.embedding = vecs[i]; });
+  const embedded = vecs.filter(Boolean).length;
+
+  const stories = groupByEmbedding(articles);
+  for (const st of stories) {
+    st.outlets = [...new Set(st.members.filter(m => !isPaywalledDomain(m.domain)).map(m => m.source).filter(Boolean))];
+    st.outletCount = st.outlets.length;
+    st.publishedAt = Math.max(...st.members.map(m => m.publishedAt || 0));
+    st.categories = assignCategories(st);
+  }
+
+  const byCategory = {};
+  for (const c of TOPICAL_CATEGORIES) {
+    byCategory[c] = stories
+      .filter(st => st.categories.includes(c) && st.outletCount > 0)
+      .sort((a, b) => (b.outletCount - a.outletCount) || (b.publishedAt - a.publishedAt));
+  }
+
+  const stats = {
+    feeds: seenFeed.size, raw: raw.length, kept: kept.length, articles: articles.length,
+    droppedStale, droppedOffLang, droppedUnlabelled,
+    stories: stories.length, embedded, embedCoverage: articles.length ? Math.round(100 * embedded / articles.length) : 0,
+    perCategory: Object.fromEntries(Object.entries(byCategory).map(([c, v]) => [c, v.length])),
+    ms: Date.now() - t0,
+  };
+  console.log(`🗂️  shared pool [${language}] ${stats.feeds} feeds → ${stats.raw} raw → ${stats.articles} unique → `
+    + `${stats.stories} stories (${stats.embedCoverage}% embedded) in ${Math.round(stats.ms / 1000)}s`);
+  return { byCategory, stories, stats };
+}
+
+// One pool per run, shared by every category that asks for it.
+async function getSharedPool(day, language, timeSlot) {
+  const key = `${day}|${language}|${timeSlot}`;
+  if (_pool.key === key && _pool.data && Date.now() - _pool.at < 45 * 60 * 1000) return _pool.data;
+  if (_pool.building && _pool.key === key) return _pool.building;
+  _pool.key = key;
+  _pool.building = buildSharedPool(day, language, timeSlot)
+    .then(d => { _pool.data = d; _pool.at = Date.now(); _pool.building = null; return d; })
+    .catch(e => { _pool.building = null; _pool.key = null; throw e; });
+  return _pool.building;
+}
+
+const isSharedPoolEnabled = () => isSettingEnabled('shared_pool_enabled', false);
+
+// Which of these parent-category stories actually belong to the child? Keyword rules put
+// tennis in the football feed; a model reads the headline. Run only on the ranked candidates
+// for the child — about forty headlines — rather than on the whole pool, so it costs cents.
+async function subjectFilter(child, stories) {
+  if (!stories.length) return [];
+  const listed = stories.map((st, i) => `${i + 1}. ${st.lead.title}`).join('\n');
+  const prompt = `Which of these headlines are about ${child}?\n\n${listed}\n\n`
+    + `Reply with ONLY the numbers that are genuinely about ${child}, comma-separated, no other text. `
+    + `If none are, reply NONE. Be strict: a headline about a different sport, or about a company that merely also works in this area, is not about ${child}.`;
+  try {
+    const data = await callClaude(prompt, 300);
+    const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
+    if (data.usage) {
+      const { input_tokens, output_tokens } = data.usage;
+      const cost = claudeCost(input_tokens, output_tokens);
+      trackUsage({ service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+        input_tokens, output_tokens, web_searches: 0, search_cost_usd: 0,
+        token_cost_usd: cost, estimated_cost_usd: cost,
+        category: child, time_slot: null, content_type: 'subject_filter', language: 'en',
+        created_at: new Date().toISOString() });
+    }
+    if (/^NONE/i.test(raw)) return [];
+    const picks = new Set((raw.match(/\d+/g) || []).map(Number));
+    return stories.filter((_, i) => picks.has(i + 1));
+  } catch (e) {
+    console.warn(`subject filter failed for ${child} — using keywords instead:`, e.message);
+    return stories.filter(st => belongsToChild(child, st.lead.title, st.lead.outletCategories));
+  }
+}
+
+async function contextFromSharedPool(category, day, language, timeSlot) {
+  const TOP_STORIES = 12, PER_STORY = 3, OVERSHOOT = 18;
+  const pool = await getSharedPool(day, language, timeSlot);
+
+  let candidates = [...(pool.byCategory[category] || [])];
+
+  // A child category also looks at its parent's stories. Almost no outlet has a Football
+  // label; most have Sports, and the football stories are in there.
+  const parent = parentOf(category);
+  if (parent) {
+    const have = new Set(candidates);
+    const fromParent = (pool.byCategory[parent] || []).filter(st => !have.has(st)).slice(0, 40);
+    const belong = await subjectFilter(category, fromParent);
+    candidates = [...candidates, ...belong]
+      .sort((a, b) => (b.outletCount - a.outletCount) || (b.publishedAt - a.publishedAt));
+  }
+
+  const shortlist = candidates.slice(0, OVERSHOOT);
+  const rank = (m) => ((m.snippet || '').length > 400 ? 8 : 0)
+                    + (worthReading(m.domain) ? 4 : 0)
+                    + (fetchable(m) ? 2 : 0) + (m.lane <= 1 ? 1 : 0);
+  const REAL_BODY = 400;
+
+  // Read down the ranked list until the quota is full. The spares below it are never fetched
+  // unless something above them comes back empty, so carrying them costs nothing.
+  const attempted = [];
+  const filled = [];
+  for (const st of shortlist) {
+    if (filled.length >= TOP_STORIES) break;
+    const byOutlet = new Map();
+    for (const m of [...st.members].sort((x, y) => rank(y) - rank(x))) {
+      if (!isPaywalledDomain(m.domain) && !byOutlet.has(m.source)) byOutlet.set(m.source, m);
+    }
+    const citable = [...byOutlet.values()];
+    const targets = citable.filter(m => worthReading(m.domain)).slice(0, PER_STORY);
+    for (const a of citable) a.ingestLen = (a.snippet || '').trim().length;
+    await enrichWithBodies(targets, targets.length);
+    let read = targets.filter(m => (m.snippet || '').length > REAL_BODY);
+    if (!read.length) {
+      const stillEmpty = targets.filter(m => m.bodySource === 'none' || m.bodySource === 'not-attempted');
+      if (stillEmpty.length && await isLaneFiveEnabled()) await enrichViaLaneFive(stillEmpty, PER_STORY);
+      read = targets.filter(m => (m.snippet || '').length > REAL_BODY);
+    }
+    attempted.push(...targets);
+    if (!read.length) continue;                    // nothing readable — take the next candidate
+    st.readable = read;
+    // Citing is not reading: every outlet with a URL a reader can open is listed.
+    st.citable = citable.filter(m => fetchable(m) || (m.snippet || '').trim());
+    filled.push(st);
+  }
+
+  const offeredUrls = new Set();
+  const storyBlocks = filled.map((st, i) => {
+    const label = st.outletCount >= 4 ? `[${st.outletCount} OUTLETS — MAJOR STORY] `
+                : st.outletCount >= 2 ? `[${st.outletCount} OUTLETS] ` : '';
+    const accounts = st.readable.map(m => `  — ${m.source} (${m.link})\n    ${(m.snippet || '').trim()}`).join('\n');
+    for (const m of st.readable) if (fetchable(m) && m.link) offeredUrls.add(m.link);
+    const others = st.citable.filter(m => !st.readable.includes(m) && fetchable(m) && m.link);
+    for (const m of others) offeredUrls.add(m.link);
+    const alsoCite = others.length
+      ? `\nAlso carried this story, cite them too:\n${others.map(m => `  — ${m.source} (${m.link})`).join('\n')}`
+      : '';
+    const compare = st.readable.length >= 2
+      ? ''
+      : `\n  [ONE ACCOUNT ONLY — do not write Perspectives differ for this story; say how widely it was carried instead.]`;
+    return `${label}[${i + 1}] ${st.lead.title}\nDate: ${st.lead.date || 'recent'}\n`
+         + `Accounts from ${st.readable.length} of ${st.outletCount} outlet(s):\n${accounts}${alsoCite}${compare}`;
+  });
+
+  const articlesOut = filled.map(st => ({
+    title: st.lead.title, source: st.lead.source, date: st.lead.date, url: st.lead.link,
+    snippet: st.lead.snippet, lane: st.lead.lane, outletCount: st.outletCount,
+    domain: st.lead.domain, storyOutlets: st.outlets, memberCount: st.members.length,
+    bodySource: st.lead.bodySource || 'not-attempted', bodyFrom: st.lead.bodyFrom || null,
+    bodyReason: st.lead.bodyReason || null,
+  }));
+
+  return {
+    context: storyBlocks.join('\n\n'),
+    offeredUrls: [...offeredUrls],
+    articles: articlesOut,
+    stats: {
+      source: 'shared-pool',
+      pool: pool.stats,
+      candidates: candidates.length,
+      shortlist: shortlist.length,
+      storiesTried: filled.length,
+      storiesRead: filled.length,
+      headlineOnly: 0,                       // a story with no body is never published now
+      storiesWithMultipleAccounts: filled.filter(st => st.readable.length >= 2).length,
+      readAttempts: attempted.length,
+      bodiesObtained: attempted.filter(m => (m.snippet || '').length > REAL_BODY).length,
+      medianOutletsCited: (() => {
+        const l = filled.map(st => st.citable.length).sort((a, b) => a - b);
+        return l.length ? l[Math.floor(l.length / 2)] : 0;
+      })(),
+      lane5: { ...lane5Tally },
+      storyRetrieval: filled.map((st, i) => ({
+        rank: i + 1, headline: st.lead.title, outlets: st.outlets, outletCount: st.outletCount,
+        accountsRead: st.readable.length, bodyMissing: false, reasons: [],
+        members: st.readable.map(m => ({
+          source: m.source, domain: m.domain, lane: m.lane, url: m.link,
+          ingestChars: m.ingestLen ?? null, bodySource: m.bodySource || 'not-attempted',
+          bodyFrom: m.bodyFrom || null, bodyReason: m.bodyReason || null,
+          finalChars: (m.snippet || '').length, lane5Filled: m.lane5Filled || null,
+        })),
+        alsoCarriedBy: st.citable.filter(m => !st.readable.includes(m)).map(m => m.source),
+        contextBlock: storyBlocks[i] || null,
+      })),
+    },
+  };
+}
+
+
+
 // ── Lane 5 — Anthropic's fetcher, for pages our own cannot open ───────────
 // Our fetcher identifies as RadioNewsBot/1.0 and Forbes answers it with 403 every time —
 // ten of AI's twelve stories died on exactly that. Anthropic's server-side web_fetch is a
@@ -1482,6 +1814,17 @@ const CORPUS_WINDOW_HOURS = { Morning: 24, Evening: 14 };
 // the same allowlist gate lane 3 goes through and it becomes a discovery funnel: good at
 // finding, not trusted to choose.
 async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Morning', withSerper = true) {
+  if (TOPICAL_CATEGORIES.includes(category) && await isSharedPoolEnabled()) {
+    try {
+      return await contextFromSharedPool(category, day, language, timeSlot);
+    } catch (e) {
+      console.warn(`🗂️  ${category}: shared pool failed (${e.message}) — falling back to the per-category path`);
+    }
+  }
+  return buildCorpusContextPerCategory(category, day, language, timeSlot, withSerper);
+}
+
+async function buildCorpusContextPerCategory(category, day, language = 'en', timeSlot = 'Morning', withSerper = true) {
   // ── Who to ask, widened by the category tree ─────────────────────────────
   // The registry was too literal: Football had three outlets because only three had a
   // 'Football' key, while eight more cover football under 'Sports'. So a category also reads
@@ -1702,12 +2045,6 @@ async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Mo
   // which put lane 1 first and lane 4 last — meant the only fetchable articles in a story
   // were the ones cut by the PER_STORY limit. Measured on Lebanon: Serper contributed 12
   // articles with real publisher URLs and not one of them was chosen to read.
-  const fetchable = (m) => {
-    try {
-      const h = new URL(m.link).hostname.replace(/^www\./, '');
-      return !(h === 'news.google.com' || h.endsWith('.google.com'));
-    } catch { return false; }
-  };
   // Prose already in hand first, then an outlet we are actually permitted to read, then an
   // openable URL, then lane. worthReading outranks fetchable because a Bloomberg link is
   // perfectly openable and still certain to fail.
@@ -4234,6 +4571,32 @@ app.get('/admin/api/retrieval/status', async (req, res) => {
     res.json({ enabled: await isCorpusRetrievalEnabled(), persisted: !appSettingsTableMissing });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
+app.get('/admin/api/pool/status', async (req, res) => {
+  try { res.json({ enabled: await isSharedPoolEnabled() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/admin/api/pool/toggle', async (req, res) => {
+  try {
+    const enabled = req.body?.enabled !== false;
+    await setSettingEnabled('shared_pool_enabled', enabled);
+    res.json({ enabled });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Build the pool and report what it found, without generating anything.
+app.get('/admin/api/pool', async (req, res) => {
+  try {
+    const language = req.query.language === 'ar' ? 'ar' : 'en';
+    const timeSlot = req.query.timeSlot === 'Evening' ? 'Evening' : 'Morning';
+    const day = req.query.day || getTodayDate();
+    const pool = await getSharedPool(day, language, timeSlot);
+    res.json({ day, language, timeSlot, ...pool.stats,
+      sample: Object.fromEntries(Object.entries(pool.byCategory).map(([c, v]) => [c,
+        v.slice(0, 3).map(st => ({ outlets: st.outletCount, headline: st.lead.title.slice(0, 80) }))])) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/admin/api/lane5/status', async (req, res) => {
   try { res.json({ enabled: await isLaneFiveEnabled() }); }
   catch (e) { res.status(500).json({ error: e.message }); }

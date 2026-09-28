@@ -338,3 +338,60 @@ export function belongsToChild(child, title, outletCategories = []) {
   if (re.test(title || '')) return true;
   return (outletCategories || []).some(c => re.test(c));
 }
+
+// ── The publisher's own label, mapped onto ours ────────────────────────────
+// An outlet has already decided what a story is about. That judgement is free, more
+// authoritative than anything we can infer, and it arrives two ways: the section of the feed
+// the item came from, and the <category> tags on the item itself.
+//
+// Regional categories are deliberately absent. No outlet files a story under "LEB" — that is
+// a property of the outlet, not of the story — so those stay registry-driven.
+const LABEL_SYNONYMS = {
+  'World News':    ['world', 'world news', 'international', 'global', 'news/world', 'middle east', 'europe', 'asia', 'africa', 'americas'],
+  'Politics':      ['politics', 'us politics', 'uk politics', 'political', 'government', 'election', 'elections', 'policy'],
+  'Business':      ['business', 'economy', 'economics', 'money', 'markets', 'market', 'finance', 'financial', 'companies', 'industry', 'trade'],
+  'Technology':    ['tech', 'technology', 'gadgets', 'computing', 'software', 'internet', 'cybersecurity', 'security'],
+  'Science':       ['science', 'space', 'environment', 'climate', 'research', 'nature', 'physics', 'biology', 'astronomy'],
+  'Health':        ['health', 'wellness', 'medicine', 'medical', 'healthcare', 'fitness', 'wellbeing'],
+  'Sports':        ['sport', 'sports', 'athletics', 'olympics'],
+  'Entertainment': ['entertainment', 'culture', 'arts', 'film', 'movies', 'music', 'tv', 'television', 'celebrity', 'media', 'books', 'lifestyle'],
+  'Football':      ['football', 'soccer', 'premier league', 'champions league', 'la liga', 'serie a', 'bundesliga'],
+  'Basketball':    ['basketball', 'nba', 'wnba'],
+  'AI':            ['ai', 'artificial intelligence', 'artificial-intelligence', 'machine learning'],
+  'Crypto':        ['crypto', 'cryptocurrency', 'bitcoin', 'blockchain', 'web3', 'digital assets'],
+};
+
+const LABEL_LOOKUP = (() => {
+  const m = new Map();
+  for (const [ours, theirs] of Object.entries(LABEL_SYNONYMS)) for (const t of theirs) m.set(t, ours);
+  return m;
+})();
+
+// Every one of our categories this label could mean. A label can map to nothing, which is the
+// common case and not a problem — the story still has its other outlets' labels to go on.
+export function ourCategoriesFor(label) {
+  if (!label) return [];
+  const clean = String(label).toLowerCase().replace(/[_+]/g, ' ').replace(/\s+/g, ' ').trim();
+  const hits = new Set();
+  if (LABEL_LOOKUP.has(clean)) hits.add(LABEL_LOOKUP.get(clean));
+  // a path like "sport/basketball" or "news/world" carries its section in a segment
+  for (const seg of clean.split(/[\/>|,·–—-]/).map(x => x.trim()).filter(Boolean)) {
+    if (LABEL_LOOKUP.has(seg)) hits.add(LABEL_LOOKUP.get(seg));
+  }
+  return [...hits];
+}
+
+// Which of our categories a feed URL is announcing, read from its path.
+export function categoriesFromFeedUrl(url) {
+  if (!url) return [];
+  try {
+    const path = new URL(url).pathname.toLowerCase();
+    const hits = new Set();
+    for (const seg of path.split(/[\/._-]/).filter(x => x.length > 2)) {
+      if (LABEL_LOOKUP.has(seg)) hits.add(LABEL_LOOKUP.get(seg));
+    }
+    return [...hits];
+  } catch { return []; }
+}
+
+export const TOPICAL_CATEGORIES = Object.keys(LABEL_SYNONYMS);
