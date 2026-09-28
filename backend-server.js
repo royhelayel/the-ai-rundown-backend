@@ -1294,7 +1294,9 @@ let _pool = { key: null, at: 0, data: null, building: null };
 
 // Batches are retried and failures are named. The first version swallowed them and reported
 // 27% coverage with no clue why — the same silent catch that once made lane 4 look inert.
+let lastEmbedErrors = null, lastEmbedBody = '';
 async function embedBatch(texts) {
+  lastEmbedBody = '';
   if (!process.env.VOYAGE_API_KEY) { console.warn('⚠️  VOYAGE_API_KEY not set — grouping falls back to word overlap'); return texts.map(() => null); }
   const out = [];
   const errors = {};
@@ -1321,6 +1323,7 @@ async function embedBatch(texts) {
         });
         if (!r.ok) {
           const body = await r.text().catch(() => '');
+          lastEmbedBody = body;
           errors[`http-${r.status}`] = (errors[`http-${r.status}`] || 0) + 1;
           if (r.status === 429 || r.status >= 500) continue;      // worth another go
           console.warn(`⚠️  voyage ${r.status}: ${body.slice(0, 160)}`);
@@ -1336,6 +1339,7 @@ async function embedBatch(texts) {
           console.warn(`⚠️  voyage returned ${rows.length} rows for ${chunk.length} inputs but none matched — keys: ${Object.keys(rows[0] || {}).join(',')}`);
         }
       } catch (e) {
+        lastEmbedBody = `${e.name}: ${e.message}`;
         errors[e.name === 'TimeoutError' ? 'timeout' : 'error'] = (errors[e.name === 'TimeoutError' ? 'timeout' : 'error'] || 0) + 1;
       }
     }
@@ -1343,6 +1347,7 @@ async function embedBatch(texts) {
     if (chunks.length > 1) await new Promise(r => setTimeout(r, 21000));   // requests per minute, not inputs
   }
   if (Object.keys(errors).length) console.warn('⚠️  voyage batch errors:', JSON.stringify(errors));
+  lastEmbedErrors = { ...errors, batches: chunks.length, inputs: texts.length, sample: lastEmbedBody.slice(0, 220) };
   return out;
 }
 
@@ -1463,6 +1468,7 @@ async function buildSharedPool(day, language, timeSlot) {
     feeds: seenFeed.size, raw: raw.length, kept: kept.length, articles: articles.length,
     droppedStale, droppedOffLang, droppedUnlabelled,
     stories: stories.length, embedded, embedCoverage: articles.length ? Math.round(100 * embedded / articles.length) : 0,
+    embedErrors: lastEmbedErrors,
     perCategory: Object.fromEntries(Object.entries(byCategory).map(([c, v]) => [c, v.length])),
     ms: Date.now() - t0,
   };
