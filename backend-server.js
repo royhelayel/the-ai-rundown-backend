@@ -1288,24 +1288,42 @@ const POOL_LABEL_SUPPORT = 2;        // outlets that must agree before a categor
 
 let _pool = { key: null, at: 0, data: null, building: null };
 
+// Batches are retried and failures are named. The first version swallowed them and reported
+// 27% coverage with no clue why — the same silent catch that once made lane 4 look inert.
 async function embedBatch(texts) {
-  if (!process.env.VOYAGE_API_KEY) return texts.map(() => null);
+  if (!process.env.VOYAGE_API_KEY) { console.warn('⚠️  VOYAGE_API_KEY not set — grouping falls back to word overlap'); return texts.map(() => null); }
   const out = [];
+  const errors = {};
   for (let i = 0; i < texts.length; i += POOL_EMBED_BATCH) {
     const chunk = texts.slice(i, i + POOL_EMBED_BATCH);
-    try {
-      const r = await fetch('https://api.voyageai.com/v1/embeddings', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: chunk, model: POOL_EMBED_MODEL }),
-        signal: AbortSignal.timeout(30000),
-      });
-      if (!r.ok) { out.push(...chunk.map(() => null)); continue; }
-      const d = await r.json();
-      const byIndex = new Map((d.data || []).map(x => [x.index, x.embedding]));
-      chunk.forEach((_, j) => out.push(byIndex.get(j) || null));
-    } catch { out.push(...chunk.map(() => null)); }
+    let got = null;
+    for (let attempt = 0; attempt < 3 && !got; attempt++) {
+      if (attempt) await new Promise(r => setTimeout(r, 1200 * attempt));
+      try {
+        const r = await fetch('https://api.voyageai.com/v1/embeddings', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: chunk, model: POOL_EMBED_MODEL }),
+          signal: AbortSignal.timeout(45000),
+        });
+        if (!r.ok) {
+          const body = await r.text().catch(() => '');
+          errors[`http-${r.status}`] = (errors[`http-${r.status}`] || 0) + 1;
+          if (r.status === 429 || r.status >= 500) continue;      // worth another go
+          console.warn(`⚠️  voyage ${r.status}: ${body.slice(0, 160)}`);
+          break;
+        }
+        const d = await r.json();
+        const byIndex = new Map((d.data || []).map(x => [x.index, x.embedding]));
+        got = chunk.map((_, j) => byIndex.get(j) || null);
+      } catch (e) {
+        errors[e.name === 'TimeoutError' ? 'timeout' : 'error'] = (errors[e.name === 'TimeoutError' ? 'timeout' : 'error'] || 0) + 1;
+      }
+    }
+    out.push(...(got || chunk.map(() => null)));
+    await new Promise(r => setTimeout(r, 250));                   // stay under the rate limit
   }
+  if (Object.keys(errors).length) console.warn('⚠️  voyage batch errors:', JSON.stringify(errors));
   return out;
 }
 
