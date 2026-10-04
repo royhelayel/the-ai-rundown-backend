@@ -43,13 +43,32 @@ jobs:
         if: steps.slot.outputs.slot != ''
         run: |
           SLOT="${{ steps.slot.outputs.slot }}"
-          STATUS=$(curl -s --max-time 20 "${{ secrets.BACKEND_URL }}/api/generation-status?slot=$SLOT")
+          # A slow reply is not a missed run. The status call used to time out at 20s under
+          # bash -e, so curl's exit 28 failed the whole job and emailed a failure that said
+          # nothing about what was wrong — while the real fault (an empty Anthropic balance)
+          # went unreported for six days.
+          STATUS=$(curl -s --max-time 60 --retry 2 --retry-delay 10 \
+            "${{ secrets.BACKEND_URL }}/api/generation-status?slot=$SLOT" || true)
           echo "Status: $STATUS"
+          if [ -z "$STATUS" ]; then
+            echo "::warning::No reply from the backend within 60s — it is probably mid-generation. Leaving this tick alone."
+            exit 0
+          fi
           STARTED=$(echo "$STATUS" | grep -o '"started":[a-z]*' | cut -d: -f2)
           GEN_ENABLED=$(echo "$STATUS" | grep -o '"generationEnabled":[a-z]*' | cut -d: -f2)
+          SUCCEEDED=$(echo "$STATUS" | grep -o '"succeededCount":[0-9]*' | cut -d: -f2)
+          TOTAL=$(echo "$STATUS" | grep -o '"totalCount":[0-9]*' | cut -d: -f2)
 
           if [ "$GEN_ENABLED" = "false" ]; then
             echo "Generation is paused from the admin dashboard — leaving it alone."
+          elif [ "$STARTED" = "true" ] && [ "${SUCCEEDED:-1}" = "0" ] && [ "${TOTAL:-0}" != "0" ]; then
+            # Started and produced nothing. The watchdog only ever looked at whether a run
+            # began, so six days of 0-of-16 runs looked healthy to it. Re-triggering will not
+            # help — something is failing every category — so say so instead.
+            echo "::error::$SLOT generation ran but produced 0 of $TOTAL categories. Re-running will not fix this."
+            echo "Most common cause: the Anthropic credit balance is empty. Check Plans & Billing."
+            echo "Then: curl -X POST -H 'Content-Type: application/json' -d '{\"language\":\"en\"}' \$BACKEND_URL/api/generate/$SLOT"
+            exit 1
           elif [ "$STARTED" = "false" ]; then
             echo "$SLOT generation never started today — triggering it now."
             curl -s --max-time 60 --retry 3 --retry-delay 15 --retry-connrefused \
