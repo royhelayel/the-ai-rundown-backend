@@ -1586,8 +1586,122 @@ async function subjectFilter(child, stories) {
   }
 }
 
+// ══ Reading, shared by both retrieval paths ═══════════════════════════════
+// Both paths used to read differently. The regional one read its top twelve, kept whatever
+// came back — a login form counted — and then handed the writer every grouped story in the
+// pool, hundreds of them headline-only. The pool path dropped unreadable stories but kept no
+// spares. One reader now: read down the ranked list until there are enough stories with real
+// article text for the feed plus a few in reserve, so a story the writer or the audit cannot
+// support can be replaced without going back to retrieval.
+const FEED_STORIES = 12;
+const RESERVE_STORIES = 4;
+const READ_PER_STORY = 3;
+// Lane 5 is the only paid step in reading. Reading deep to fill twelve stories — Lebanon passed
+// over 71 to find 13 in one test — could otherwise mean two hundred $0.007 fetches for a single
+// category. Fifteen is about ten cents, and it goes to the stories ranked highest.
+const LANE5_BUDGET_PER_CATEGORY = 15;
+const READ_DEPTH = 100;              // candidates examined at most, however few turn out readable
+
+// Prose already in hand first, then an outlet we are permitted to read, then an openable URL,
+// then lane. worthReading outranks fetchable because a Bloomberg link opens fine and still fails.
+const memberRank = (m) => ((m.snippet || '').length > REAL_BODY ? 8 : 0)
+                        + (worthReading(m.domain) ? 4 : 0)
+                        + (fetchable(m) ? 2 : 0)
+                        + (m.lane <= 1 ? 1 : 0);
+const hasArticle = (m) => (m.snippet || '').trim().length > REAL_BODY;
+
+async function readUntilFilled(candidates, { top = FEED_STORIES, reserve = RESERVE_STORIES, perStory = READ_PER_STORY, wave = 6 } = {}) {
+  resetLane5Tally();
+  const laneFiveOn = await isLaneFiveEnabled();
+  const want = top + reserve;
+  const attempted = new Set();
+  const filled = [];
+  const droppedNoBody = [];
+
+  const readOne = async (st) => {
+    const byOutlet = new Map();
+    for (const m of [...st.members].sort((x, y) => memberRank(y) - memberRank(x))) {
+      if (!isPaywalledDomain(m.domain) && !byOutlet.has(m.source)) byOutlet.set(m.source, m);
+    }
+    const citable = [...byOutlet.values()];
+    for (const a of citable) if (a.ingestLen == null) a.ingestLen = (a.snippet || '').trim().length;
+
+    // Our own fetcher on the outlets we may read, then the ones the first cut left behind.
+    const readable = citable.filter(m => worthReading(m.domain));
+    const first = readable.slice(0, perStory);
+    await enrichWithBodies(first, first.length);
+    first.forEach(m => attempted.add(m));
+    if (!citable.some(hasArticle)) {
+      const spare = readable.slice(perStory, perStory * 2);
+      if (spare.length) { await enrichWithBodies(spare, spare.length); spare.forEach(m => attempted.add(m)); }
+    }
+    // Anthropic's fetcher last, including outlets our robots check never tried — AP allows
+    // every crawler and still refuses ours.
+    if (!citable.some(hasArticle) && laneFiveOn && lane5Tally.attempted < LANE5_BUDGET_PER_CATEGORY) {
+      const pool5 = citable.filter(m => !hasArticle(m)).slice(0, perStory * 2);
+      pool5.forEach(m => { if (!m.bodySource) m.bodySource = 'not-attempted'; attempted.add(m); });
+      if (pool5.length) await enrichViaLaneFive(pool5, perStory);
+    }
+
+    const read = citable.filter(hasArticle).slice(0, perStory);
+    if (!read.length) return null;
+    st.readable = read;
+    // Citing is not reading: every outlet with a link a reader can open is listed.
+    st.citable = citable.filter(m => fetchable(m) || hasArticle(m));
+    return st;
+  };
+
+  // In waves, not one at a time: serially one category once took 37 minutes. A new wave is only
+  // drawn while the quota is short, so the spares further down cost nothing until they are needed.
+  const depth = Math.min(candidates.length, READ_DEPTH);
+  for (let i = 0; i < depth && filled.length < want; i += wave) {
+    const batch = candidates.slice(i, Math.min(i + wave, depth));
+    const results = await Promise.all(batch.map(readOne));
+    results.forEach((r, k) => {
+      if (r) { if (filled.length < want) filled.push(r); }
+      else droppedNoBody.push(batch[k].lead.title);
+    });
+  }
+  return { filled: filled.slice(0, top), reserves: filled.slice(top), attempted: [...attempted], droppedNoBody };
+}
+
+// One block per story, carrying only outlets we actually read — with their text — plus the
+// other outlets that carried it, by link only, so they can be cited but not drawn on.
+function buildStoryBlocks(list, offset, urlSet) {
+  return list.map((st, i) => {
+    const label = st.outletCount >= 4 ? `[${st.outletCount} OUTLETS — MAJOR STORY] `
+                : st.outletCount >= 2 ? `[${st.outletCount} OUTLETS] ` : '';
+    const accounts = st.readable.map(m => {
+      if (fetchable(m) && m.link) urlSet.add(m.link);
+      return `  — ${m.source}${fetchable(m) ? ` (${m.link})` : ''}\n    ${(m.snippet || '').trim()}`;
+    }).join('\n');
+    const others = (st.citable || []).filter(m => !st.readable.includes(m) && fetchable(m) && m.link);
+    others.forEach(m => urlSet.add(m.link));
+    const alsoCite = others.length
+      ? `\nAlso carried this story (link only — cite them, but use no facts from them):\n${others.map(m => `  — ${m.source} (${m.link})`).join('\n')}`
+      : '';
+    const one = st.readable.length < 2 ? `\n  [ONE ACCOUNT ONLY — leave out Perspectives differ.]` : '';
+    return `${label}[${offset + i + 1}] ${st.lead.title}\nDate: ${st.lead.date || 'recent'}\n`
+         + `Accounts from ${st.readable.length} of ${st.outletCount} outlet(s):\n${accounts}${alsoCite}${one}`;
+  });
+}
+
+function storyRetrievalOf(list, blocks) {
+  return list.map((st, i) => ({
+    rank: i + 1, headline: st.lead.title, outlets: st.outlets, outletCount: st.outletCount,
+    accountsRead: st.readable.length, bodyMissing: false, reasons: [],
+    members: st.readable.map(m => ({
+      source: m.source, domain: m.domain, lane: m.lane, url: m.link,
+      ingestChars: m.ingestLen ?? null, bodySource: m.bodySource || 'not-attempted',
+      bodyFrom: m.bodyFrom || null, bodyReason: m.bodyReason || null,
+      finalChars: (m.snippet || '').length, lane5Filled: m.lane5Filled || null,
+    })),
+    alsoCarriedBy: (st.citable || []).filter(m => !st.readable.includes(m)).map(m => m.source),
+    contextBlock: blocks[i] || null,
+  }));
+}
+
 async function contextFromSharedPool(category, day, language, timeSlot) {
-  const TOP_STORIES = 12, PER_STORY = 3, OVERSHOOT = 18;
   const pool = await getSharedPool(day, language, timeSlot);
 
   let candidates = [...(pool.byCategory[category] || [])];
@@ -1603,76 +1717,15 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
       .sort((a, b) => (b.outletCount - a.outletCount) || (b.publishedAt - a.publishedAt));
   }
 
-  const shortlist = candidates.slice(0, OVERSHOOT);
-  const rank = (m) => ((m.snippet || '').length > 400 ? 8 : 0)
-                    + (worthReading(m.domain) ? 4 : 0)
-                    + (fetchable(m) ? 2 : 0) + (m.lane <= 1 ? 1 : 0);
-
-  // Read down the ranked list until the quota is full. The spares below it are never fetched
-  // unless something above them comes back empty, so carrying them costs nothing.
-  const attempted = [];
-  const filled = [];
-  const droppedNoBody = [];
-  const laneFiveOn = await isLaneFiveEnabled();
-
-  // Read a wave of candidates at a time, not one after another. Serially this took 37 minutes
-  // for a single category: eighteen candidates, each waiting on its own fetches and then on
-  // lane 5's 45-second timeout before the next one started. In waves the same work runs in
-  // three rounds, and the overshoot still costs nothing because a wave is only drawn when the
-  // quota is short.
-  const WAVE = 6;
-  const readOne = async (st) => {
-    const byOutlet = new Map();
-    for (const m of [...st.members].sort((x, y) => rank(y) - rank(x))) {
-      if (!isPaywalledDomain(m.domain) && !byOutlet.has(m.source)) byOutlet.set(m.source, m);
-    }
-    const citable = [...byOutlet.values()];
-    const targets = citable.filter(m => worthReading(m.domain)).slice(0, PER_STORY);
-    for (const a of citable) a.ingestLen = (a.snippet || '').trim().length;
-    await enrichWithBodies(targets, targets.length);
-    let read = targets.filter(m => (m.snippet || '').length > REAL_BODY);
-    if (!read.length && laneFiveOn) {
-      const stillEmpty = targets.filter(m => m.bodySource === 'none' || m.bodySource === 'not-attempted');
-      if (stillEmpty.length) await enrichViaLaneFive(stillEmpty, PER_STORY);
-      read = targets.filter(m => (m.snippet || '').length > REAL_BODY);
-    }
-    attempted.push(...targets);
-    if (!read.length) return null;
-    st.readable = read;
-    // Citing is not reading: every outlet with a URL a reader can open is listed.
-    st.citable = citable.filter(m => fetchable(m) || (m.snippet || '').trim());
-    return st;
-  };
-
-  for (let i = 0; i < shortlist.length && filled.length < TOP_STORIES; i += WAVE) {
-    const wave = shortlist.slice(i, i + WAVE);
-    const results = await Promise.all(wave.map(readOne));
-    for (const r of results) {
-      if (!r) continue;
-      if (filled.length < TOP_STORIES) filled.push(r);
-    }
-    for (let k = 0; k < wave.length; k++) if (!results[k]) droppedNoBody.push(wave[k].lead.title);
-  }
+  const shortlist = candidates.slice(0, 30);
+  const { filled, reserves, attempted, droppedNoBody } = await readUntilFilled(shortlist);
 
   const offeredUrls = new Set();
-  const storyBlocks = filled.map((st, i) => {
-    const label = st.outletCount >= 4 ? `[${st.outletCount} OUTLETS — MAJOR STORY] `
-                : st.outletCount >= 2 ? `[${st.outletCount} OUTLETS] ` : '';
-    const accounts = st.readable.map(m => `  — ${m.source} (${m.link})\n    ${(m.snippet || '').trim()}`).join('\n');
-    for (const m of st.readable) if (fetchable(m) && m.link) offeredUrls.add(m.link);
-    const others = st.citable.filter(m => !st.readable.includes(m) && fetchable(m) && m.link);
-    for (const m of others) offeredUrls.add(m.link);
-    const alsoCite = others.length
-      ? `\nAlso carried this story, cite them too:\n${others.map(m => `  — ${m.source} (${m.link})`).join('\n')}`
-      : '';
-    const compare = st.readable.length >= 2
-      ? ''
-      : `\n  [ONE ACCOUNT ONLY — do not write Perspectives differ for this story; say how widely it was carried instead.]`;
-    return `${label}[${i + 1}] ${st.lead.title}\nDate: ${st.lead.date || 'recent'}\n`
-         + `Accounts from ${st.readable.length} of ${st.outletCount} outlet(s):\n${accounts}${alsoCite}${compare}`;
-  });
+  const storyBlocks = buildStoryBlocks(filled, 0, offeredUrls);
+  const reserveUrls = new Set();
+  const reserveBlocks = buildStoryBlocks(reserves, 0, reserveUrls);
 
-  const articlesOut = filled.map(st => ({
+  const articlesOut = [...filled, ...reserves].map(st => ({
     title: st.lead.title, source: st.lead.source, date: st.lead.date, url: st.lead.link,
     snippet: st.lead.snippet, lane: st.lead.lane, outletCount: st.outletCount,
     domain: st.lead.domain, storyOutlets: st.outlets, memberCount: st.members.length,
@@ -1683,6 +1736,10 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
   return {
     context: storyBlocks.join('\n\n'),
     offeredUrls: [...offeredUrls],
+    // Read and ready, but not given to the writer unless a published story has to be replaced.
+    reserveContext: reserveBlocks.join('\n\n'),
+    reserveBlocks,
+    reserveUrls: [...reserveUrls],
     articles: articlesOut,
     stats: {
       source: 'shared-pool',
@@ -1690,35 +1747,24 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
       candidates: candidates.length,
       shortlist: shortlist.length,
       storiesTried: filled.length,
-      // Every published story rests on at least one real article: the pool drops the others
-      // rather than writing them from a headline. fromArticle and fromHeadline are the two
-      // numbers Roy asked to see, and here the second is zero by construction.
+      // Every story handed to the writer rests on at least one real article; the others are
+      // passed over, not written from a headline.
       storiesRead: filled.length,
       fromArticle: filled.length,
       fromHeadline: 0,
       headlineOnly: 0,
+      reservesReady: reserves.length,
       droppedForNoBody: droppedNoBody.length,
       droppedForNoBodyTitles: droppedNoBody.slice(0, 12),
       storiesWithMultipleAccounts: filled.filter(st => st.readable.length >= 2).length,
       readAttempts: attempted.length,
-      bodiesObtained: attempted.filter(m => (m.snippet || '').length > REAL_BODY).length,
+      bodiesObtained: attempted.filter(hasArticle).length,
       medianOutletsCited: (() => {
         const l = filled.map(st => st.citable.length).sort((a, b) => a - b);
         return l.length ? l[Math.floor(l.length / 2)] : 0;
       })(),
       lane5: { ...lane5Tally },
-      storyRetrieval: filled.map((st, i) => ({
-        rank: i + 1, headline: st.lead.title, outlets: st.outlets, outletCount: st.outletCount,
-        accountsRead: st.readable.length, bodyMissing: false, reasons: [],
-        members: st.readable.map(m => ({
-          source: m.source, domain: m.domain, lane: m.lane, url: m.link,
-          ingestChars: m.ingestLen ?? null, bodySource: m.bodySource || 'not-attempted',
-          bodyFrom: m.bodyFrom || null, bodyReason: m.bodyReason || null,
-          finalChars: (m.snippet || '').length, lane5Filled: m.lane5Filled || null,
-        })),
-        alsoCarriedBy: st.citable.filter(m => !st.readable.includes(m)).map(m => m.source),
-        contextBlock: storyBlocks[i] || null,
-      })),
+      storyRetrieval: storyRetrievalOf(filled, storyBlocks),
     },
   };
 }
@@ -2166,105 +2212,18 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
   }
 
   // ── Read the stories we are going to write about ─────────────────────────
-  // Several members per story, not one. Perspectives differ needs more than a single
-  // outlet's account, and a story carried by sixteen outlets is exactly where framing
-  // diverges most. Three distinct outlets per story is enough to contrast and keeps the
-  // fetch count roughly where it was — twelve stories x up to 3 rather than twelve copies
-  // of one event.
-  const TOP_STORIES = 12, PER_STORY = 3;
-  // A member is only worth reading if its URL can actually be opened. Lane 2 and 3 links
-  // point at news.google.com and resolve to nothing, so picking members by lane order —
-  // which put lane 1 first and lane 4 last — meant the only fetchable articles in a story
-  // were the ones cut by the PER_STORY limit. Measured on Lebanon: Serper contributed 12
-  // articles with real publisher URLs and not one of them was chosen to read.
-  // Prose already in hand first, then an outlet we are actually permitted to read, then an
-  // openable URL, then lane. worthReading outranks fetchable because a Bloomberg link is
-  // perfectly openable and still certain to fail.
-  const rank = (m) => ((m.snippet || '').length > 400 ? 8 : 0)
-                    + (worthReading(m.domain) ? 4 : 0)
-                    + (fetchable(m) ? 2 : 0)
-                    + (m.lane <= 1 ? 1 : 0);
-
-  const toRead = [];
-  for (const st of stories.slice(0, TOP_STORIES)) {
-    const byOutlet = new Map();
-    for (const m of [...st.members].sort((x, y) => rank(y) - rank(x))) {
-      if (!byOutlet.has(m.source)) byOutlet.set(m.source, m);
-    }
-    const distinct = [...byOutlet.values()];
-
-    // A paywalled outlet leaves the story altogether — not read, and not offered as a source,
-    // because a link a reader cannot open is worse than no link. It still counts towards
-    // outletCount and still shows up under "also carried by", so the story's weight is honest.
-    const citable = distinct.filter(m => !isPaywalledDomain(m.domain));
-
-    // Slots go only to outlets we are allowed to read. Refusals are knowable before the
-    // request: spending a slot on one costs a slot another outlet on this story could use.
-    const targets = citable.filter(m => worthReading(m.domain)).slice(0, PER_STORY);
-
-    // Accounts are what the model sees: everything we will try to read, then any remaining
-    // readable-by-the-reader outlet to fill the three, marked headline-only in the context.
-    st.readable = [...targets, ...citable.filter(m => !targets.includes(m))].slice(0, PER_STORY);
-    st.paywalledDropped = distinct.filter(m => isPaywalledDomain(m.domain)).map(m => m.source);
-    toRead.push(...targets);
-  }
-  // enrichWithBodies overwrites a.snippet with the fetched body, so what each lane handed
-  // us at ingestion has to be recorded before the call or it is lost.
+  // The same reader as the shared pool: down the ranked list until there are twelve stories
+  // with real article text plus spares. This path used to read its top twelve, keep whatever
+  // came back, and then hand the writer every grouped story in the pool — hundreds of them with
+  // nothing but a headline — so a regional digest could be written almost entirely from titles.
+  // enrichWithBodies overwrites a.snippet with the fetched body, so what each lane handed us at
+  // ingestion is recorded first or it is lost.
   for (const a of articles) a.ingestLen = (a.snippet || '').trim().length;
-  await enrichWithBodies(toRead, toRead.length);
-
-  // A story whose chosen outlets all came back empty gets one more attempt, against the
-  // outlets the PER_STORY cut left behind. Grouping already knows a story is carried by
-  // four to sixteen outlets; giving up after three of them was leaving readable text on the
-  // table. Costs nothing on a story that already has a body, which is most of them.
-  const rescue = [];
-  for (const st of stories.slice(0, TOP_STORIES)) {
-    if ((st.readable || []).some(m => (m.snippet || '').length > REAL_BODY)) continue;
-    const tried = new Set((st.readable || []).map(m => m.link));
-    const spare = new Map();
-    for (const m of st.members) {
-      if (tried.has(m.link) || spare.has(m.source)) continue;
-      if (isPaywalledDomain(m.domain) || !worthReading(m.domain)) continue;
-      spare.set(m.source, m);
-    }
-    const extra = [...spare.values()].slice(0, PER_STORY);
-    if (extra.length) { st.rescue = extra; rescue.push(...extra); }
-  }
-  if (rescue.length) {
-    await enrichWithBodies(rescue, rescue.length);
-    toRead.push(...rescue);            // so laneYield counts these attempts too
-    for (const st of stories.slice(0, TOP_STORIES)) {
-      if (!st.rescue) continue;
-      const won = st.rescue.filter(m => (m.snippet || '').length > REAL_BODY);
-      if (won.length) st.readable = [...won, ...(st.readable || [])].slice(0, PER_STORY);
-    }
-    console.log(`🔁 ${category}: second pass on ${rescue.length} spare outlets for `
-      + `${stories.slice(0, TOP_STORIES).filter(st => st.rescue).length} unread stories`);
-  }
-
-  // Lane 5 last, on what neither pass could open.
-  resetLane5Tally();
-  if (await isLaneFiveEnabled()) {
-    const stillEmpty = [...new Set([
-      ...toRead, ...rescue,
-      // members of a story that still has no body, including ones never attempted
-      ...stories.slice(0, TOP_STORIES)
-        .filter(st => !(st.readable || []).some(m => (m.snippet || '').length > REAL_BODY))
-        .flatMap(st => st.readable || []),
-    ])].filter(a => a.bodySource === 'none' || a.bodySource === 'not-attempted');
-    if (stillEmpty.length) {
-      const won = await enrichViaLaneFive(stillEmpty, 24);
-      // Promote a story that lane 5 rescued into its accounts, so the win reaches the digest
-      // rather than only the statistics.
-      for (const st of stories.slice(0, TOP_STORIES)) {
-        if ((st.readable || []).some(m => (m.snippet || '').length > REAL_BODY)) continue;
-        const rescued = [...(st.readable || []), ...(st.rescue || [])]
-          .filter(m => m.bodySource === 'claude-fetch');
-        if (rescued.length) st.readable = [...rescued, ...(st.readable || [])].slice(0, PER_STORY);
-      }
-      console.log(`🌐 ${category}: lane 5 tried ${lane5Tally.attempted} page(s) our fetcher could not open, `
-        + `got ${won} — ${Object.entries(lane5Tally.byOutlet).map(([k, v]) => `${k} x${v}`).join(', ') || 'none'}`);
-    }
+  const { filled, reserves, attempted, droppedNoBody } = await readUntilFilled(stories);
+  const toRead = attempted;
+  if (lane5Tally.attempted) {
+    console.log(`🌐 ${category}: lane 5 tried ${lane5Tally.attempted} page(s) our fetcher could not open, `
+      + `got ${lane5Tally.succeeded} — ${Object.entries(lane5Tally.byOutlet).map(([k, v]) => `${k} x${v}`).join(', ') || 'none'}`);
   }
 
   // Flattened back to an article list for the callers that still expect one, lead first so
@@ -2272,45 +2231,20 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
   const articlesOut = stories.map(st => ({ ...st.lead, outletCount: st.outletCount,
     storyOutlets: st.outlets, memberCount: st.members.length }));
 
-  // Headline-only is stated, not hidden. A story we could not read is marked as such in the
-  // context so the model has no licence to elaborate on it — the alternative is what we have
-  // now, where a headline and a link silently become three confident bullets.
-  // One entry per STORY, carrying each outlet's own account of it. That shape is what the
-  // digest prompt has always asked for and never been given: Coverage wants every outlet on
-  // the story, and Perspectives differ wants to contrast how they framed it. Handing the
-  // model twelve separate rows about one pipeline attack could only ever produce twelve
-  // headlines or an invented contrast.
+  // Only stories with article text reach the writer. A story we could not read is not handed
+  // over marked "headline only" any more — it is passed over, and the next one takes its place.
   const offeredUrls = new Set();
-  const storyBlocks = stories.map((st, i) => {
-    const label = st.outletCount >= 4 ? `[${st.outletCount} OUTLETS — MAJOR STORY] `
-                : st.outletCount >= 2 ? `[${st.outletCount} OUTLETS] ` : '';
-    // A member earns a place here only with a URL a reader can open. Lane 2 and 3 links point
-    // at news.google.com; handing one over produced a digest citing
-    // "reuters.com/news/articles/CBMiuAF…" — the Google token with a publisher domain grafted
-    // on. Unciteable and unread is nothing but a name, so it is left out.
-    const hasBody = (m) => (m.snippet || '').trim().length > REAL_BODY;
-    const cite = (st.readable || [st.lead]).filter(m => fetchable(m) || hasBody(m));
-    for (const m of cite) if (fetchable(m) && m.link) offeredUrls.add(m.link);
-    const accounts = cite.map(m => {
-      const body = hasBody(m) ? (m.snippet || '').trim() : '';
-      const url = fetchable(m) ? ` (${m.link})` : '';
-      return body
-        ? `  — ${m.source}${url}\n    ${body}`
-        : `  — ${m.source}${url}\n    [HEADLINE ONLY: "${m.title}" — the article text could not be retrieved]`;
-    }).join('\n');
-    // No "also carried by" line. It listed outlet names with no URLs beside them, and the
-    // model turned those names into Coverage entries with invented links.
-    const unread = '';
-    const anyBody = (st.readable || []).some(hasBody);
-    return `${label}[${i + 1}] ${st.lead.title}\nDate: ${st.lead.date || 'recent'}\n`
-         + `Accounts from ${(st.readable || []).length} of ${st.outletCount} outlet(s):\n${accounts}${unread}`
-         + (anyBody ? '' : '\n  [NO ARTICLE TEXT for this story — write only what the headlines above support, and omit Perspectives differ rather than inferring one.]');
-  });
+  const storyBlocks = buildStoryBlocks(filled, 0, offeredUrls);
+  const reserveUrls = new Set();
+  const reserveBlocks = buildStoryBlocks(reserves, 0, reserveUrls);
   const context = storyBlocks.join('\n\n');
 
   return {
     context,
     offeredUrls: [...offeredUrls],
+    reserveContext: reserveBlocks.join('\n\n'),
+    reserveBlocks,
+    reserveUrls: [...reserveUrls],
     articles: articlesOut.map(a => ({
       title: a.title, source: a.source, date: a.date, url: a.link,
       snippet: a.snippet, lane: a.lane, outletCount: a.outletCount, domain: a.domain,
@@ -2338,18 +2272,17 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
         m[a.bodySource || 'none'] = (m[a.bodySource || 'none'] || 0) + 1;
         return m;
       }, {}),
-      // Per STORY now, which is the number that matters: a story is readable if any of its
-      // outlets gave us text, and only fully unreadable ones force a headline-only digest.
-      storiesRead: stories.slice(0, TOP_STORIES).filter(st => (st.readable || []).some(m => (m.snippet || '').trim().length > REAL_BODY)).length,
-      storiesTried: Math.min(TOP_STORIES, stories.length),
-      storiesWithMultipleAccounts: stories.slice(0, TOP_STORIES)
-        .filter(st => (st.readable || []).filter(m => (m.snippet || '').trim().length > REAL_BODY).length >= 2).length,
-      headlineOnly: stories.slice(0, TOP_STORIES).filter(st => !(st.readable || []).some(m => (m.snippet || '').trim().length > REAL_BODY)).length,
-      fromArticle: stories.slice(0, TOP_STORIES).filter(st => (st.readable || []).some(m => (m.snippet || '').trim().length > REAL_BODY)).length,
-      fromHeadline: stories.slice(0, TOP_STORIES).filter(st => !(st.readable || []).some(m => (m.snippet || '').trim().length > REAL_BODY)).length,
-      // Per-story retrieval state, so "we wrote this one from the headline alone" survives
-      // the run instead of living only in a console line. Stored on the row by storeNews;
-      // the model never sees this and cannot smooth it away.
+      // What was handed to the writer. Every one of these stories rests on at least one real
+      // article: the reader passes over a story it cannot read rather than offering its headline.
+      storiesRead: filled.length,
+      storiesTried: filled.length,
+      storiesWithMultipleAccounts: filled.filter(st => st.readable.length >= 2).length,
+      headlineOnly: 0,
+      fromArticle: filled.length,
+      fromHeadline: 0,
+      reservesReady: reserves.length,
+      droppedForNoBody: droppedNoBody.length,
+      droppedForNoBodyTitles: droppedNoBody.slice(0, 12),
       // What each lane contributes, split into what it hands over at ingestion versus what
       // it yields once we try to read it. The distinction matters: no lane returns article
       // bodies — lane 1 returns a blurb, lanes 2 and 3 return nothing, and every real body
@@ -2371,32 +2304,7 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
           })(),
         };
       }),
-      storyRetrieval: stories.slice(0, TOP_STORIES).map((st, i) => {
-        const read = (st.readable || []).filter(m => (m.snippet || '').trim());
-        return {
-          rank: i + 1,
-          headline: st.lead.title,
-          outlets: st.outlets || [],
-          outletCount: st.outletCount || 1,
-          accountsRead: read.length,
-          bodyMissing: read.length === 0,
-          reasons: [...new Set((st.readable || [])
-            .filter(m => (m.snippet || '').trim().length <= REAL_BODY)
-            .map(m => m.bodyReason || 'unknown'))],
-          // Every outlet we chose to read for this story, and what each one gave back.
-          members: (st.readable || []).map(m => ({
-            source: m.source, domain: m.domain, lane: m.lane, url: m.link,
-            ingestChars: m.ingestLen ?? null,
-            bodySource: m.bodySource || 'not-attempted',
-            bodyFrom: m.bodyFrom || null,
-            bodyReason: m.bodyReason || null,
-            finalChars: (m.snippet || '').length,
-            lane5Filled: m.lane5Filled || null,   // the failure lane 5 rescued this from
-          })),
-          alsoCarriedBy: (st.outlets || []).filter(o => !(st.readable || []).some(r => r.source === o)),
-          contextBlock: storyBlocks[i] || null,
-        };
-      }),
+      storyRetrieval: storyRetrievalOf(filled, storyBlocks),
       bodyFailures: toRead.filter(a => a.bodySource === 'none')
         .map(a => ({ source: a.source, reason: a.bodyReason || 'unknown', title: (a.title || '').slice(0, 60) })),
       // Per lane, because the overall median is misleading: lane 2 carries no body text at
@@ -2620,6 +2528,21 @@ function cleanRawSummary(rawSummary) {
   return (usefulSentence ? `_${usefulSentence}_\n\n` : '') + normalised;
 }
 
+// ══ Grounding ═════════════════════════════════════════════════════════════
+// The app tells people what the headlines are and explains them a little, with links for
+// anyone who wants the full article. So a summary may say only what we retrieved. Every prompt
+// used to ask for the opposite — "additional relevant detail or background", "context, causes,
+// what is at stake, what happens next", "broader significance and implications" — and an
+// auditor cannot police behaviour the prompt demands. These rules replace all of that, in every
+// prompt that writes or rewrites a summary.
+const GROUNDING_RULES = `GROUNDING — these rules override every other instruction:
+1. Use only information stated in the accounts you were given. Do not add background, history, context, causes, consequences, predictions, significance or interpretation unless an account states it.
+2. Never fill a gap from your own knowledge, even when you are sure it is true. If the accounts do not explain something, leave it unexplained. A shorter story is correct; a padded one is wrong.
+3. Every bullet must be something you could point to in one of the accounts. Keep names, numbers and quotes exactly as the accounts give them.
+4. **Why this matters:** include it only when an account itself says why the story matters, and attribute it ("According to Reuters, ..."). Otherwise leave the line out.
+5. **Perspectives differ:** include it only when the accounts genuinely report or frame the story differently. Describe the difference in general terms ("Some outlets emphasise ..., others ...") without naming outlets. Otherwise leave the line out.
+6. Headlines state only what the accounts report.`;
+
 async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null, language = 'en') {
   const categoryQuery = searchQuery || (language === 'ar' ? (ARABIC_CATEGORY_QUERIES[category] || category) : (CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category)));
   const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
@@ -2629,13 +2552,15 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
 
   // Fetch search results — reuse prebuiltContext if provided (shared with stories)
   let searchContext, sourceArticles = [], usedCorpus = false, retrievalStats = null, citableUrls = [];
+  let reserveStoryBlocks = [], reserveCitableUrls = [];
   if (prebuiltContext) {
     searchContext = prebuiltContext;
   } else if (await isCorpusRetrievalEnabled()) {
     // Ask each trusted outlet what it published, rather than asking a search engine what
     // happened. Serper stays on inside it as lane 4 — it is the only lane returning real
     // publisher URLs, which is what lets the rest be read.
-    const { context, articles, stats, offeredUrls } = await buildCorpusContext(category, day, language, timeSlot, true);
+    const { context, articles, stats, offeredUrls, reserveBlocks: rb = [], reserveUrls: ru = [] } = await buildCorpusContext(category, day, language, timeSlot, true);
+    reserveStoryBlocks = rb; reserveCitableUrls = ru;
     searchContext = context;
     sourceArticles = articles;
     usedCorpus = true;
@@ -2657,9 +2582,14 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     : '';
 
   // Count is a soft guide, NOT a target to pad toward — consolidation always wins.
-  const storyCountInstruction = isRegional
-    ? 'Cover every genuinely DISTINCT story the results support — usually 6–10, and fewer is fine when one big situation dominates the day. NEVER reach a number by splitting one situation into several stories.'
-    : 'Cover every genuinely DISTINCT story the results support — usually 6–9. NEVER reach a number by splitting one situation into several stories.';
+  // The corpus hands over exactly the stories to publish, already grouped, ranked and read; the
+  // writer's job is to write each one, not to pick 6 to 9 of them. The Serper fallback still
+  // hands over loose results, so it keeps the old instruction.
+  const storyCountInstruction = usedCorpus
+    ? 'Write a story for every numbered item above that its accounts support.'
+    : isRegional
+      ? 'Cover every genuinely DISTINCT story the results support — usually 6–10, and fewer is fine when one big situation dominates the day. NEVER reach a number by splitting one situation into several stories.'
+      : 'Cover every genuinely DISTINCT story the results support — usually 6–9. NEVER reach a number by splitting one situation into several stories.';
 
   // ── Prioritisation rules + region gate ─────────────────────────────────────
   // Regional categories rank LOCAL coverage first and drop off-region stories;
@@ -2676,8 +2606,8 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   const corpusPrioritisation = `PRIORITISATION RULES:
 1. Every outlet below is one we already trust — there is no source quality to weigh. Judge on what happened, not on who reported it.
 2. The [N OUTLETS] label counts DISTINCT outlets carrying that story. More outlets means a bigger story; treat [MAJOR STORY] as the day's leading items.
-3. Each story lists several outlets' own accounts of it. Use them together, and use the differences between them for **Perspectives differ:**.
-4. A story marked [NO ARTICLE TEXT] must be written from its headline alone.
+3. Each story lists one or more outlets' own accounts of it, with their article text. Write the story from that text, and from nothing else. Outlets listed as "link only" may be cited in **Coverage:** but contribute no facts.
+4. Every numbered item already is one story — articles about the same event were grouped before you saw them. Write one ## story per item, in the same order. Merge two items only when they are plainly the same event.
 5. **Coverage:** may name ONLY the outlets listed above for that story, and only those shown with a URL in brackets. Copy each URL character for character. Never invent, shorten, complete or guess a URL, never link an outlet to its homepage, and never add an outlet you were not given. Fewer, correct sources beat a longer list.${isRegional ? `
 5. DIVERSITY (REQUIRED): this is ${regionSubject || 'a local'} feed and must reflect the full life of it — business, sport, culture, society, health, education, infrastructure — not only politics, security and diplomacy.` : ''}`;
 
@@ -2701,94 +2631,102 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   // spread rule. Nothing gets both — they pull in opposite directions.
   const spreadRule = !isRegional ? (SPREAD_RULES[category] || '') : '';
 
-  // Written as a cached block so the audit, which reads the same articles minutes later, pays
-  // a tenth rather than full price. The string must match auditDigest's prefix exactly.
-  const cachedPrefix = `SEARCH RESULTS (ground truth):\n${searchContext}`;
-  const prompt = `You are a news analyst. Above are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Synthesize them into a detailed news digest.${regionGate}${spreadRule}${arabicInstruction}
+  const prompt = `You are a news editor. Above are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Write a short, factual digest of them for people who want to know what happened and decide which articles to read.${regionGate}${spreadRule}${arabicInstruction}
 
-For each major story group, use this EXACT format — no introduction, no preamble:
+For each story, use this EXACT format — no introduction, no preamble:
 
-## Synthesized neutral headline (your own words, not copied from any single source)
-**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · ...
-- Key fact or development, with context and nuance
-- Another key detail — include numbers, names, and specifics where available
-- Additional relevant detail or background
-- For contested claims: "According to [source]..." or "[Party X] claims... while [Party Y] argues..."
-**Perspectives differ:** Whenever two or more outlets, parties, or experts cover this story, explain in one or two sentences HOW their framing, emphasis, or interpretation differs — name the specific outlets or parties (e.g. "Al Jazeera frames the operation as aggression while The National stresses the ceasefire violation; Israeli officials call it a defensive strike"). Include this for every multi-source story unless the coverage is genuinely identical in angle. Omit ONLY when a single outlet covers the story.
-**Why this matters:** One or two sentences on broader significance and implications.
+## Neutral headline, in your own words, stating only what the accounts report
+**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · ...
+- A fact stated in the accounts
+- Another fact — names, numbers and specifics exactly as the accounts give them
+- Further facts only while the accounts support them
+- For contested claims: "According to [source]..." or "[Party X] says... while [Party Y] says..."
+**Perspectives differ:** (only under grounding rule 5 — otherwise leave this line out)
+**Why this matters:** (only under grounding rule 4 — otherwise leave this line out)
 
-CONSOLIDATION (TOP PRIORITY — overrides the story count): One ongoing situation = ONE story. If several articles cover different facets, incidents, angles, consequences, or updates of the SAME event, conflict, or negotiation, you MUST merge them into a single ## story whose bullets cover each facet and whose **Coverage:** lists ALL of those outlets together.
-For example, a ceasefire deal, continued strikes despite it, the resulting civilian casualties, one side refusing to withdraw, residents returning to damaged homes, and reported truce violations are ALL the same story → ONE ## headline that LEADS with the core development (the ceasefire was agreed) and folds the strikes, casualties, and violations into its bullets, referencing every source — NOT six separate headlines, and NOT a headline that leads with the violations.
-Before you finish, re-read your ## headlines: if any two describe the same situation from different angles, MERGE them. Every ## story must be a genuinely distinct topic.
-
-HEADLINE FRAMING (applies after consolidation): When a merged story contains a major new development — a deal or ceasefire agreed, an agreement signed, a government formed, a leader elected, an offensive launched — ALONGSIDE its complications (violations, delays, disputes, casualties, pushback), the ## headline MUST state the development itself plainly and lead with it. Treat the complications as the tension inside the story (bullets and **Perspectives differ:**), never as the headline. Do NOT let a complication ("strikes undermine fragile truce", "violations threaten deal") replace or bury the underlying event ("Israel and Hezbollah agree to a ceasefire"). A reader must learn the central fact — that the thing happened — from the headline alone.
+HEADLINE FRAMING: When a story contains a major development — a deal or ceasefire agreed, an agreement signed, a government formed, a leader elected, an offensive launched — alongside its complications, the ## headline states the development itself, plainly. A reader must learn the central fact from the headline alone.
 
 ${storyCountInstruction} ${prioritisationRules}
-Coverage must use real URLs from the search results provided. In **Coverage:**, only list outlets that are major international or regional news organisations — wire services (Reuters, AP), broadcasters (BBC, CNN, Al Jazeera), national newspapers (NYT, Guardian, WaPo, FT), and established regional outlets in TIER1_DOMAINS. Do NOT list niche blogs, legal/trade publications, local TV stations, aggregators, or any outlet whose primary audience is a single city or narrow profession. After all stories, include a sources section:
+Coverage must use real URLs from the search results provided, copied exactly. After all stories, include a sources section:
 
 ## Sources
 - [Full article headline](exact-article-url)
 
-Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. CRITICAL: In **Coverage:**, list EVERY tier-1 outlet from the search results that covers this story. In **## Sources**, list every article URL used across all stories with its full headline as the link text. Complete all sentences. Never use Wikipedia as a source — skip any Wikipedia URLs entirely.
+Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##. In **## Sources**, list every article URL used across all stories with its full headline as the link text. Complete all sentences. Never use Wikipedia as a source.
 
 ACCURACY RULES (violations make the story wrong, not just imprecise):
-- **Perspectives differ:** must contrast positions held by named tier-1 news organisations or official government/institutional sources only. Do NOT cite think-tanks, advocacy groups, regional institutes, or unnamed "international observers" — if no meaningful tier-1 contrast exists, omit the line entirely.
-- Be precise about what type of agreement or deal is under discussion. A shipping/navigation deal and a nuclear deal are different things — do not conflate them in the headline or body, even when both tracks are active simultaneously.
-- Do not attribute a quote or claim to an official unless a source in the search results directly attributes it to that person.`;
+- Be precise about what type of agreement or deal is under discussion. A shipping deal and a nuclear deal are different things — do not conflate them.
+- Do not attribute a quote or claim to anyone unless an account directly attributes it to them.
 
-  // 5,000 tokens could not hold twelve stories with Coverage, bullets, Summary, Why this
-  // matters and Perspectives differ. 16,000 fits them with room to spare, and the helper
-  // continues anyway if a category runs long, so the ceiling stops being a content decision.
-  // The cards were a second call whose entire input was the digest we had just written —
-  // 79k input tokens a run spent re-reading our own output. Asked for in the same turn that
-  // input disappears. The separate call stays as a fallback, because this format is new.
+${GROUNDING_RULES}`;
+
+  // The cards are written in the same call — their only input is the story just written, so a
+  // second call would pay to re-read it. They inherit the grounding rules: a card restates its
+  // story and adds nothing to it.
   const cardsRider = `
 
 ──────────
-AFTER the digest above is complete, write the line ===CARDS=== on its own, then turn every story you just wrote into a short card for mobile reading and audio. Same stories, same order, headlines copied verbatim.
+AFTER the digest above is complete, write the line ===CARDS=== on its own, then turn every story you just wrote into a short card for mobile reading and audio. Same stories, same order, headlines copied exactly.
 
 ## [the EXACT headline you used above, plain text]
-- One key fact — one sentence under 20 words.
-- Second key detail — one sentence under 20 words.
-- Third point if critical — one sentence under 20 words.
-**Summary:** 3–4 flowing sentences that go beyond the bullets — context, causes, what is at stake, what happens next.
-**Why this matters:** One sentence.
-**Perspectives differ:** Carry this over when the digest has it for that story, condensed to one sentence. Omit when the digest has none.
+- One fact from that story — one sentence under 20 words.
+- Second fact — one sentence under 20 words.
+- Third fact, only if that story has one.
+**Summary:** 2–3 plain sentences restating what that story says, for a reader who wants a little more than the bullets. Use nothing that is not in that story — no background, no consequences, no "what happens next".
+**Why this matters:** Copy it over only if that story has one. Otherwise leave the line out.
+**Perspectives differ:** Copy it over, condensed to one sentence, only if that story has one. Otherwise leave the line out.
 
-No Coverage lines and no Sources section in the cards.`;
+No Coverage lines and no Sources section in the cards. The grounding rules apply to the cards too.`;
 
-  const { text: rawResponse, usage, truncated } = await callClaudeComplete(prompt + cardsRider, 16000, { label: category, cachedPrefix });
-  const data = { usage };
-  const [digestPart, cardsPart = ''] = rawResponse.split(/\n?={3,}CARDS={3,}\n?/);
-  const summary = filterCoverageTier1(cleanRawSummary(digestPart), isRegional ? category : null);
-  const cards = cardsPart.trim() ? cleanRawSummary(cardsPart) : null;
-  if (!cards) console.warn(`🃏 ${category}: no cards section returned — generating them separately`);
-  if (truncated) console.warn(`✂️  ${category}: digest still truncated after continuations`);
-  const written = (summary.match(/^## /gm) || []).length;
+  // One writer for the published stories and, if one has to be replaced later, for the
+  // reserves. The context goes in a cached block so the grounding check that reads the same
+  // articles a minute later pays a tenth of the price.
+  let firstBatch = true;
+  const writeBatch = async (ctx, urls, label) => {
+    const prefix = `SEARCH RESULTS (ground truth):\n${ctx}`;
+    const { text, usage, truncated } = await callClaudeComplete(prompt + cardsRider, 16000, { label, cachedPrefix: prefix });
+    const [digestPart, cardsPart = ''] = text.split(/\n?={3,}CARDS={3,}\n?/);
+    const digest = filterCoverageTier1(cleanRawSummary(digestPart), isRegional ? category : null);
+    const cards = cardsPart.trim() ? cleanRawSummary(cardsPart) : null;
+    if (!cards) console.warn(`🃏 ${label}: no cards section returned — they will be written separately`);
+    if (truncated) console.warn(`✂️  ${label}: digest still truncated after continuations`);
+    if (usage) {
+      const { input_tokens, output_tokens } = usage;
+      const token_cost_usd = claudeCost(input_tokens, output_tokens, usage.cache_creation_input_tokens || 0, usage.cache_read_input_tokens || 0);
+      const searchCost = firstBatch ? serper_cost : 0;
+      trackUsage({
+        service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+        input_tokens, output_tokens,
+        web_searches: firstBatch ? serper_searches : 0, search_cost_usd: searchCost,
+        token_cost_usd, estimated_cost_usd: token_cost_usd + searchCost,
+        category, time_slot: timeSlot, content_type: firstBatch ? 'digest' : 'digest_reserve', language,
+        created_at: new Date().toISOString()
+      });
+    }
+    firstBatch = false;
+    const guarded = stripInventedLinks(digest, urls);
+    if (guarded.removed.length) {
+      console.warn(`🔗 ${label}: dropped ${guarded.removed.length} invented Coverage link(s) — ${guarded.removed.slice(0, 4).join(' | ')}`);
+    }
+    return { digest: guarded.content, cards, prefix };
+  };
+
+  const main = await writeBatch(searchContext, citableUrls, category);
+  const written = (main.digest.match(/^## (?!Sources)/gm) || []).length;
   const prepared = retrievalStats?.storiesTried ?? null;
   if (prepared && written < prepared) {
-    console.warn(`📉 ${category}: ${written} stories written from ${prepared} prepared — ${prepared - written} lost at the writing step`);
+    console.warn(`📉 ${category}: ${written} stories written from ${prepared} prepared — ${prepared - written} not written`);
   }
 
-  // Track usage
-  if (data.usage) {
-    const { input_tokens, output_tokens } = data.usage;
-    const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-    const estimated_cost_usd = token_cost_usd + serper_cost;
-    trackUsage({
-      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-      input_tokens, output_tokens,
-      web_searches: serper_searches, search_cost_usd: serper_cost, token_cost_usd, estimated_cost_usd,
-      category, time_slot: timeSlot, content_type: 'digest', language,
-      created_at: new Date().toISOString()
-    });
-  }
+  // The reserves are read but not written. If a published story has to go — the writer could
+  // not support it, or the grounding check emptied it — they are written on demand, a few at a
+  // time, from their own articles.
+  const reserveBlocks = reserveStoryBlocks || [];
+  const writeReserves = reserveBlocks.length
+    ? (n) => writeBatch(reserveBlocks.slice(0, Math.min(reserveBlocks.length, n + 1)).join('\n\n'), reserveCitableUrls, `${category} reserves`)
+    : null;
 
-  const guarded = stripInventedLinks(summary, citableUrls);
-  if (guarded.removed.length) {
-    console.warn(`🔗 ${category}: dropped ${guarded.removed.length} invented Coverage link(s) — ${guarded.removed.slice(0, 4).join(' | ')}`);
-  }
-  return { summary: guarded.content, searchContext, sourceArticles, retrievalStats };
+  return { summary: main.digest, cards: main.cards, sourcesPrefix: main.prefix, searchContext, sourceArticles, retrievalStats, writeReserves };
 }
 
 // ── Evening incremental update ──────────────────────────────────────────────
@@ -2844,11 +2782,9 @@ Use this EXACT format for every story:
 **Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · ...
 - Key fact or development
 - Another key detail
-**Perspectives differ:** (carry over or add per the normal rules — see below)
-**Why this matters:** One or two sentences on broader significance.
+**Perspectives differ:** (only under grounding rule 5 — otherwise leave this line out)
+**Why this matters:** (only under grounding rule 4 — otherwise leave this line out)
 **Status:** Updated | Unchanged | New
-
-**Perspectives differ:** Whenever two or more outlets, parties, or experts cover a story, explain in one or two sentences HOW their framing, emphasis, or interpretation differs, naming the specific outlets or parties. Include for every multi-source story unless the coverage is genuinely identical in angle. Omit only when a single outlet covers the story.
 
 Coverage must use real URLs from the fresh search results for any new outlets added; keep the original URLs for outlets carried over unchanged. Only list major international or regional news organisations — wire services, broadcasters, national newspapers, and established regional outlets. After all stories, include:
 
@@ -2858,8 +2794,9 @@ Coverage must use real URLs from the fresh search results for any new outlets ad
 List every article URL used across all stories (both carried-over and new) with its full headline as the link text. Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##, and **Status:** as the last line of each story. Complete all sentences. Never use Wikipedia as a source.
 
 ACCURACY RULES (violations make the story wrong, not just imprecise):
-- **Perspectives differ:** must contrast positions held by named tier-1 news organisations or official government/institutional sources only.
-- Do not attribute a quote or claim to an official unless a source in the fresh search results directly attributes it to that person.`;
+- Do not attribute a quote or claim to anyone unless a source in the fresh search results directly attributes it to them.
+
+${GROUNDING_RULES.replace(/the accounts you were given/g, 'the fresh search results and the digest already published').replace(/Use only information stated in the accounts/g, 'Use only information stated in the fresh search results or the digest already published')}`;
 
   // 5,000 tokens could not hold twelve stories with Coverage, bullets, Summary, Why this
   // matters and Perspectives differ. 16,000 fits them with room to spare, and the helper
@@ -2882,63 +2819,347 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
     });
   }
 
-  return { summary, cards, searchContext, sourceArticles, retrievalStats };
+  return { summary, cards: null, searchContext, sourceArticles, retrievalStats,
+    // what the grounding check measures an Evening digest against: the fresh results, plus the
+    // Morning digest it carries stories over from, which was itself checked when it was published
+    sourcesPrefix: `SEARCH RESULTS (ground truth):\n${searchContext}\n\nALREADY PUBLISHED AND CHECKED THIS MORNING:\n${priorDigestContent}` };
 }
 
-// ── Audit agent ──────────────────────────────────────────────────────────────
-// Checks a generated digest against the exact search results it was written from —
-// not general knowledge — flagging claims, numbers, names, or quotes that aren't
-// traceable to that source text. Runs on the digest only: stories_content and briefing
-// are reformatted FROM the digest (see generateStoriesContent/generateBriefing), not
-// from the raw sources, so auditing them separately would just re-check the same facts
-// twice for no extra safety. A cheap Haiku pass, not a second full generation.
+// ── Grounding check and repair ───────────────────────────────────────────────
+// Every summary may say only what we retrieved. The old audit could not enforce that: it
+// reported unsupported claims to the admin dashboard and published them anyway, it checked the
+// digest but not the cards people actually read — and the cards prompt told the model to add
+// "context, causes, what is at stake". Now the check is a gate, in four steps:
 //
-// Failure of the audit itself (bad JSON, API error) must never block publishing — it
-// returns null, and generateAndStoreCategory treats null the same as "not audited".
-async function auditDigest(category, timeSlot, digestContent, searchContext, language = 'en') {
-  // Byte-identical to the prefix the digest sent, so this is a cache read rather than a
-  // second full-price pass over the same articles.
-  const cachedPrefix = `SEARCH RESULTS (ground truth):\n${searchContext}`;
-  const prompt = `You are a fact-checking editor. Above are the raw search results a news digest was supposed to be based on. Below is the digest itself. Check the digest ONLY against those search results — not your own general knowledge of the topic.
+//   1. check   every statement in the digest and its cards against the retrieved articles
+//   2. repair  each story with an unsupported statement is rewritten from its own articles,
+//              so a bad sentence becomes a proper one rather than a hole
+//   3. recheck the rewrite once; anything still not traceable is removed outright
+//   4. drop    a story left with no supported fact; the caller replaces it from the reserves
+//
+// Statements are numbered (D3.B2 = digest story 3, bullet on line 2) so the checker returns ids
+// rather than quoting text back, and removal is exact. A failure of the check itself never
+// blocks publishing: the story goes out unchecked and the report says so.
 
-DIGEST TO CHECK:
-${digestContent}
+const FIELD_LABELS = 'Summary|Why this matters|Perspectives differ|الملخص|لماذا هذا مهم|لماذا يهم هذا|أهمية الخبر|وجهات النظر تتباين|تباين وجهات النظر|آراء مختلفة';
+const FIELD_LINE = new RegExp(`^\\*\\*(${FIELD_LABELS}):\\*\\*\\s*(.*)$`);
+const SOURCES_HEAD = /^#{1,3}\s+(?:\[)?(?:Sources|المصادر)(?:\]|\()?/im;
+const KEPT_LINE = /^\*\*(Coverage|Status|التغطية):\*\*/;
+const BULLET = /^\s*[-*]\s+(.+)$/;
 
-Find any claim, statistic, name, quote, or attributed statement in the digest that is NOT supported by the search results above. This includes: fabricated details, invented quotes, numbers that don't appear in or don't match the sources, and claims attributed to the wrong outlet or person. Do NOT flag stylistic choices, omissions, or reasonable synthesis/paraphrasing of what the sources say — only flag things that are actually unsupported or contradicted.
+const normHeadline = (h) => (h || '').toLowerCase().replace(/[^a-z0-9؀-ۿ]+/g, '');
+const bulletCount = (st) => st.lines.filter(l => BULLET.test(l)).length;
 
-Respond with ONLY valid JSON, no other text, no markdown fences:
-{"passed": true or false, "flags": [{"claim": "the exact sentence or phrase in question", "reason": "why it isn't supported by the search results"}]}
+function parseDoc(doc) {
+  const text = (doc || '').replace(/\r\n/g, '\n');
+  const cut = text.search(SOURCES_HEAD);
+  const body = cut > -1 ? text.slice(0, cut) : text;
+  const tail = cut > -1 ? text.slice(cut).trim() : '';
+  const parts = body.split(/(?=^## )/m);
+  const head = parts.length && !parts[0].startsWith('## ') ? parts.shift() : '';
+  const stories = parts.map(part => {
+    const lines = part.replace(/\s+$/, '').split('\n');
+    return { headline: lines[0].replace(/^##\s+/, '').trim(), lines: lines.slice(1) };
+  }).filter(st => st.headline);
+  return { head, stories, tail };
+}
 
-If every claim in the digest is grounded in the search results, return {"passed": true, "flags": []}.`;
+function renderDoc({ head, stories, tail }) {
+  const body = stories.map(st => [`## ${st.headline}`, ...st.lines].join('\n').replace(/\s+$/, '')).join('\n\n');
+  return `${head || ''}${body}${tail ? `\n\n${tail}` : ''}\n`;
+}
 
-  try {
-    const data = await callClaudeCached(cachedPrefix, prompt, 1500);
-    const raw = data.content.filter(item => item.type === 'text').map(item => item.text).join('\n').trim();
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('Judge did not return JSON');
-    const parsed = JSON.parse(jsonMatch[0]);
+// Split on a sentence end followed by a capital or Arabic letter, so "3.5%" and "U.S. officials"
+// stay whole.
+function sentencesOf(text) {
+  const t = (text || '').trim();
+  if (!t) return [];
+  return t.split(/(?<=[.!?؟]["'”’)\]]*)\s+(?=["'“‘(\[]?[A-Z؀-ۿ])/).map(x => x.trim()).filter(Boolean);
+}
 
-    if (data.usage) {
-      const { input_tokens, output_tokens } = data.usage;
-      const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-      trackUsage({
-        service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-        input_tokens, output_tokens,
-        web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
-        category, time_slot: timeSlot, content_type: 'audit', language,
-        created_at: new Date().toISOString()
-      });
+function unitsOf(story, tag, { headline = true } = {}) {
+  const units = [];
+  if (headline) units.push({ id: `${tag}.H`, text: story.headline });
+  story.lines.forEach((line, li) => {
+    const b = line.match(BULLET);
+    if (b) { units.push({ id: `${tag}.B${li}`, text: b[1].trim() }); return; }
+    const f = line.match(FIELD_LINE);
+    if (f) sentencesOf(f[2]).forEach((sen, si) => units.push({ id: `${tag}.F${li}.${si}`, text: sen }));
+  });
+  return units;
+}
+
+function removeUnits(story, tag, ids) {
+  const headlineFlagged = ids.has(`${tag}.H`);
+  const lines = [];
+  story.lines.forEach((line, li) => {
+    if (BULLET.test(line)) { if (!ids.has(`${tag}.B${li}`)) lines.push(line); return; }
+    const f = line.match(FIELD_LINE);
+    if (f) {
+      const kept = sentencesOf(f[2]).filter((_, si) => !ids.has(`${tag}.F${li}.${si}`));
+      if (kept.length) lines.push(`**${f[1]}:** ${kept.join(' ')}`);
+      return;
     }
+    lines.push(line);
+  });
+  return { story: { ...story, lines }, headlineFlagged };
+}
 
-    return {
-      passed: parsed.passed !== false,
-      flags: Array.isArray(parsed.flags) ? parsed.flags : [],
-      checked_at: new Date().toISOString(),
-    };
-  } catch (err) {
-    console.warn(`⚠️  Audit failed for ${category}/${timeSlot} (not blocking publish):`, err.message);
-    return null;
+function trackClaudeCall(usage, { category, timeSlot, language, contentType }) {
+  if (!usage) return;
+  const cost = claudeCost(usage.input_tokens, usage.output_tokens, usage.cache_creation_input_tokens || 0, usage.cache_read_input_tokens || 0);
+  trackUsage({
+    service: 'anthropic', model: 'claude-haiku-4-5-20251001',
+    input_tokens: usage.input_tokens, output_tokens: usage.output_tokens,
+    web_searches: 0, search_cost_usd: 0, token_cost_usd: cost, estimated_cost_usd: cost,
+    category, time_slot: timeSlot, content_type: contentType, language,
+    created_at: new Date().toISOString(),
+  });
+}
+
+async function checkUnits(prefix, unitLines, { category, timeSlot, language, against = 'the source accounts above' }) {
+  if (!unitLines.length) return new Map();
+  const tail = `You are a strict fact-checker. Below, a news text has been split into numbered statements. Check each one against ${against} — and against nothing else.
+
+Return the id of every statement that is NOT supported by ${against}. A statement is unsupported if it adds anything that is not stated there: a fact, a number, a name, a quote, background, history, context, a cause, a consequence, a prediction, significance or an interpretation. Your own knowledge does not count, even when it is true. Rewording what is there is fine; adding to it is not. A headline (id ending .H) is unsupported only if it asserts something that is not there.
+
+Respond with ONLY JSON, no other text:
+{"unsupported":[{"id":"D3.B2","reason":"short reason"}]}
+If every statement is supported: {"unsupported":[]}
+
+STATEMENTS:
+${unitLines.join('\n')}`;
+  const data = await callClaudeCached(prefix, tail, 2500);
+  trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_check' });
+  const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('grounding check did not return JSON');
+  const parsed = JSON.parse(m[0]);
+  const out = new Map();
+  for (const u of parsed.unsupported || []) if (u && u.id) out.set(String(u.id).trim(), String(u.reason || '').slice(0, 240));
+  return out;
+}
+
+async function repairStories(prefix, items, { category, timeSlot, language }) {
+  const arabic = language === 'ar'
+    ? '\n\nWrite in Modern Standard Arabic. Keep the markers **Why this matters:**, **Perspectives differ:** and **Summary:** in English exactly as shown.'
+    : '';
+  const blocks = items.map(it => {
+    const storyLines = it.story.lines.filter(l => !KEPT_LINE.test(l)).join('\n');
+    const cardLines = it.card ? it.card.lines.join('\n') : '(none)';
+    const flags = it.flagged.map(f => `- [${f.id}] "${f.text}" — ${f.reason}`).join('\n');
+    return `--- STORY ${it.n} ---\nAs written:\n## ${it.story.headline}\n${storyLines}\nCard as written:\n${cardLines}\nUnsupported statements:\n${flags}`;
+  }).join('\n\n');
+
+  const tail = `You are rewriting news stories so that they say only what the source accounts above say. A fact-checker found statements in them that the accounts do not support.
+
+Rewrite each story below using only information in the accounts above. Keep what is supported. Correct or drop what is not, and never replace a dropped claim with another unsupported one. If the accounts support less, write less — but write the story properly, as statements a reader can follow, not a list of whatever survived.
+
+Keep the headline exactly as given unless it is listed as unsupported. If it is, write a corrected headline that states only what the accounts report.
+
+Return every story in exactly this format and nothing else:
+===STORY n===
+## headline
+- fact
+- fact
+**Perspectives differ:** (only under grounding rule 5 — otherwise leave out)
+**Why this matters:** (only under grounding rule 4 — otherwise leave out)
+===CARD n===
+## the same headline
+- one fact, under 20 words
+**Summary:** 2–3 sentences restating the story above, adding nothing.
+**Why this matters:** (only if the story above has it)
+**Perspectives differ:** (only if the story above has it)
+
+If the accounts cannot support even one fact for a story, return only:
+===STORY n===
+SKIP
+
+Do not write Coverage, Status or Sources lines — they are kept from the original.${arabic}
+
+${GROUNDING_RULES}
+
+STORIES TO REWRITE:
+${blocks}`;
+
+  const { text, usage } = await callClaudeComplete(tail, 8000, { label: `${category} repair`, cachedPrefix: prefix });
+  trackClaudeCall(usage, { category, timeSlot, language, contentType: 'grounding_repair' });
+  const out = new Map();
+  const re = /===(STORY|CARD)\s+(\d+)===\s*\n?([\s\S]*?)(?=\n?===(?:STORY|CARD)\s+\d+===|$)/g;
+  for (const m of text.matchAll(re)) {
+    const kind = m[1], n = Number(m[2]), body = m[3].trim();
+    const rec = out.get(n) || {};
+    if (kind === 'STORY' && /^SKIP\b/i.test(body)) { rec.skip = true; out.set(n, rec); continue; }
+    const doc = parseDoc(body.startsWith('## ') ? body : `## ${body}`);
+    if (doc.stories[0]) rec[kind === 'STORY' ? 'story' : 'card'] = doc.stories[0];
+    out.set(n, rec);
   }
+  return out;
+}
+
+async function groundDigest({ category, timeSlot, language, digest, cards, prefix }) {
+  const report = { checked: false, passed: null, flags: [], repaired: 0, removedAfterRepair: [], emptied: [], checked_at: new Date().toISOString() };
+  const D = parseDoc(digest);
+  const C = cards ? parseDoc(cards) : null;
+  if (!D.stories.length) return { digest, cards, report };
+
+  // Cards follow their digest story by headline, or by position when the lists line up.
+  const pairs = D.stories.map((st, i) => {
+    if (!C) return -1;
+    const j = C.stories.findIndex(c => normHeadline(c.headline) === normHeadline(st.headline));
+    return j > -1 ? j : (C.stories.length === D.stories.length ? i : -1);
+  });
+  const statements = (indices) => {
+    const lines = [], byId = new Map();
+    for (const i of indices) {
+      for (const u of unitsOf(D.stories[i], `D${i + 1}`)) { lines.push(`[${u.id}] ${u.text}`); byId.set(u.id, u); }
+      if (pairs[i] > -1) for (const u of unitsOf(C.stories[pairs[i]], `C${i + 1}`, { headline: false })) { lines.push(`[${u.id}] ${u.text}`); byId.set(u.id, u); }
+    }
+    return { lines, byId };
+  };
+  const storyOf = (id) => Number((id.match(/^[DC](\d+)\./) || [])[1]) - 1;
+
+  // 1. check
+  const first = statements(D.stories.map((_, i) => i));
+  let flagged;
+  try { flagged = await checkUnits(prefix, first.lines, { category, timeSlot, language }); }
+  catch (e) {
+    console.warn(`⚠️  ${category}: grounding check failed — publishing unchecked:`, e.message);
+    return { digest, cards, report: { ...report, error: e.message } };
+  }
+  report.checked = true;
+  report.flags = [...flagged.entries()].filter(([id]) => first.byId.has(id))
+    .map(([id, reason]) => ({ id, claim: first.byId.get(id).text, reason }));
+  report.passed = report.flags.length === 0;
+  if (report.passed) return { digest, cards, report };
+
+  // 2. repair: rewrite each affected story from its own articles
+  const bad = [...new Set(report.flags.map(f => storyOf(f.id)).filter(i => i >= 0 && i < D.stories.length))];
+  let repairs = new Map();
+  try {
+    repairs = await repairStories(prefix, bad.map(i => ({
+      n: i + 1, story: D.stories[i], card: pairs[i] > -1 ? C.stories[pairs[i]] : null,
+      flagged: report.flags.filter(f => storyOf(f.id) === i).map(f => ({ id: f.id, text: f.claim, reason: f.reason })),
+    })), { category, timeSlot, language });
+  } catch (e) {
+    console.warn(`⚠️  ${category}: repair failed — removing the unsupported statements instead:`, e.message);
+  }
+  const unrepaired = [];
+  for (const i of bad) {
+    const rec = repairs.get(i + 1);
+    if (!rec || (!rec.skip && !rec.story)) { unrepaired.push(i); continue; }
+    if (rec.skip) { D.stories[i] = { ...D.stories[i], skip: true }; continue; }
+    const orig = D.stories[i];
+    const coverage = orig.lines.filter(l => /^\*\*(Coverage|التغطية):\*\*/.test(l));
+    const status = orig.lines.filter(l => /^\*\*Status:\*\*/.test(l));
+    const body = rec.story.lines.filter(l => !KEPT_LINE.test(l));
+    D.stories[i] = { headline: rec.story.headline || orig.headline, lines: [...coverage, ...body, ...status] };
+    if (pairs[i] > -1) {
+      C.stories[pairs[i]] = rec.card
+        ? { headline: D.stories[i].headline, lines: rec.card.lines }
+        : { ...C.stories[pairs[i]], headline: D.stories[i].headline };
+    }
+    report.repaired++;
+  }
+  // A story the repair did not return keeps its text minus the flagged statements.
+  for (const i of unrepaired) {
+    const ids = new Set(report.flags.filter(f => storyOf(f.id) === i).map(f => f.id));
+    const rd = removeUnits(D.stories[i], `D${i + 1}`, ids);
+    D.stories[i] = rd.headlineFlagged ? { ...rd.story, skip: true } : rd.story;
+    if (pairs[i] > -1) C.stories[pairs[i]] = removeUnits(C.stories[pairs[i]], `C${i + 1}`, ids).story;
+  }
+
+  // 3. recheck the rewrites once; what still is not traceable is removed outright
+  const rewritten = bad.filter(i => !unrepaired.includes(i) && !D.stories[i].skip);
+  if (rewritten.length) {
+    const second = statements(rewritten);
+    try {
+      const still = await checkUnits(prefix, second.lines, { category, timeSlot, language });
+      for (const i of rewritten) {
+        const ids = new Set([...still.keys()].filter(id => storyOf(id) === i && second.byId.has(id)));
+        ids.forEach(id => report.removedAfterRepair.push({ id, claim: second.byId.get(id).text, reason: still.get(id) }));
+        const rd = removeUnits(D.stories[i], `D${i + 1}`, ids);
+        D.stories[i] = rd.headlineFlagged ? { ...rd.story, skip: true } : rd.story;
+        if (pairs[i] > -1) C.stories[pairs[i]] = removeUnits(C.stories[pairs[i]], `C${i + 1}`, ids).story;
+      }
+    } catch (e) {
+      report.recheckError = e.message;
+      console.warn(`⚠️  ${category}: recheck failed — the rewrites stand unconfirmed:`, e.message);
+    }
+  }
+
+  // 4. drop: a story with no supported fact left is not published
+  const keep = D.stories.map(st => !st.skip && bulletCount(st) > 0);
+  report.emptied = D.stories.filter((_, i) => !keep[i]).map(st => st.headline);
+  const keptCards = new Set(D.stories.map((_, i) => (keep[i] ? pairs[i] : -1)).filter(j => j > -1));
+  D.stories = D.stories.filter((_, i) => keep[i]).map(({ skip, ...st }) => st);
+  if (C) C.stories = C.stories.filter((c, j) => keptCards.has(j) && bulletCount(c) > 0);
+  return { digest: renderDoc(D), cards: C ? renderDoc(C) : cards, report };
+}
+
+// The briefing is written from the finished digest, so the digest is what it is checked against.
+async function groundBriefing({ category, timeSlot, language, briefing, digest }) {
+  const report = { checked: false, flags: [], rewritten: false, removed: [] };
+  if (!briefing || !digest) return { briefing, report };
+  const prefix = `SOURCE DIGEST:\n${digest}`;
+  const statements = (text) => {
+    const lines = [], byId = new Map();
+    text.split(/\n\s*\n/).forEach((para, p) => sentencesOf(para).forEach((sen, si) => {
+      const id = `B${p + 1}.${si}`; lines.push(`[${id}] ${sen}`); byId.set(id, sen);
+    }));
+    return { lines, byId };
+  };
+  const drop = (text, ids) => text.split(/\n\s*\n/)
+    .map((para, p) => sentencesOf(para).filter((_, si) => !ids.has(`B${p + 1}.${si}`)).join(' '))
+    .filter(Boolean).join('\n\n');
+  try {
+    const first = statements(briefing);
+    const flagged = await checkUnits(prefix, first.lines, { category, timeSlot, language, against: 'the digest above' });
+    report.checked = true;
+    report.flags = [...flagged.entries()].filter(([id]) => first.byId.has(id)).map(([id, reason]) => ({ id, claim: first.byId.get(id), reason }));
+    if (!report.flags.length) return { briefing, report };
+
+    const tail = `Rewrite the spoken briefing below so that it says only what the digest above says. These statements in it are not supported by the digest:
+${report.flags.map(f => `- "${f.claim}" — ${f.reason}`).join('\n')}
+
+Correct or drop them, and add nothing new. Keep it flowing prose in one or two short paragraphs, conversational and meant to be read aloud. No headings, no bullets, no markdown, no source names or URLs.${language === 'ar' ? ' Write in Modern Standard Arabic.' : ''}
+
+BRIEFING:
+${briefing}`;
+    const data = await callClaudeCached(prefix, tail, 700);
+    trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_repair' });
+    const rewritten = stripRecapChrome((data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n'));
+    report.rewritten = true;
+    const second = statements(rewritten);
+    const still = await checkUnits(prefix, second.lines, { category, timeSlot, language, against: 'the digest above' });
+    const ids = new Set([...still.keys()].filter(id => second.byId.has(id)));
+    ids.forEach(id => report.removed.push({ id, claim: second.byId.get(id), reason: still.get(id) }));
+    return { briefing: drop(rewritten, ids), report };
+  } catch (e) {
+    report.error = e.message;
+    console.warn(`⚠️  ${category}: briefing check failed — publishing it unchecked:`, e.message);
+    return { briefing, report };
+  }
+}
+
+// Stories written from the reserves join the feed after the ones already there.
+function mergeReserves(base, extra, need) {
+  const B = parseDoc(base.digest), BC = base.cards ? parseDoc(base.cards) : null;
+  const X = parseDoc(extra.digest), XC = extra.cards ? parseDoc(extra.cards) : null;
+  const have = new Set(B.stories.map(st => normHeadline(st.headline)));
+  const added = [];
+  for (const st of X.stories) {
+    if (added.length >= need) break;
+    if (!bulletCount(st) || have.has(normHeadline(st.headline))) continue;
+    B.stories.push(st); have.add(normHeadline(st.headline)); added.push(st.headline);
+    const card = XC?.stories.find(c => normHeadline(c.headline) === normHeadline(st.headline));
+    if (BC && card) BC.stories.push(card);
+  }
+  if (added.length && X.tail) {
+    const extraSources = X.tail.split('\n').slice(1).filter(l => /^\s*-\s*\[/.test(l));
+    B.tail = B.tail ? `${B.tail}\n${extraSources.join('\n')}` : X.tail;
+  }
+  return { digest: renderDoc(B), cards: BC ? renderDoc(BC) : base.cards, added };
 }
 
 // In-memory fallback so toggles work today even before `app_settings` exists —
@@ -2984,7 +3205,7 @@ async function setSettingEnabled(key, enabled) {
   }
 }
 
-const isAuditEnabled       = () => isSettingEnabled('audit_enabled', false);
+const isAuditEnabled       = () => isSettingEnabled('audit_enabled', true);
 const setAuditEnabled      = (enabled) => setSettingEnabled('audit_enabled', enabled);
 // Default true — this switch is for deliberately pausing generation on non-testing
 // days, not something that should silently start the pipeline off for anyone who
@@ -3021,14 +3242,16 @@ ${digestContent}
 For each story in the digest, use this EXACT format — no preamble:
 
 ## [Use the EXACT same headline as the corresponding digest story — copy it verbatim, plain text. Do NOT shorten, rephrase, or invent a new headline.]
-- One key fact — short, direct sentence under 20 words.
-- Second key detail — short, direct sentence under 20 words.
-- Third point if critical — short, direct sentence under 20 words.
-**Summary:** Write 3–4 complete flowing sentences as a narrative paragraph — NOT a restatement of the bullets. Add the context, background, and nuance from the digest that the bullets leave out (history, causes, what's at stake, what happens next). This is the paragraph a reader wants when they tap for the full story, so it must read differently from and go beyond the bullets above. (REQUIRED — always include for every story.)
-**Why this matters:** One sentence, maximum impact.
-**Perspectives differ:** Carry this line over whenever the digest includes it for this story — keep the named outlets and the contrast, condensed to one clear sentence. Omit only if the digest has no perspectives line for that story.
+- One fact from that story — one sentence under 20 words.
+- Second fact — one sentence under 20 words.
+- Third fact, only if that story has one.
+**Summary:** 2–3 plain sentences restating what that digest story says, for a reader who wants a little more than the bullets. Use nothing that is not in that story — no background, no consequences, no "what happens next".
+**Why this matters:** Copy it over only if the digest story has one. Otherwise leave the line out.
+**Perspectives differ:** Copy it over, condensed to one sentence, only if the digest story has one. Otherwise leave the line out.
 
-Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single punchy sentence. The **Summary:** field is mandatory for every single story — never skip it.`;
+Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single short sentence.
+
+${GROUNDING_RULES.replace(/the accounts you were given/g, 'the digest above').replace(/the accounts/g, 'the digest').replace(/an account/g, 'the digest')}`;
 
   // The cards are written from the digest, so the digest's length is inherited here: a
   // truncated digest used to become truncated cards and a story_count that recorded the loss
@@ -3077,7 +3300,7 @@ Below is today's full digest for this section${storyCount ? ` — ${storyCount} 
 
 ${digestContent}
 
-Write ONE cohesive briefing of about ${targetWords} words that catches the listener up on the WHOLE section — what is happening and why it matters — as if delivering a quick on-air catch-up.
+Write ONE cohesive briefing of about ${targetWords} words that catches the listener up on the WHOLE section — what happened — as if delivering a quick on-air catch-up. Use only what the digest says: no significance, background, causes or predictions that the digest does not itself contain. If that leaves the briefing shorter than ${targetWords} words, keep it shorter.
 
 Coverage is the priority: EVERY story in the digest above must appear, at minimum as a clause. Give the biggest story a sentence or two; give each remaining story at least a clause of its own. Do not spend the whole briefing on one or two stories and leave the rest out — a listener should finish it knowing everything that happened in this section, even if only in outline. Group related stories into a single sentence where that reads naturally.
 
@@ -3529,22 +3752,17 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     if (morningRow?.content) priorDigest = morningRow.content;
   }
 
-  const { summary: digestContent, cards: inlineCards, sourceArticles, searchContext, retrievalStats } = priorDigest
+  const gen = priorDigest
     ? await generateEveningUpdate(category, targetDay, priorDigest, language)
     : await generateNews(category, targetDay, timeSlot, 3, null, null, language);
+  const { sourceArticles, retrievalStats } = gen;
+  let digestContent = gen.summary;
+  let storiesContent = gen.cards || null;
+  const sourcesPrefix = gen.sourcesPrefix || `SEARCH RESULTS (ground truth):\n${gen.searchContext}`;
 
   // First real http:// image from the article pool — used as the per-digest lead image
   const leadImageUrl = (sourceArticles || []).find(a => a.imageUrl?.startsWith('http'))?.imageUrl || null;
 
-  // Digest-only, both languages — Arabic digests are checked against the Arabic
-  // searchContext they were written from, same as English. One toggle controls both;
-  // see auditDigest for why stories/briefing don't get their own separate check.
-  let auditResult = null;
-  if (await isAuditEnabled()) {
-    auditResult = await auditDigest(category, timeSlot, digestContent, searchContext, language);
-  }
-
-  let storiesContent = inlineCards || null;
   if (GENERATE_STORIES_CONTENT && !storiesContent) {
     try {
       storiesContent = await generateStoriesContent(category, targetDay, timeSlot, digestContent, language);
@@ -3553,12 +3771,58 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     }
   }
 
-  // Category-level briefing — a short synthesis of the whole category (for category Read/Play)
+  // Nothing is published that cannot be traced to what we retrieved — the digest and the cards
+  // people read are checked, unsupported statements rewritten from the articles, and a story
+  // left with nothing supported is dropped. See groundDigest.
+  const gate = await isAuditEnabled();
+  let auditResult = null;
+  if (gate) {
+    const g = await groundDigest({ category, timeSlot, language, digest: digestContent, cards: storiesContent, prefix: sourcesPrefix });
+    digestContent = g.digest; storiesContent = g.cards; auditResult = g.report;
+  }
+
+  // A feed short of its twelve — a story dropped by the check, or one the writer could not
+  // support — is topped up from the reserves rather than published short or padded.
+  const published = parseDoc(digestContent).stories.length;
+  if (gen.writeReserves && published < FEED_STORIES) {
+    const need = FEED_STORIES - published;
+    try {
+      const extra = await gen.writeReserves(need);
+      let xd = extra.digest, xc = extra.cards;
+      if (!xc && GENERATE_STORIES_CONTENT) xc = await generateStoriesContent(category, targetDay, timeSlot, xd, language);
+      let xr = null;
+      if (gate) {
+        const g2 = await groundDigest({ category, timeSlot, language, digest: xd, cards: xc, prefix: extra.prefix });
+        xd = g2.digest; xc = g2.cards; xr = g2.report;
+      }
+      const merged = mergeReserves({ digest: digestContent, cards: storiesContent }, { digest: xd, cards: xc }, need);
+      digestContent = merged.digest; storiesContent = merged.cards;
+      if (auditResult) { auditResult.replaced = merged.added; auditResult.reserveCheck = xr; }
+      console.log(`♻️  ${category}: ${published} published, ${merged.added.length} of ${need} missing stories replaced from the reserves`);
+    } catch (err) {
+      console.warn(`♻️  ${category}: could not replace from the reserves — publishing ${published}:`, err.message);
+    }
+  }
+
+  // Category-level briefing — a short synthesis of the whole category, written from the final
+  // digest and checked against it.
   let briefing = null;
   try {
     briefing = await generateBriefing(category, targetDay, timeSlot, digestContent, language);
   } catch (err) {
     console.warn(`Briefing generation failed for ${category}:`, err.message);
+  }
+  if (gate && briefing) {
+    const gb = await groundBriefing({ category, timeSlot, language, briefing, digest: digestContent });
+    briefing = gb.briefing;
+    if (auditResult) auditResult.briefing = gb.report;
+  }
+
+  if (auditResult?.checked) {
+    console.log(`🧾 ${category}${language === 'ar' ? ' [AR]' : ''}: ${auditResult.flags.length} unsupported statement(s) found · `
+      + `${auditResult.repaired} stor${auditResult.repaired === 1 ? 'y' : 'ies'} rewritten · `
+      + `${auditResult.removedAfterRepair.length} removed after rewriting · ${auditResult.emptied.length} dropped · `
+      + `${(auditResult.replaced || []).length} replaced`);
   }
 
   await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl, auditResult, retrievalStats);
