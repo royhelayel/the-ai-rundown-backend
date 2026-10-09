@@ -68,10 +68,25 @@ articles no lane returned text for — then gates on tier-1 membership, freshnes
 dedupes, and **groups** near-identical articles into single stories before handing them to the
 model. The legacy Serper path is still in the file for comparison.
 
-Two hard product constraints, set by Roy and not negotiable:
+Hard product constraints, set by Roy and not negotiable:
 - **Tier-1 sources only.** Anything not in `TIER1_DOMAIN_SET` is dropped, not downranked.
-- **No paywalled content and nothing that isn't permitted.** `mayFetchBody()` reflects each
-  outlet's robots.txt; never read a body it says no to.
+- **No paywalled content and nothing that isn't permitted.** Paywalled outlets
+  (`paywall: true` in the registry) are neither read nor cited; `mayFetchBody()` reflects each
+  outlet's robots.txt.
+- **Summaries say only what we retrieved.** The app tells people what the headlines are,
+  explains them a little, and links out. No background, context, causes, consequences,
+  predictions or significance unless an article states it; if the articles can't explain
+  something, it stays unexplained. `GROUNDING_RULES` is the single statement of this and goes
+  into every prompt that writes a summary — never add an instruction that asks the model for
+  context it wasn't given.
+- **Every published statement is checked.** `groundDigest` checks the digest *and* the cards
+  against the retrieved articles, rewrites stories with untraceable statements, rechecks once,
+  removes what's still untraceable, and drops a story left with nothing. A dropped story is
+  replaced from the reserves (`readUntilFilled` reads 12 + up to 4), never published from its
+  headline. The briefing is checked against the finished digest.
+
+The Anthropic balance is sometimes left empty on purpose to limit spend while Roy is building.
+A generation failing with "credit balance is too low" in that period is expected, not an outage.
 
 ## Migrations
 
