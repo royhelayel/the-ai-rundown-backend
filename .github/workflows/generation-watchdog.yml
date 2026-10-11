@@ -76,7 +76,7 @@ jobs:
               "${{ secrets.BACKEND_URL }}/api/generate/$SLOT"
             if [ "$SLOT" = "morning" ]; then
               curl -s --max-time 60 --retry 3 --retry-delay 15 --retry-connrefused \
-                -X POST -H "Content-Type: application/json" -d '{"language":"ar"}' \
+                -X POST -H "Content-Type: application/json" -d '{"language":"ar","auto":true}' \
                 "${{ secrets.BACKEND_URL }}/api/generate/morning"
             fi
           else

@@ -316,11 +316,17 @@ async function serperSearch(query, num = 10, day = null, gl = 'us', hl = 'en') {
     body: JSON.stringify({ q: query, num, gl, hl, tbs })
   });
   if (!res.ok) {
-    console.warn(`⚠️  Serper non-OK for "${query}": HTTP ${res.status}`);
+    // Keep Serper's own words. "HTTP 400" alone looked like a bad query; the body says whether
+    // it is a bad query, a bad key or an empty account, and those need different people.
+    const body = (await res.text().catch(() => '')).slice(0, 200);
+    lastSerperError = `HTTP ${res.status}${body ? ` — ${body}` : ''}`;
+    console.warn(`⚠️  Serper non-OK for "${query}": ${lastSerperError}`);
     return { news: [] };
   }
+  lastSerperError = null;
   return res.json();
 }
+let lastSerperError = null;
 
 // Tier-1 news outlets — articles from these domains are sorted to the top of the
 // context so Claude prioritises major stories over niche/low-authority sources.
@@ -1013,7 +1019,7 @@ async function buildSearchContext(categoryQuery, day, language = 'en', isRegiona
   }
 
   if (Object.keys(scoreMap).length === 0) {
-    throw new Error(`Serper returned no results for "${categoryQuery}" — API key may be invalid or rate-limited`);
+    throw new Error(`Serper returned no results for "${categoryQuery}" — ${lastSerperError || 'no error reported, the query simply matched nothing'}`);
   }
   // Loud, not silent. The last time a freshness filter existed it was removed because strict
   // dates starved LEB and QAT down to 0–2 articles; if that ever recurs it should appear in
@@ -2711,6 +2717,18 @@ No Coverage lines and no Sources section in the cards. The grounding rules apply
     return { digest: guarded.content, cards, prefix };
   };
 
+  // Nothing readable came back: say why, rather than paying for a call whose only possible answer
+  // is "there is nothing here" — which cleanRawSummary then reported as "search results were
+  // likely empty", the message that hid a dead Serper account for a whole run.
+  if (usedCorpus && !(retrievalStats?.storiesTried > 0)) {
+    const why = [
+      `${retrievalStats?.fetched ?? retrievalStats?.pool?.raw ?? 0} headlines retrieved`,
+      retrievalStats?.droppedForNoBody ? `${retrievalStats.droppedForNoBody} stories with no readable article` : null,
+      retrievalStats?.lane4?.error ? `Serper: ${retrievalStats.lane4.error}` : null,
+    ].filter(Boolean).join('; ');
+    throw new Error(`No readable stories for ${category} — ${why}`);
+  }
+
   const main = await writeBatch(searchContext, citableUrls, category);
   const written = (main.digest.match(/^## (?!Sources)/gm) || []).length;
   const prepared = retrievalStats?.storiesTried ?? null;
@@ -3893,6 +3911,31 @@ async function sendGenerationFailureAlert(timeSlot, day, language, failedList, s
   }
 }
 
+// Which full runs are in progress on this instance. GitHub's schedulers are unreliable — on
+// 11 Oct the 02:00 UTC morning cron fired at 08:01, two minutes after a manual run, and the
+// watchdog had already triggered one at 06:14 — so two English runs wrote the same rows in
+// parallel and every morning was paid for twice. Render runs one instance, so in-memory is
+// enough; a restart clears it, which is right, because a restart also kills the run.
+const runningGenerations = new Set();
+const runKey = (day, slot, language) => `${day}|${slot}|${language}`;
+
+// Did today's run for this slot already succeed? A run that failed on every category (an empty
+// balance, say) does not count, so the next automatic trigger still retries it.
+async function slotAlreadyGenerated(day, slot, language) {
+  try {
+    const { data } = await supabaseAdmin.from('generation_logs')
+      .select('completed_at, categories_succeeded, categories_failed')
+      .eq('day', day).eq('time_slot', slot).eq('language', language)
+      .not('completed_at', 'is', null)
+      .order('started_at', { ascending: false }).limit(3);
+    return (data || []).some(r => {
+      const ok = Array.isArray(r.categories_succeeded) ? r.categories_succeeded.length : (r.categories_succeeded || 0);
+      const failed = Array.isArray(r.categories_failed) ? r.categories_failed.length : (r.categories_failed || 0);
+      return ok > 0 && ok >= failed;
+    });
+  } catch { return false; }
+}
+
 async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en', categories = null) {
   const targetDay = day || getTodayDate();
   // Arabic default run: skip any category with no Arabic query rather than falling
@@ -3900,6 +3943,14 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   // search Serper for the literal English category name (e.g. "AI") as Arabic content.
   const targetCategories = categories || (language === 'ar' ? DEFAULT_CATEGORIES.filter(c => ARABIC_CATEGORY_QUERIES[c]) : DEFAULT_CATEGORIES);
   const langLabel = language === 'ar' ? ' [AR]' : '';
+  // A full run only; a single-category regenerate does not lock the slot.
+  const lock = categories ? null : runKey(targetDay, timeSlot, language);
+  if (lock && runningGenerations.has(lock)) {
+    console.log(`⏭️  ${timeSlot}${langLabel} for ${targetDay} is already running — not starting a second one`);
+    return;
+  }
+  if (lock) runningGenerations.add(lock);
+  try {
   const startedAt = new Date();
   resetRetrievalTally();
 
@@ -4111,6 +4162,9 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   }
 
   clearInterval(keepAliveTimer);
+  } finally {
+    if (lock) runningGenerations.delete(lock);
+  }
 }
 
 // Cloud Scheduler will trigger the /api/generate/:timeSlot endpoints
@@ -4348,6 +4402,17 @@ app.post('/api/generate/:timeSlot', async (req, res) => {
     const categories = category ? [category] : null;
     const langLabel = language === 'ar' ? ' [AR]' : '';
     const catLabel = category ? ` (${category})` : ' (all categories)';
+
+    // Two schedulers can both decide a slot needs running. Either one, arriving second, must
+    // find the work done or under way and leave it. A manual request is still refused while
+    // the same slot is mid-run — two runs writing one set of rows helps nobody — but may
+    // regenerate a slot that already succeeded.
+    if (!categories && runningGenerations.has(runKey(targetDay, slot.label, language))) {
+      return res.json({ status: 'skipped', message: `${slot.label}${langLabel} for ${targetDay} is already running.` });
+    }
+    if (isAuto && !categories && await slotAlreadyGenerated(targetDay, slot.label, language)) {
+      return res.json({ status: 'skipped', message: `${slot.label}${langLabel} for ${targetDay} already generated today.` });
+    }
 
     // Fire-and-forget — respond immediately so Render's proxy doesn't time out the
     // connection (it closes connections with no response after ~60-90 s).
@@ -5850,7 +5915,7 @@ app.get('/admin/api/debug-serper', async (req, res) => {
         headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({ q, num, gl: 'us', hl: 'en', tbs }),
       });
-      if (!r.ok) return { httpError: r.status };
+      if (!r.ok) return { httpError: r.status, body: (await r.text().catch(() => '')).slice(0, 300) };
       const j = await r.json();
       const items = j.news || j.organic || [];
       const stale = items.filter(it => /week|month|year/i.test(it.date || '')).length;
