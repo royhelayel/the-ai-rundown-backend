@@ -3524,8 +3524,10 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     const { data: existing } = await query.maybeSingle();
 
     // Count stories in the generated content (number of ## headings in stories_content)
+    // Story headings only. A "## Sources" heading the model sometimes adds to the cards was
+    // being counted as a thirteenth story.
     const storyCount = storiesContent
-      ? (storiesContent.match(/^#{1,3} /mg) || []).length
+      ? (storiesContent.match(/^#{1,3} (?!\[?(?:Sources|المصادر))/mg) || []).length
       : null;
 
     const updatePayload = { content, generated_at };
@@ -3820,6 +3822,24 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     } catch (err) {
       console.warn(`♻️  ${category}: could not replace from the reserves — publishing ${published}:`, err.message);
     }
+  }
+
+  // Twelve, as decided. The writer can split one item into several stories when grouping merged
+  // separate events into it — Basketball came out at 15 from 12 items, every one a real story —
+  // so the feed is trimmed back to its target, keeping the highest-ranked, which come first.
+  // Cards never carry a Sources section; the model adds one now and then regardless.
+  {
+    const D = parseDoc(digestContent);
+    const C = storiesContent ? parseDoc(storiesContent) : null;
+    if (D.stories.length > FEED_STORIES) {
+      const keep = new Set(D.stories.slice(0, FEED_STORIES).map(st => normHeadline(st.headline)));
+      const byPosition = C && C.stories.length === D.stories.length;
+      console.log(`✂️  ${category}: ${D.stories.length} stories written, trimmed to ${FEED_STORIES}`);
+      D.stories = D.stories.slice(0, FEED_STORIES);
+      digestContent = renderDoc(D);
+      if (C) C.stories = byPosition ? C.stories.slice(0, FEED_STORIES) : C.stories.filter(c => keep.has(normHeadline(c.headline)));
+    }
+    if (C) storiesContent = renderDoc({ ...C, tail: '' });
   }
 
   // Category-level briefing — a short synthesis of the whole category, written from the final
