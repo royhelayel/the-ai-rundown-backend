@@ -1,3 +1,4 @@
+import { parseAuditJSON, sentencesOf, unsupportedMap, recapIssues, validateRecap } from './recap-validation.js';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -2889,11 +2890,6 @@ function renderDoc({ head, stories, tail }) {
 
 // Split on a sentence end followed by a capital or Arabic letter, so "3.5%" and "U.S. officials"
 // stay whole.
-function sentencesOf(text) {
-  const t = (text || '').trim();
-  if (!t) return [];
-  return t.split(/(?<=[.!?؟]["'”’)\]]*)\s+(?=["'“‘(\[]?[A-Z؀-ۿ])/).map(x => x.trim()).filter(Boolean);
-}
 
 function unitsOf(story, tag, { headline = true } = {}) {
   const units = [];
@@ -2950,12 +2946,9 @@ ${unitLines.join('\n')}`;
   const data = await callClaudeCached(prefix, tail, 2500);
   trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_check' });
   const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
-  const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error('grounding check did not return JSON');
-  const parsed = JSON.parse(m[0]);
-  const out = new Map();
-  for (const u of parsed.unsupported || []) if (u && u.id) out.set(String(u.id).trim(), String(u.reason || '').slice(0, 240));
-  return out;
+  if (data.stop_reason === 'max_tokens') throw new Error('Truncated grounding check');
+  const validIds = new Set(unitLines.map(line => line.match(/^\[([^\]]+)\]/)?.[1]));
+  return unsupportedMap(parseAuditJSON(raw), validIds);
 }
 
 async function repairStories(prefix, items, { category, timeSlot, language }) {
@@ -3117,47 +3110,27 @@ async function groundDigest({ category, timeSlot, language, digest, cards, prefi
 
 // The briefing is written from the finished digest, so the digest is what it is checked against.
 async function groundBriefing({ category, timeSlot, language, briefing, digest }) {
-  const report = { checked: false, flags: [], rewritten: false, removed: [] };
-  if (!briefing || !digest) return { briefing, report };
-  const prefix = `SOURCE DIGEST:\n${digest}`;
-  const statements = (text) => {
-    const lines = [], byId = new Map();
-    text.split(/\n\s*\n/).forEach((para, p) => sentencesOf(para).forEach((sen, si) => {
-      const id = `B${p + 1}.${si}`; lines.push(`[${id}] ${sen}`); byId.set(id, sen);
-    }));
-    return { lines, byId };
-  };
-  const drop = (text, ids) => text.split(/\n\s*\n/)
-    .map((para, p) => sentencesOf(para).filter((_, si) => !ids.has(`B${p + 1}.${si}`)).join(' '))
-    .filter(Boolean).join('\n\n');
-  try {
-    const first = statements(briefing);
-    const flagged = await checkUnits(prefix, first.lines, { category, timeSlot, language, against: 'the digest above' });
-    report.checked = true;
-    report.flags = [...flagged.entries()].filter(([id]) => first.byId.has(id)).map(([id, reason]) => ({ id, claim: first.byId.get(id), reason }));
-    if (!report.flags.length) return { briefing, report };
-
-    const tail = `Rewrite the spoken briefing below so that it says only what the digest above says. These statements in it are not supported by the digest:
-${report.flags.map(f => `- "${f.claim}" — ${f.reason}`).join('\n')}
-
-Correct or drop them, and add nothing new. Keep it flowing prose in one or two short paragraphs, conversational and meant to be read aloud. No headings, no bullets, no markdown, no source names or URLs.${language === 'ar' ? ' Write in Modern Standard Arabic.' : ''}
-
-BRIEFING:
-${briefing}`;
-    const data = await callClaudeCached(prefix, tail, 700);
-    trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_repair' });
-    const rewritten = stripRecapChrome((data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n'));
-    report.rewritten = true;
-    const second = statements(rewritten);
-    const still = await checkUnits(prefix, second.lines, { category, timeSlot, language, against: 'the digest above' });
-    const ids = new Set([...still.keys()].filter(id => second.byId.has(id)));
-    ids.forEach(id => report.removed.push({ id, claim: second.byId.get(id), reason: still.get(id) }));
-    return { briefing: drop(rewritten, ids), report };
-  } catch (e) {
-    report.error = e.message;
-    console.warn(`⚠️  ${category}: briefing check failed — publishing it unchecked:`, e.message);
-    return { briefing, report };
-  }
+  const stories = parseDoc(digest).stories;
+  const ids = stories.map((_, i) => `S${i + 1}`);
+  const prefix = `SOURCE DIGEST:\n${stories.map((s, i) => `[${ids[i]}] ${s.headline}\n${s.lines.join('\n')}`).join('\n\n')}`;
+  return validateRecap({
+    text: briefing,
+    audit: async text => {
+      const prompt = `Check the WHOLE recap against ONLY the source digest. Every story must be represented. Check names, numbers, attribution, uncertainty, allegations versus established facts, association versus causation, and essential qualifications. Compression and omission of nonessential details are allowed; omission that changes meaning is not. Check complete sentence grammar and dangling fragments. Do not use outside knowledge. Return ONLY JSON: {"missingStories":["S1"],"issues":["specific unsupported claim, lost essential qualification, or broken sentence"]}. Use empty arrays if there are no problems. Missing story IDs must come from the source digest.\nRECAP:\n${text}`;
+      const data = await callClaudeCached(prefix, prompt, 2500);
+      trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_check' });
+      if (data.stop_reason === 'max_tokens') throw new Error('Truncated recap audit');
+      const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+      return recapIssues(parseAuditJSON(raw), ids);
+    },
+    rewrite: async (text, issues) => {
+      const prompt = `Rewrite the entire recap to fix these problems:\n${issues.join('\n')}\nUse only the digest. Cover EVERY story, preserve essential qualifications and attribution, and use complete sentences. Maximum 170 words; no minimum length. Do not add filler or outside knowledge. Plain flowing prose, no headings, bullets or URLs.${language === 'ar' ? ' Write in Modern Standard Arabic.' : ''}\nRECAP:\n${text}`;
+      const data = await callClaudeCached(prefix, prompt, 1000);
+      trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_repair' });
+      if (data.stop_reason === 'max_tokens') throw new Error('Truncated recap repair');
+      return stripRecapChrome((data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n'));
+    },
+  });
 }
 
 // Stories written from the reserves join the feed after the ones already there.
@@ -3303,14 +3276,10 @@ async function generateBriefing(category, day, timeSlot, digestContent, language
     ? `\n\nWrite the entire briefing in Modern Standard Arabic (اللغة العربية الفصحى).`
     : '';
 
-  // Budget scales with how much there is to cover. A flat 90–120 words told the model to
-  // lead with the biggest story and explicitly NOT to enumerate — so across eight or nine
-  // stories it spent everything on one or two and dropped the rest, which is what the recap
-  // was being criticised for. ~18 words per story gives every one a clause; the floor keeps
-  // a thin category from reading as a stub, the cap keeps this inside its "1 min" promise
-  // (~150 wpm, so 170 words ≈ 68s of speech).
-  const storyCount = (digestContent.match(/^##\s+/gm) || []).length;
-  const targetWords = Math.max(90, Math.min(170, Math.round(storyCount * 18)));
+  // Keep short categories short. The final validator enforces 170 words and
+  // requires every story plus essential qualifications, otherwise it withholds.
+  const storyCount = parseDoc(digestContent).stories.length;
+  const targetWords = Math.min(170, Math.max(20, Math.round(storyCount * 18)));
 
   const prompt = `You are a news anchor writing a short spoken briefing that catches a listener up on the "${category}" section.${arabicInstruction}
 
@@ -3318,13 +3287,14 @@ Below is today's full digest for this section${storyCount ? ` — ${storyCount} 
 
 ${digestContent}
 
-Write ONE cohesive briefing of about ${targetWords} words that catches the listener up on the WHOLE section — what happened — as if delivering a quick on-air catch-up. Use only what the digest says: no significance, background, causes or predictions that the digest does not itself contain. If that leaves the briefing shorter than ${targetWords} words, keep it shorter.
+Write ONE cohesive briefing of about ${targetWords} words that catches the listener up on the WHOLE section — what happened — as if delivering a quick on-air catch-up. Use only what the digest says: no significance, background, causes or predictions that the digest does not itself contain. If that leaves the briefing shorter than ${targetWords} words, keep it shorter. There is no minimum length. Never exceed 170 words. Preserve essential qualifications, uncertainty and attribution; never turn an allegation into a fact or an association into causation.
 
 Coverage is the priority: EVERY story in the digest above must appear, at minimum as a clause. Give the biggest story a sentence or two; give each remaining story at least a clause of its own. Do not spend the whole briefing on one or two stories and leave the rest out — a listener should finish it knowing everything that happened in this section, even if only in outline. Group related stories into a single sentence where that reads naturally.
 
 Rules: Flowing prose in one or two short paragraphs — not a list. NO headings, NO bullet points, NO markdown, NO source names or URLs. Lead with the biggest story, then move through the rest. Conversational and clear, meant to be read aloud. Start immediately with the briefing text — no preamble, no title.`;
 
   const data = await callClaude(prompt, 600);
+  if (data.stop_reason === 'max_tokens') throw new Error('Truncated briefing generation');
   // Same strip the period recaps get. The prompt asks for no headings and no bullets, but a
   // title line comes back often enough to be worth removing rather than only asking for —
   // and this text is read aloud, so a stray "# Technology Briefing" is a sentence the
@@ -3844,16 +3814,23 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
 
   // Category-level briefing — a short synthesis of the whole category, written from the final
   // digest and checked against it.
-  let briefing = null;
-  try {
-    briefing = await generateBriefing(category, targetDay, timeSlot, digestContent, language);
-  } catch (err) {
-    console.warn(`Briefing generation failed for ${category}:`, err.message);
-  }
-  if (gate && briefing) {
-    const gb = await groundBriefing({ category, timeSlot, language, briefing, digest: digestContent });
-    briefing = gb.briefing;
-    if (auditResult) auditResult.briefing = gb.report;
+  // An empty string also clears an older recap on regeneration; null would leave it stored.
+  let briefing = '';
+  const digestVerified = gate && auditResult?.checked && !auditResult.error && !auditResult.recheckError
+    && (!auditResult.reserveCheck || (auditResult.reserveCheck.checked && !auditResult.reserveCheck.error && !auditResult.reserveCheck.recheckError));
+  if (!auditResult) auditResult = { checked: false, flags: [] };
+  if (!digestVerified) {
+    auditResult.briefing = { checked: false, passed: false, withheld: true, error: 'Source digest was not fully verified' };
+  } else {
+    try {
+      const candidate = await generateBriefing(category, targetDay, timeSlot, digestContent, language);
+      const gb = await groundBriefing({ category, timeSlot, language, briefing: candidate, digest: digestContent });
+      briefing = gb.briefing;
+      auditResult.briefing = gb.report;
+    } catch (err) {
+      auditResult.briefing = { checked: false, passed: false, withheld: true, error: err.message };
+      console.warn(`Briefing withheld for ${category}:`, err.message);
+    }
   }
 
   if (auditResult?.checked) {
