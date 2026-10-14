@@ -301,6 +301,29 @@ function isArticleFresh(dateStr) {
   return (Date.now() - parsed.getTime()) < (MAX_ARTICLE_AGE_DAYS + 1) * 86400000;
 }
 
+// ── Serper spending ───────────────────────────────────────────────────────────
+// Serper is paid per request, and two things were spending it unseen: finding the real link for
+// every Google News story we tried to open — around a hundred a category — and the scheduled runs
+// that kept doing that every day while they failed for lack of Anthropic credit. Each category now
+// gets a fixed number of lookups, spent on the highest-ranked stories first, and once Serper says
+// the account is empty we stop asking for a while instead of sending hundreds of doomed requests.
+const SERPER_BUDGET_PER_CATEGORY = 30;
+const SERPER_EMPTY_PAUSE_MS = 15 * 60 * 1000;
+let serperBudget = { used: 0, skipped: 0 };
+let serperEmptyUntil = 0;
+const resetSerperBudget = () => { serperBudget = { used: 0, skipped: 0 }; };
+function takeSerperLookup() {
+  if (Date.now() < serperEmptyUntil || serperBudget.used >= SERPER_BUDGET_PER_CATEGORY) { serperBudget.skipped++; return false; }
+  serperBudget.used++;
+  return true;
+}
+function noteSerperFailure(status, body) {
+  if (status === 400 && /not enough credits/i.test(body || '')) {
+    if (Date.now() >= serperEmptyUntil) console.warn('⚠️  Serper says the account has no credits — pausing Serper lookups for 15 minutes');
+    serperEmptyUntil = Date.now() + SERPER_EMPTY_PAUSE_MS;
+  }
+}
+
 async function serperSearch(query, num = 10, day = null, gl = 'us', hl = 'en') {
   // Build day-pinned tbs: cover the target day plus the day before, so articles published
   // that day and any pieces filed just before midnight are both included.
@@ -311,6 +334,10 @@ async function serperSearch(query, num = 10, day = null, gl = 'us', hl = 'en') {
     const fmt = x => `${String(x.getUTCMonth()+1).padStart(2,'0')}/${String(x.getUTCDate()).padStart(2,'0')}/${x.getUTCFullYear()}`;
     tbs = `cdr:1,cd_min:${fmt(d1)},cd_max:${fmt(d)}`;
   }
+  if (!takeSerperLookup()) {
+    lastSerperError = Date.now() < serperEmptyUntil ? 'skipped — the Serper account has no credits' : `skipped — this category's ${SERPER_BUDGET_PER_CATEGORY}-lookup budget is spent`;
+    return { news: [] };
+  }
   const res = await fetch('https://google.serper.dev/news', {
     method: 'POST',
     headers: { 'X-API-KEY': process.env.SERPER_API_KEY, 'Content-Type': 'application/json' },
@@ -320,6 +347,7 @@ async function serperSearch(query, num = 10, day = null, gl = 'us', hl = 'en') {
     // Keep Serper's own words. "HTTP 400" alone looked like a bad query; the body says whether
     // it is a bad query, a bad key or an empty account, and those need different people.
     const body = (await res.text().catch(() => '')).slice(0, 200);
+    noteSerperFailure(res.status, body);
     lastSerperError = `HTTP ${res.status}${body ? ` — ${body}` : ''}`;
     console.warn(`⚠️  Serper non-OK for "${query}": ${lastSerperError}`);
     return { news: [] };
@@ -1220,6 +1248,9 @@ async function resolveArticleUrl(domain, headline) {
   if (!domain || !headline || !process.env.SERPER_API_KEY) return null;
   const key = `${domain}|${headline}`.slice(0, 180);
   if (urlResolveCache.has(key)) return urlResolveCache.get(key);
+  // Out of budget is not a verdict on the article, so it is not cached: a later category, with
+  // its own budget, may still look it up.
+  if (!takeSerperLookup()) return null;
   try {
     const r = await fetch('https://google.serper.dev/search', {
       method: 'POST',
@@ -1227,7 +1258,11 @@ async function resolveArticleUrl(domain, headline) {
       body: JSON.stringify({ q: `site:${domain} ${headline}`, num: 4, gl: 'us', hl: 'en' }),
       signal: AbortSignal.timeout(12000),
     });
-    if (!r.ok) { urlResolveCache.set(key, null); return null; }
+    if (!r.ok) {
+      noteSerperFailure(r.status, await r.text().catch(() => ''));
+      urlResolveCache.set(key, null);
+      return null;
+    }
     const j = await r.json();
     // Only a URL on the outlet we asked about, and not a section or tag page — those come
     // back for a headline the index has not caught up with yet, and fetching one would give
@@ -1771,6 +1806,8 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
         return l.length ? l[Math.floor(l.length / 2)] : 0;
       })(),
       lane5: { ...lane5Tally },
+      // Serper lookups this category spent, and how many the budget or an empty account refused.
+      serperUsed: serperBudget.used, serperSkipped: serperBudget.skipped,
       storyRetrieval: storyRetrievalOf(filled, storyBlocks),
     },
   };
@@ -1999,6 +2036,7 @@ const CORPUS_WINDOW_HOURS = { Morning: 24, Evening: 14 };
 // the same allowlist gate lane 3 goes through and it becomes a discovery funnel: good at
 // finding, not trusted to choose.
 async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Morning', withSerper = true) {
+  resetSerperBudget();
   if (TOPICAL_CATEGORIES.includes(category) && await isSharedPoolEnabled()) {
     try {
       return await contextFromSharedPool(category, day, language, timeSlot);
@@ -2268,6 +2306,8 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
       widenedIn, droppedOffSubject, askedCategories: askFor,
       // What lane 5 filled, and which failure it filled it from.
       lane5: { ...lane5Tally },
+      // Serper lookups this category spent, and how many the budget or an empty account refused.
+      serperUsed: serperBudget.used, serperSkipped: serperBudget.skipped,
       dedupedAway: kept.length - articles.length,
       groupedAway: articles.length - stories.length,
       byLane: articlesOut.reduce((m, a) => (m[a.lane] = (m[a.lane] || 0) + 1, m), {}),
@@ -2575,13 +2615,15 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     citableUrls = offeredUrls || [];
     console.log(`📚 ${category}: ${stats.storiesAfterGrouping} stories from ${stats.outlets} outlets · `
       + `read ${stats.storiesRead}/${stats.storiesTried} · ${stats.headlineOnly} headline-only · `
-      + `${stats.storiesWithMultipleAccounts} with 2+ accounts`);
+      + `${stats.storiesWithMultipleAccounts} with 2+ accounts · ${stats.serperUsed ?? 0} Serper lookups`
+      + (stats.serperSkipped ? ` (${stats.serperSkipped} skipped)` : ''));
   } else {
     const { context, articles } = await buildSearchContext(categoryQuery, day, language, isRegional, category);
     searchContext = context;
     sourceArticles = articles;
   }
-  const serper_searches = prebuiltContext ? 0 : 5;
+  // The real count, not the old flat guess of 5 — URL lookups cost the same as searches.
+  const serper_searches = prebuiltContext ? 0 : (retrievalStats?.serperUsed ?? 5);
   const serper_cost = serper_searches * 0.001;
 
   const arabicInstruction = language === 'ar'
@@ -3952,6 +3994,28 @@ async function sendGenerationFailureAlert(timeSlot, day, language, failedList, s
   }
 }
 
+// A one-token request, costing a fraction of a cent, that answers the one question to ask before a
+// run: can we write anything at all? Only a credit or key problem stops the run. A busy or briefly
+// unreachable API is left to the run's own retries rather than cancelling a whole morning.
+async function anthropicPreflight() {
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1, messages: [{ role: 'user', content: 'ok' }] }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (r.ok) return { ok: true };
+    const body = await r.text().catch(() => '');
+    let message = body;
+    try { message = JSON.parse(body)?.error?.message || body; } catch {}
+    const blocking = r.status === 401 || r.status === 403 || (r.status === 400 && /credit balance/i.test(message));
+    return blocking ? { ok: false, error: `Anthropic ${r.status}: ${message.slice(0, 160)}` } : { ok: true, warning: `Anthropic ${r.status}` };
+  } catch (e) {
+    return { ok: true, warning: e.message };
+  }
+}
+
 // Which full runs are in progress on this instance. GitHub's schedulers are unreliable — on
 // 11 Oct the 02:00 UTC morning cron fired at 08:01, two minutes after a manual run, and the
 // watchdog had already triggered one at 06:14 — so two English runs wrote the same rows in
@@ -4016,6 +4080,26 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   // Arabic is Morning-only
   if (language === 'ar' && timeSlot !== 'Morning') {
     console.log(`⏭️  Skipping Arabic generation for ${timeSlot} — Arabic is Morning-only`);
+    return;
+  }
+
+  // Nothing can be written without Anthropic credit, so check before anything is spent or removed.
+  // Retrieval spends Serper lookups, and the very next step clears this slot's existing news — so a
+  // run against an empty balance used to wipe the previous stories, pay for the lookups, and
+  // publish nothing. Now it stops here and leaves the previous news in place.
+  const preflight = await anthropicPreflight();
+  if (!preflight.ok) {
+    console.warn(`⛔ ${timeSlot}${langLabel} for ${targetDay} not run — ${preflight.error}. Existing news left in place.`);
+    const notRun = targetCategories.map(category => ({ category, error: `Not run: ${preflight.error}` }));
+    try {
+      if (generationLogId) {
+        await supabaseAdmin.from('generation_logs').update({
+          completed_at: new Date().toISOString(), total_duration_seconds: Math.round((Date.now() - startedAt) / 1000),
+          categories_succeeded: [], categories_failed: notRun, retry_succeeded: [], retry_failed: notRun,
+        }).eq('id', generationLogId);
+      }
+    } catch (e) { console.warn('Could not record the skipped run:', e.message); }
+    if (targetDay === getTodayDate()) await sendGenerationFailureAlert(timeSlot, targetDay, language, notRun, 0, targetCategories.length);
     return;
   }
 
