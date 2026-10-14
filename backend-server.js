@@ -3008,6 +3008,22 @@ ${blocks}`;
   return out;
 }
 
+// When the check itself breaks — the checker errors, or its reply cannot be trusted — we do not
+// know which sentences are wrong, so nothing can be corrected and nothing may be published on
+// trust. Each batch of stories is checked, retried once if the check breaks, and withheld if it
+// breaks again; a withheld story is replaced from the reserves like any other dropped one.
+// Batches are small so one bad reply costs three stories, not the whole category.
+const CHECK_BATCH = 3;
+
+async function checkWithRetry(prefix, lines, opts) {
+  let last;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { return await checkUnits(prefix, lines, opts); }
+    catch (e) { last = e; }
+  }
+  throw last;
+}
+
 async function groundDigest({ category, timeSlot, language, digest, cards, prefix }) {
   const report = { checked: false, passed: null, flags: [], repaired: 0, removedAfterRepair: [], emptied: [], checked_at: new Date().toISOString() };
   const D = parseDoc(digest);
@@ -3030,24 +3046,43 @@ async function groundDigest({ category, timeSlot, language, digest, cards, prefi
   };
   const storyOf = (id) => Number((id.match(/^[DC](\d+)\./) || [])[1]) - 1;
 
+  // Check these stories in small batches. Returns what each successful batch found, and the
+  // stories whose batch could not be checked even on a second try.
+  report.withheld = [];
+  const checkBatches = async (indices, stage) => {
+    const chunks = [];
+    for (let k = 0; k < indices.length; k += CHECK_BATCH) chunks.push(indices.slice(k, k + CHECK_BATCH));
+    const results = await Promise.all(chunks.map(async (chunk) => {
+      const { lines, byId } = statements(chunk);
+      try { return { chunk, byId, found: await checkWithRetry(prefix, lines, { category, timeSlot, language }) }; }
+      catch (e) { return { chunk, error: e.message }; }
+    }));
+    const found = [], failed = new Set();
+    for (const r of results) {
+      if (r.error) {
+        r.chunk.forEach(i => failed.add(i));
+        report.withheld.push({ stage, stories: r.chunk.map(i => D.stories[i].headline), error: r.error });
+        console.warn(`⚠️  ${category}: ${stage} broke twice for ${r.chunk.length} stor${r.chunk.length === 1 ? 'y' : 'ies'} — withheld:`, r.error);
+        continue;
+      }
+      for (const [id, reason] of r.found) if (r.byId.has(id)) found.push({ id, claim: r.byId.get(id).text, reason });
+    }
+    return { found, failed };
+  };
+  const withhold = (failed) => failed.forEach(i => { D.stories[i] = { ...D.stories[i], skip: true }; });
+
   // 1. check
-  const first = statements(D.stories.map((_, i) => i));
-  let flagged;
-  try { flagged = await checkUnits(prefix, first.lines, { category, timeSlot, language }); }
-  catch (e) {
-    console.warn(`⚠️  ${category}: grounding check failed — publishing unchecked:`, e.message);
-    return { digest, cards, report: { ...report, error: e.message } };
-  }
-  report.checked = true;
-  report.flags = [...flagged.entries()].filter(([id]) => first.byId.has(id))
-    .map(([id, reason]) => ({ id, claim: first.byId.get(id).text, reason }));
-  report.passed = report.flags.length === 0;
+  const first = await checkBatches(D.stories.map((_, i) => i), 'check');
+  withhold(first.failed);
+  report.checked = first.failed.size < D.stories.length;
+  report.flags = first.found;
+  report.passed = report.flags.length === 0 && first.failed.size === 0;
   if (report.passed) return { digest, cards, report };
 
   // 2. repair: rewrite each affected story from its own articles
-  const bad = [...new Set(report.flags.map(f => storyOf(f.id)).filter(i => i >= 0 && i < D.stories.length))];
+  const bad = [...new Set(report.flags.map(f => storyOf(f.id)).filter(i => i >= 0 && i < D.stories.length && !D.stories[i].skip))];
   let repairs = new Map();
-  try {
+  if (bad.length) try {
     repairs = await repairStories(prefix, bad.map(i => ({
       n: i + 1, story: D.stories[i], card: pairs[i] > -1 ? C.stories[pairs[i]] : null,
       flagged: report.flags.filter(f => storyOf(f.id) === i).map(f => ({ id: f.id, text: f.claim, reason: f.reason })),
@@ -3083,19 +3118,15 @@ async function groundDigest({ category, timeSlot, language, digest, cards, prefi
   // 3. recheck the rewrites once; what still is not traceable is removed outright
   const rewritten = bad.filter(i => !unrepaired.includes(i) && !D.stories[i].skip);
   if (rewritten.length) {
-    const second = statements(rewritten);
-    try {
-      const still = await checkUnits(prefix, second.lines, { category, timeSlot, language });
-      for (const i of rewritten) {
-        const ids = new Set([...still.keys()].filter(id => storyOf(id) === i && second.byId.has(id)));
-        ids.forEach(id => report.removedAfterRepair.push({ id, claim: second.byId.get(id).text, reason: still.get(id) }));
-        const rd = removeUnits(D.stories[i], `D${i + 1}`, ids);
-        D.stories[i] = rd.headlineFlagged ? { ...rd.story, skip: true } : rd.story;
-        if (pairs[i] > -1) C.stories[pairs[i]] = removeUnits(C.stories[pairs[i]], `C${i + 1}`, ids).story;
-      }
-    } catch (e) {
-      report.recheckError = e.message;
-      console.warn(`⚠️  ${category}: recheck failed — the rewrites stand unconfirmed:`, e.message);
+    const second = await checkBatches(rewritten, 'recheck');
+    withhold(second.failed);           // a rewrite we could not confirm is not published
+    for (const i of rewritten) {
+      if (second.failed.has(i)) continue;
+      const ids = new Set(second.found.filter(f => storyOf(f.id) === i).map(f => f.id));
+      second.found.filter(f => ids.has(f.id)).forEach(f => report.removedAfterRepair.push(f));
+      const rd = removeUnits(D.stories[i], `D${i + 1}`, ids);
+      D.stories[i] = rd.headlineFlagged ? { ...rd.story, skip: true } : rd.story;
+      if (pairs[i] > -1) C.stories[pairs[i]] = removeUnits(C.stories[pairs[i]], `C${i + 1}`, ids).story;
     }
   }
 
@@ -3787,11 +3818,24 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
       }
       const merged = mergeReserves({ digest: digestContent, cards: storiesContent }, { digest: xd, cards: xc }, need);
       digestContent = merged.digest; storiesContent = merged.cards;
-      if (auditResult) { auditResult.replaced = merged.added; auditResult.reserveCheck = xr; }
+      if (auditResult) {
+        auditResult.replaced = merged.added;
+        // Only a check whose stories were actually published bears on whether the feed is verified.
+        if (merged.added.length) auditResult.reserveCheck = xr; else auditResult.reserveCheckUnused = xr;
+      }
       console.log(`♻️  ${category}: ${published} published, ${merged.added.length} of ${need} missing stories replaced from the reserves`);
     } catch (err) {
       console.warn(`♻️  ${category}: could not replace from the reserves — publishing ${published}:`, err.message);
     }
+  }
+
+  // Nothing left that passed the check: do not store an empty feed as a success. Failing the
+  // category sends it through the normal retry and, if that fails too, the failure alert.
+  if (!parseDoc(digestContent).stories.length) {
+    const why = auditResult?.withheld?.length
+      ? `the fact-check could not run (${auditResult.withheld[0].error})`
+      : 'no story had a supported summary';
+    throw new Error(`Nothing verified to publish for ${category} — ${why}`);
   }
 
   // Twelve, as decided. The writer can split one item into several stories when grouping merged
