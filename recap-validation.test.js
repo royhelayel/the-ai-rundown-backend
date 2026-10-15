@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAuditJSON, sentencesOf, unsupportedMap, recapIssues, validateRecap } from './recap-validation.js';
+import { parseAuditJSON, sentencesOf, unsupportedMap, recapIssues, validateRecap, attributionMap } from './recap-validation.js';
 
 test('parses fenced JSON and prose without greedily joining multiple objects', () => {
   assert.deepEqual(parseAuditJSON('```json\n{"unsupported":[]}\n```\nExplanation.'), { unsupported: [] });
@@ -71,4 +71,16 @@ test('production orchestration clears recaps when source verification is unavail
     generateBriefing:async()=> 'Candidate',groundBriefing:async()=>({briefing:'Verified.',report:{passed:true}}),
   });
   assert.equal(result.briefing,'Verified.');
+});
+
+test('attributionMap accepts a complete answer and keeps empty transitions', () => {
+  const m = attributionMap({ sentences: [{ n: 1, stories: ['S1'] }, { n: 2, stories: [] }, { n: 3, stories: ['S2', 'S3', 'S2'] }] }, 3, ['S1', 'S2', 'S3']);
+  assert.deepEqual(m, [['S1'], [], ['S2', 'S3']]);
+});
+
+test('attributionMap rejects unknown ids, gaps and repeats', () => {
+  assert.throws(() => attributionMap({ sentences: [{ n: 1, stories: ['S9'] }] }, 1, ['S1']));
+  assert.throws(() => attributionMap({ sentences: [{ n: 1, stories: ['S1'] }] }, 2, ['S1']));
+  assert.throws(() => attributionMap({ sentences: [{ n: 1, stories: [] }, { n: 1, stories: [] }] }, 2, ['S1']));
+  assert.throws(() => attributionMap({}, 1, ['S1']));
 });

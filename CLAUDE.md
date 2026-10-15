@@ -84,6 +84,18 @@ Hard product constraints, set by Roy and not negotiable:
   removes what's still untraceable, and drops a story left with nothing. A dropped story is
   replaced from the reserves (`readUntilFilled` reads 12 + up to 4), never published from its
   headline. The briefing is checked against the finished digest.
+- **No "Why this matters" and no "Perspectives differ".** A story is its headline and its facts
+  (Roy, 2026-10-15). `GROUNDING_RULES` says so; no prompt asks for either.
+- **Recaps carry their sources.** After a recap passes its check, `attributeRecap` records which
+  digest story each sentence came from (`briefing_sources`, validated by `attributionMap`). The
+  app shows "Sources · N" per paragraph from it. A failed attribution publishes the recap
+  without sources — never guessed ones.
+- **Last week / Last month are built from checked stories**, not headlines: `generatePeriodRecap`
+  picks the period's stories covered on the most days, then by the most outlets, from daily
+  digests whose check passed, writes with the daily writer and checks with `groundBriefing`.
+  A withheld recap clears the stored one.
+- **Reads live on the server** (`user_reads`, keyed by headline, with `headline` and `day`), so
+  every device shows the same Read badges and challenge progress.
 
 The Anthropic balance is sometimes left empty on purpose to limit spend while Roy is building.
 A generation failing with "credit balance is too low" in that period is expected, not an outage.

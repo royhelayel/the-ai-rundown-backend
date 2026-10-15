@@ -1,4 +1,4 @@
-import { parseAuditJSON, sentencesOf, unsupportedMap, recapIssues, validateRecap } from './recap-validation.js';
+import { parseAuditJSON, sentencesOf, unsupportedMap, recapIssues, validateRecap, attributionMap } from './recap-validation.js';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -1722,9 +1722,8 @@ function buildStoryBlocks(list, offset, urlSet) {
     const alsoCite = others.length
       ? `\nAlso carried this story (link only — cite them, but use no facts from them):\n${others.map(m => `  — ${m.source} (${m.link})`).join('\n')}`
       : '';
-    const one = st.readable.length < 2 ? `\n  [ONE ACCOUNT ONLY — leave out Perspectives differ.]` : '';
     return `${label}[${offset + i + 1}] ${st.lead.title}\nDate: ${st.lead.date || 'recent'}\n`
-         + `Accounts from ${st.readable.length} of ${st.outletCount} outlet(s):\n${accounts}${alsoCite}${one}`;
+         + `Accounts from ${st.readable.length} of ${st.outletCount} outlet(s):\n${accounts}${alsoCite}`;
   });
 }
 
@@ -2586,9 +2585,8 @@ const GROUNDING_RULES = `GROUNDING — these rules override every other instruct
 1. Use only information stated in the accounts you were given. Do not add background, history, context, causes, consequences, predictions, significance or interpretation unless an account states it.
 2. Never fill a gap from your own knowledge, even when you are sure it is true. If the accounts do not explain something, leave it unexplained. A shorter story is correct; a padded one is wrong.
 3. Every bullet must be something you could point to in one of the accounts. Keep names, numbers and quotes exactly as the accounts give them.
-4. **Why this matters:** include it only when an account itself says why the story matters, and attribute it ("According to Reuters, ..."). Otherwise leave the line out.
-5. **Perspectives differ:** include it only when the accounts genuinely report or frame the story differently. Describe the difference in general terms ("Some outlets emphasise ..., others ...") without naming outlets. Otherwise leave the line out.
-6. Headlines state only what the accounts report.`;
+4. Headlines state only what the accounts report.
+5. Write no "Why this matters" and no "Perspectives differ" lines. A story is its headline and its facts.`;
 
 async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null, language = 'en') {
   const categoryQuery = searchQuery || (language === 'ar' ? (ARABIC_CATEGORY_QUERIES[category] || category) : (CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category)));
@@ -2627,7 +2625,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   const serper_cost = serper_searches * 0.001;
 
   const arabicInstruction = language === 'ar'
-    ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullet points, "Perspectives differ" text, and "Why this matters" text must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, **Perspectives differ:**, **Why this matters:**, ## Sources. Keep source outlet names and URLs in their original form.`
+    ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines and bullet points must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, ## Sources. Keep source outlet names and URLs in their original form.`
     : '';
 
   // Count is a soft guide, NOT a target to pad toward — consolidation always wins.
@@ -2690,8 +2688,6 @@ For each story, use this EXACT format — no introduction, no preamble:
 - Another fact — names, numbers and specifics exactly as the accounts give them
 - Further facts only while the accounts support them
 - For contested claims: "According to [source]..." or "[Party X] says... while [Party Y] says..."
-**Perspectives differ:** (only under grounding rule 5 — otherwise leave this line out)
-**Why this matters:** (only under grounding rule 4 — otherwise leave this line out)
 
 HEADLINE FRAMING: When a story contains a major development — a deal or ceasefire agreed, an agreement signed, a government formed, a leader elected, an offensive launched — alongside its complications, the ## headline states the development itself, plainly. A reader must learn the central fact from the headline alone.
 
@@ -2722,8 +2718,6 @@ AFTER the digest above is complete, write the line ===CARDS=== on its own, then 
 - Second fact — one sentence under 20 words.
 - Third fact, only if that story has one.
 **Summary:** 2–3 plain sentences restating what that story says, for a reader who wants a little more than the bullets. Use nothing that is not in that story — no background, no consequences, no "what happens next".
-**Why this matters:** Copy it over only if that story has one. Otherwise leave the line out.
-**Perspectives differ:** Copy it over, condensed to one sentence, only if that story has one. Otherwise leave the line out.
 
 No Coverage lines and no Sources section in the cards. The grounding rules apply to the cards too.`;
 
@@ -2818,7 +2812,7 @@ async function generateEveningUpdate(category, day, priorDigestContent, language
   const serper_cost = serper_searches * 0.001;
 
   const arabicInstruction = language === 'ar'
-    ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullet points, "Perspectives differ" text, and "Why this matters" text must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, **Perspectives differ:**, **Why this matters:**, **Status:**, ## Sources. Keep source outlet names and URLs in their original form.`
+    ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines and bullet points must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, **Status:**, ## Sources. Keep source outlet names and URLs in their original form.`
     : '';
 
   const prompt = `You are a news analyst updating a digest that was already published earlier today. Below is the digest already published, followed by fresh search results for "${categoryQuery}" from later in the day.${arabicInstruction}
@@ -2833,8 +2827,8 @@ Produce an updated digest by working through the ALREADY PUBLISHED stories one a
 
 1. For each already-published story, check whether the fresh search results contain a genuine new development for it — a real escalation, resolution, reaction, new figures, or fact that wasn't in the story before. Do NOT count an outlet simply re-reporting the same facts already in the story as a development.
    - If there IS a genuine new development: reproduce the story using the EXACT SAME headline text as published (copy it verbatim, do not reword it), keep every existing bullet, and add one or two new bullets covering only the new development. Extend its **Coverage:** line with the new outlet(s) — keep every outlet already listed, only add to it. End the story with a line **Status:** Updated
-   - If there is NO genuine new development: reproduce the story completely unchanged — same headline, same bullets, same **Coverage:**, same **Perspectives differ:**/**Why this matters:** lines if present. End the story with a line **Status:** Unchanged
-2. After all already-published stories, add any genuinely new story from the fresh search results that is NOT a continuation of one of them — a distinct topic not covered above. Write it in the normal digest format (own ## headline, **Coverage:**, bullets, **Perspectives differ:** / **Why this matters:** where applicable) and end it with **Status:** New
+   - If there is NO genuine new development: reproduce the story completely unchanged — same headline, same bullets, same **Coverage:**. End the story with a line **Status:** Unchanged
+2. After all already-published stories, add any genuinely new story from the fresh search results that is NOT a continuation of one of them — a distinct topic not covered above. Write it in the normal digest format (own ## headline, **Coverage:**, bullets) and end it with **Status:** New
 3. Never reorder, merge, drop, or rewrite an already-published story beyond what rule 1 allows. Never invent a development that the fresh search results don't support. Never invent, complete or guess a URL, and never add an outlet that is not in the fresh results with a URL beside it.
 
 Use this EXACT format for every story:
@@ -2843,8 +2837,6 @@ Use this EXACT format for every story:
 **Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · ...
 - Key fact or development
 - Another key detail
-**Perspectives differ:** (only under grounding rule 5 — otherwise leave this line out)
-**Why this matters:** (only under grounding rule 4 — otherwise leave this line out)
 **Status:** Updated | Unchanged | New
 
 Coverage must use real URLs from the fresh search results for any new outlets added; keep the original URLs for outlets carried over unchanged. Only list major international or regional news organisations — wire services, broadcasters, national newspapers, and established regional outlets. After all stories, include:
@@ -2995,7 +2987,7 @@ ${unitLines.join('\n')}`;
 
 async function repairStories(prefix, items, { category, timeSlot, language }) {
   const arabic = language === 'ar'
-    ? '\n\nWrite in Modern Standard Arabic. Keep the markers **Why this matters:**, **Perspectives differ:** and **Summary:** in English exactly as shown.'
+    ? '\n\nWrite in Modern Standard Arabic. Keep the marker **Summary:** in English exactly as shown.'
     : '';
   const blocks = items.map(it => {
     const storyLines = it.story.lines.filter(l => !KEPT_LINE.test(l)).join('\n');
@@ -3015,14 +3007,10 @@ Return every story in exactly this format and nothing else:
 ## headline
 - fact
 - fact
-**Perspectives differ:** (only under grounding rule 5 — otherwise leave out)
-**Why this matters:** (only under grounding rule 4 — otherwise leave out)
 ===CARD n===
 ## the same headline
 - one fact, under 20 words
 **Summary:** 2–3 sentences restating the story above, adding nothing.
-**Why this matters:** (only if the story above has it)
-**Perspectives differ:** (only if the story above has it)
 
 If the accounts cannot support even one fact for a story, return only:
 ===STORY n===
@@ -3181,29 +3169,93 @@ async function groundDigest({ category, timeSlot, language, digest, cards, prefi
   return { digest: renderDoc(D), cards: C ? renderDoc(C) : cards, report };
 }
 
+// About three minutes read aloud. The writer aims below it; the checker withholds a recap above it.
+const RECAP_MAX_WORDS = 450;
+
 // The briefing is written from the finished digest, so the digest is what it is checked against.
 async function groundBriefing({ category, timeSlot, language, briefing, digest }) {
   const stories = parseDoc(digest).stories;
   const ids = stories.map((_, i) => `S${i + 1}`);
   const prefix = `SOURCE DIGEST:\n${stories.map((s, i) => `[${ids[i]}] ${s.headline}\n${s.lines.join('\n')}`).join('\n\n')}`;
-  return validateRecap({
-    text: briefing,
-    audit: async text => {
-      const prompt = `Check the WHOLE recap against ONLY the source digest. Every story must be represented. Check names, numbers, attribution, uncertainty, allegations versus established facts, association versus causation, and essential qualifications. Compression and omission of nonessential details are allowed; omission that changes meaning is not. Check complete sentence grammar and dangling fragments. Do not use outside knowledge. Return ONLY JSON: {"missingStories":["S1"],"issues":["specific unsupported claim, lost essential qualification, or broken sentence"]}. Use empty arrays if there are no problems. Missing story IDs must come from the source digest.\nRECAP:\n${text}`;
+  const auditRecapOnce = async text => {
+      const prompt = `Check the WHOLE recap against ONLY the source digest. A recap gives each story its one key point in about a sentence and is meant to leave everything else out. So never report something the recap leaves out — a detail, a name, a figure, a partner, a date, a feature, how something works — unless it is a word like "alleged", "purported" or "reportedly" whose absence turns something uncertain into fact. Numbers, dates and titles spelled out for speech ("twenty twenty-two", "Pope Leo the Fourteenth") are NOT an issue. Small wording differences that leave the fact unchanged are NOT an issue ("until" for "through", "Saturday" for "Saturday night", "US" for "US-based"). Report only: (1) a story missing entirely; (2) a claim the digest does not contain, including any sentence that characterises a group of stories or the day ("dominated", "escalating", "a sign of"); (3) a name, number or attribution stated wrongly; (4) a lost qualification that changes meaning — something uncertain, purported or alleged stated as fact, or an association stated as a cause; (5) a broken or dangling sentence. Do not use outside knowledge. Return ONLY JSON: {"missingStories":["S1"],"issues":["specific unsupported claim, lost essential qualification, or broken sentence"]}. Use empty arrays if there are no problems. Missing story IDs must come from the source digest.\nRECAP:\n${text}`;
       const data = await callClaudeCached(prefix, prompt, 2500);
       trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_check' });
       if (data.stop_reason === 'max_tokens') throw new Error('Truncated recap audit');
       const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
       return recapIssues(parseAuditJSON(raw), ids);
+    };
+
+  return validateRecap({
+    maxWords: RECAP_MAX_WORDS,
+    rounds: 3,
+    text: briefing,
+    audit: async text => {
+      // A garbled reply tells us nothing about the recap; ask once more before withholding it.
+      for (let attempt = 0; ; attempt++) {
+        try { return await auditRecapOnce(text); }
+        catch (e) { if (attempt) throw e; }
+      }
     },
     rewrite: async (text, issues) => {
-      const prompt = `Rewrite the entire recap to fix these problems:\n${issues.join('\n')}\nUse only the digest. Cover EVERY story, preserve essential qualifications and attribution, and use complete sentences. Maximum 170 words; no minimum length. Do not add filler or outside knowledge. Plain flowing prose, no headings, bullets or URLs.${language === 'ar' ? ' Write in Modern Standard Arabic.' : ''}\nRECAP:\n${text}`;
-      const data = await callClaudeCached(prefix, prompt, 1000);
+      const prompt = `Rewrite the entire recap to fix these problems:\n${issues.join('\n')}\nUse only the digest. Cover EVERY story, preserve essential qualifications and attribution, and use complete sentences. Maximum ${RECAP_MAX_WORDS} words; no minimum length. One sentence per story, carrying only that story's facts — never merge two stories into one sentence. Weight the stories equally, no story favoured because it comes first. Do not add details back; transitions only name the subject. Do not add filler or outside knowledge. Plain flowing prose, no headings, bullets or URLs.${language === 'ar' ? ' Write in Modern Standard Arabic.' : ''}\nRECAP:\n${text}`;
+      const data = await callClaudeCached(prefix, prompt, 1800);
       trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_repair' });
       if (data.stop_reason === 'max_tokens') throw new Error('Truncated recap repair');
       return stripRecapChrome((data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n'));
     },
   });
+}
+
+// ── Which story each recap sentence came from ────────────────────────────────
+//
+// The app ends every paragraph of a recap with "Sources · N", which opens the story the
+// paragraph came from and that story's outlet links. That needs a record of the story behind
+// each sentence. It is taken after the recap has passed its check, from the same digest the
+// check used, and validated strictly (attributionMap): a failure publishes the recap without
+// attributions — plain paragraphs — never with guessed ones.
+function coverageOf(story) {
+  const line = story.lines.find(l => /^\*\*Coverage:\*\*/.test(l)) || '';
+  return [...line.matchAll(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g)].map(m => ({ outlet: m[1].trim(), url: m[2] }));
+}
+
+async function attributeRecap({ category, timeSlot, language, recap, digest }) {
+  const stories = parseDoc(digest).stories;
+  const sentences = sentencesOf(recap);
+  if (!stories.length || !sentences.length) return null;
+  const ids = stories.map((_, i) => `S${i + 1}`);
+  const prefix = `SOURCE DIGEST:\n${stories.map((st, i) => `[${ids[i]}] ${st.headline}\n${st.lines.join('\n')}`).join('\n\n')}`;
+  const prompt = `Below is a recap of the source digest, one numbered sentence per line. For each sentence, list the IDs of the digest stories whose facts it states. A sentence that carries no facts of its own (a pure transition) gets an empty list. Use only the digest. Return ONLY JSON: {"sentences":[{"n":1,"stories":["S1"]}]} with one entry for every sentence.\nRECAP:\n${sentences.map((t, i) => `${i + 1}. ${t}`).join('\n')}`;
+  try {
+    const data = await callClaudeCached(prefix, prompt, 1500);
+    trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'recap_attribution' });
+    if (data.stop_reason === 'max_tokens') throw new Error('Truncated attribution');
+    const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+    const map = attributionMap(parseAuditJSON(raw), sentences.length, ids);
+    return sentences.map((text, i) => ({
+      text,
+      stories: map[i].map(id => {
+        const idx = ids.indexOf(id);
+        return { index: idx, headline: stories[idx].headline, sources: coverageOf(stories[idx]) };
+      }),
+    }));
+  } catch (err) {
+    console.warn(`Recap attribution skipped for ${category} (${timeSlot}): ${err.message}`);
+    return null;
+  }
+}
+
+// Stored beside the recap. A newer column, so a database without it logs the SQL and carries on.
+let briefingSourcesColumn = true;
+async function saveBriefingSources(category, day, timeSlot, language, sources) {
+  if (!briefingSourcesColumn) return;
+  const { error } = await supabaseAdmin.from('news_summaries').update({ briefing_sources: sources })
+    .eq('category', category).eq('day', day).eq('time_slot', timeSlot).eq('language', language)
+    .is('user_id', null).is('shared_key', null);
+  if (error && /briefing_sources/.test(error.message || '')) {
+    briefingSourcesColumn = false;
+    console.warn(`⚠️  'briefing_sources' column missing — recaps are stored without their sources. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS briefing_sources jsonb;`);
+  } else if (error) console.warn(`Could not save recap sources for ${category}: ${error.message}`);
 }
 
 // Stories written from the reserves join the feed after the ones already there.
@@ -3295,7 +3347,7 @@ async function generateStoriesContent(category, day, timeSlot, digestContent, la
   console.log(`Generating stories content for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
   const arabicInstruction = language === 'ar'
-    ? `\n\nIMPORTANT: Write everything in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullet points, and "Why this matters" text must be in Arabic. HOWEVER, keep the structural marker **Why this matters:** in English exactly as shown — do NOT translate it. Keep outlet names and URLs as-is.`
+    ? `\n\nIMPORTANT: Write everything in Modern Standard Arabic (اللغة العربية الفصحى). All headlines, bullet points and summaries must be in Arabic. Keep outlet names and URLs as-is.`
     : '';
 
   const prompt = `You are a news editor. Below is a detailed news digest. Convert every story in it into a short, punchy card suitable for audio listening and mobile reading.${arabicInstruction}
@@ -3310,8 +3362,6 @@ For each story in the digest, use this EXACT format — no preamble:
 - Second fact — one sentence under 20 words.
 - Third fact, only if that story has one.
 **Summary:** 2–3 plain sentences restating what that digest story says, for a reader who wants a little more than the bullets. Use nothing that is not in that story — no background, no consequences, no "what happens next".
-**Why this matters:** Copy it over only if the digest story has one. Otherwise leave the line out.
-**Perspectives differ:** Copy it over, condensed to one sentence, only if the digest story has one. Otherwise leave the line out.
 
 Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single short sentence.
 
@@ -3342,31 +3392,50 @@ ${GROUNDING_RULES.replace(/the accounts you were given/g, 'the digest above').re
 
 // Generate a short spoken "category briefing" — a catch-up on the whole category for a
 // quick read or a ~1 min listen. Length scales with the number of stories; see below.
-async function generateBriefing(category, day, timeSlot, digestContent, language = 'en') {
+async function generateBriefing(category, day, timeSlot, digestContent, language = 'en', { scope = 'day' } = {}) {
   console.log(`Generating briefing for ${category} on ${day} at ${timeSlot}${language === 'ar' ? ' [AR]' : ''}`);
 
   const arabicInstruction = language === 'ar'
     ? `\n\nWrite the entire briefing in Modern Standard Arabic (اللغة العربية الفصحى).`
     : '';
 
-  // Keep short categories short. The final validator enforces 170 words and
-  // requires every story plus essential qualifications, otherwise it withholds.
+  // Up to two minutes. The recap is not a shorter copy of the stories — the cards carry the
+  // details — so it gets about 24 words a story to say the one thing that matters about each,
+  // and no minimum. 300 words is roughly two minutes read aloud.
   const storyCount = parseDoc(digestContent).stories.length;
-  const targetWords = Math.min(170, Math.max(20, Math.round(storyCount * 18)));
+  // Aim well under the cap: models overshoot a target by a third, and the cap is a hard limit.
+  const targetWords = Math.min(330, Math.max(40, Math.round(storyCount * 26)));
 
-  const prompt = `You are a news anchor writing a short spoken briefing that catches a listener up on the "${category}" section.${arabicInstruction}
+  // The old prompt said "give the biggest story a sentence or two" and "lead with the biggest
+  // story, then move through the rest", which produced exactly that: a ranked list with the
+  // first story taking a quarter of the words. Now the stories are grouped by subject, weighted
+  // equally, and each reduced to its one key point.
+  const prompt = `You are a radio news presenter recapping the "${category}" section for a listener who has not read any of it.${arabicInstruction}
 
-Below is today's full digest for this section${storyCount ? ` — ${storyCount} stories` : ''}:
+${scope === 'day'
+  ? `Below is today's digest for this section — ${storyCount} ${storyCount === 1 ? 'story' : 'stories'}:`
+  : `Below are the ${storyCount} stories in this section that were covered on the most days and by the most outlets over the past ${scope}. The ${scope} is over: write in the past tense throughout, and do not call anything "today".`}
 
 ${digestContent}
 
-Write ONE cohesive briefing of about ${targetWords} words that catches the listener up on the WHOLE section — what happened — as if delivering a quick on-air catch-up. Use only what the digest says: no significance, background, causes or predictions that the digest does not itself contain. If that leaves the briefing shorter than ${targetWords} words, keep it shorter. There is no minimum length. Never exceed 170 words. Preserve essential qualifications, uncertainty and attribution; never turn an allegation into a fact or an association into causation.
+Every one of these ${storyCount} stories must appear in the recap:
+${parseDoc(digestContent).stories.map((st, i) => `${i + 1}. ${st.headline}`).join('\n')}
 
-Coverage is the priority: EVERY story in the digest above must appear, at minimum as a clause. Give the biggest story a sentence or two; give each remaining story at least a clause of its own. Do not spend the whole briefing on one or two stories and leave the rest out — a listener should finish it knowing everything that happened in this section, even if only in outline. Group related stories into a single sentence where that reads naturally.
+Write the recap: about ${targetWords} words in total — roughly 26 words a story — and never more than ${RECAP_MAX_WORDS}. It is read aloud. It is not a shorter copy of the stories: the listener can open any story for its details, so the recap gives only the most important thing in each.
 
-Rules: Flowing prose in one or two short paragraphs — not a list. NO headings, NO bullet points, NO markdown, NO source names or URLs. Lead with the biggest story, then move through the rest. Conversational and clear, meant to be read aloud. Start immediately with the briefing text — no preamble, no title.`;
+How to build it:
+1. One sentence per story — two short ones only if a single sentence would lose an essential qualification. Keep a name, number or place when it is part of the point.
+2. Each sentence carries one story's facts only. Never merge two stories into one sentence; that is how a fact from one story ends up attached to another.
+3. Weight the stories equally. Position in the list is not importance — the first story gets no more than any other.
+4. Put stories about the same country, conflict, company or field next to each other, with a short transition that only names the subject — "In the Middle East," "In crypto," "Elsewhere," — and never describes it. No sentence that characterises a group or the day ("dominated", "escalating", "a busy day for"): that is a claim the digest does not make. When unsure where a story belongs, let it stand alone.
+5. Connect stories only where the digest itself connects them. Sharing a subject is not a cause.
+6. Every story on the list appears.
 
-  const data = await callClaude(prompt, 600);
+Use only what the digest says: no significance, background, causes or predictions that the digest does not contain. Preserve essential qualifications, uncertainty and attribution; never turn an allegation into a fact or an association into causation. If the stories need fewer words, use fewer — there is no minimum.
+
+Rules: flowing prose, one short paragraph per group. NO headings, NO bullet points, NO markdown, NO source names or URLs. Conversational and clear. Start immediately with the recap — no preamble, no title, no sign-off.`;
+
+  const data = await callClaude(prompt, 1400);
   if (data.stop_reason === 'max_tokens') throw new Error('Truncated briefing generation');
   // Same strip the period recaps get. The prompt asks for no headings and no bullets, but a
   // title line comes back often enough to be worth removing rather than only asking for —
@@ -3424,21 +3493,49 @@ function periodRange(period, endDay) {
   return days;
 }
 
-// Headlines only. Feeding whole digests for a month would be hundreds of thousands of
-// tokens and would bury the signal anyway — the judgement being asked for is "which of
-// these mattered", and a headline plus its category is enough to make it.
-function harvestHeadlines(rows) {
-  const byCategory = {};
+// The period's stories, from the daily digests that passed their check. A recap of the week
+// used to be written from the week's headlines alone and was never checked — a model asked for
+// 280 words from a list of headlines has to fill the gaps itself, which is exactly what the app
+// promises not to do. Now it is written from the checked stories themselves (headline, facts,
+// outlets) and checked against them, like the daily recap (Roy, 2026-10-15).
+//
+// Which stories: those covered on the most days, then by the most outlets, then the most
+// recent — a count anyone can verify, rather than a model's sense of what mattered.
+const PERIOD_PICKS = { Weekly: 6, Monthly: 12 };
+function rowWasChecked(row) {
+  const a = row.audit_result;
+  return !!(a && a.checked && !a.error && !a.recheckError);
+}
+function periodStories(rows) {
+  // Evening reproduces Morning's stories plus its own, so a day's newest checked row is the day.
+  const newest = {};
+  const slotRank = { Evening: 2, Morning: 1 };
   for (const row of rows) {
-    const heads = (row.content || '').split('\n')
-      .filter(l => /^##\s+/.test(l))
-      .map(l => l.replace(/^##\s+/, '').trim())
-      .filter(Boolean);
-    if (!heads.length) continue;
-    byCategory[row.category] = byCategory[row.category] || new Set();
-    heads.forEach(h => byCategory[row.category].add(h));
+    if (!rowWasChecked(row)) continue;
+    const k = `${row.category}|${row.day}`;
+    if (!newest[k] || (slotRank[row.time_slot] || 0) > (slotRank[newest[k].time_slot] || 0)) newest[k] = row;
+  }
+  const byCategory = {};
+  for (const row of Object.values(newest)) {
+    const cat = (byCategory[row.category] = byCategory[row.category] || new Map());
+    for (const st of parseDoc(row.content).stories) {
+      if (!bulletCount(st)) continue;
+      const key = normHeadline(st.headline);
+      const prev = cat.get(key);
+      const outlets = coverageOf(st).length;
+      if (!prev) cat.set(key, { story: st, days: new Set([row.day]), outlets, last: row.day });
+      else {
+        prev.days.add(row.day);
+        if (row.day >= prev.last) { prev.story = st; prev.last = row.day; prev.outlets = Math.max(prev.outlets, outlets); }
+      }
+    }
   }
   return byCategory;
+}
+function pickPeriodStories(storyMap, n) {
+  return [...storyMap.values()]
+    .sort((x, y) => (y.days.size - x.days.size) || (y.outlets - x.outlets) || (y.last < x.last ? -1 : y.last > x.last ? 1 : 0))
+    .slice(0, n);
 }
 
 // The prompt forbids headings and bullets; the model emits them anyway often enough that
@@ -3459,87 +3556,52 @@ function stripRecapChrome(text) {
 async function generatePeriodRecap(period, endDay, language = 'en') {
   const days = periodRange(period, endDay);
   console.log(`Generating ${period} recaps ending ${endDay} (${days.length} days)${language === 'ar' ? ' [AR]' : ''}`);
-
   const { data: rows, error } = await supabaseAdmin
     .from('news_summaries')
-    .select('category, day, content')
+    .select('category, day, time_slot, content, audit_result')
     .in('day', days)
-    .in('time_slot', ['Morning', 'Evening'])   // the daily digests only — see below
+    .in('time_slot', ['Morning', 'Evening'])   // the daily digests only — never last period's recap
     .eq('language', language)
     .is('user_id', null).is('shared_key', null)
     .not('category', 'in', '("__completed__","__period__")');
   if (error) throw new Error(`Could not read the period's digests: ${error.message}`);
-
-  // The time_slot filter is load-bearing now that these are stored under real category
-  // names. Before, period recaps lived under the `__period__` sentinel and the category
-  // exclusion kept them out of their own source material; now a Weekly row for World News
-  // sits under 'World News' like any digest, and without this filter next week's recap
-  // would be written partly from last week's recap.
-  const byCategory = harvestHeadlines(rows || []);
-
-  // A listener gives one category's week about two minutes and its month about four — a
-  // twelfth of the old all-sections budget, because this is now a twelfth of the material.
-  const spec = period === 'Monthly'
-    ? { words: 550, picks: 12, label: 'month' }
-    : { words: 280, picks: 6,  label: 'week' };
-
-  const arabicInstruction = language === 'ar'
-    ? `\n\nWrite the entire recap in Modern Standard Arabic (اللغة العربية الفصحى).`
-    : '';
-
+  const byCategory = periodStories(rows || []);
   const results = [];
   for (const category of DEFAULT_CATEGORIES) {
-    const heads = byCategory[category];
-    if (!heads || !heads.size) {
-      console.log(`  ⏭️  ${category} — no headlines in the window`);
+    const picked = byCategory[category] ? pickPeriodStories(byCategory[category], PERIOD_PICKS[period]) : [];
+    if (!picked.length) {
+      console.log(`  ⏭️  ${category} — no checked stories in the window`);
       continue;
     }
-    const total = heads.size;
-    const source = [...heads].map(h => `- ${h}`).join('\n');
-
-    const prompt = `You are a news anchor writing the ${spec.label}'s wrap-up on ${category} for a listener who may have missed days of it.${arabicInstruction}
-
-Below are the ${category} headlines this ${spec.label} produced — ${total} in total:
-
-${source}
-
-Pick the ${spec.picks} or so that actually mattered and write a spoken recap of about ${spec.words} words.
-
-This is a selection, not a summary of everything: ${total} stories cannot be covered in ${Math.max(1, Math.round(spec.words / 150))} minutes, and pretending otherwise produces a list nobody can follow. Choose on consequence — what changed, what a reasonable person would still be thinking about at the end of the ${spec.label}, what turned out to be the start of something. Say why each one mattered, not just that it happened.
-
-Everything here is ${category}, so do not keep announcing the subject — the listener already chose it. Structure it as flowing prose in short paragraphs. Where several headlines are the same running story, treat them as one thread and say where it ended up.
-
-The ${spec.label} is over by the time anyone hears this. Write in the past tense throughout — nothing in it is still upcoming, however a headline phrased it at the time it was written. NO headings, NO bullet points, NO markdown, NO source names or URLs, no dates unless they carry meaning. Conversational and clear, meant to be read aloud. Start immediately — no preamble, no title.`;
-
+    // The picked stories, in digest form, so the writer, the check and the attribution all
+    // read exactly the same thing.
+    const digest = picked.map(p => `## ${p.story.headline}\n${p.story.lines.join('\n')}`).join('\n\n');
+    let text = '', sources = null, report;
     try {
-      const data = await callClaude(prompt, Math.round(spec.words * 2.2));
-      const text = stripRecapChrome(data.content.filter(i => i.type === 'text').map(i => i.text).join('\n'));
-
-      if (data.usage) {
-        const { input_tokens, output_tokens } = data.usage;
-        const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-        trackUsage({
-          service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-          input_tokens, output_tokens, web_searches: 0, search_cost_usd: 0,
-          token_cost_usd, estimated_cost_usd: token_cost_usd,
-          category, time_slot: period, content_type: 'period_recap', language,
-          created_at: new Date().toISOString(),
-        });
+      const candidate = await generateBriefing(category, endDay, period, digest, language, { scope: period === 'Weekly' ? 'week' : 'month' });
+      const gb = await groundBriefing({ category, timeSlot: period, language, briefing: candidate, digest });
+      text = gb.briefing;
+      report = gb.report;
+      if (text) {
+        // Stories from different days have no place in one day's list, so these carry the day
+        // they were last reported instead of a position.
+        const attributed = await attributeRecap({ category, timeSlot: period, language, recap: text, digest });
+        sources = attributed && attributed.map(part => ({ ...part, stories: part.stories.map(st => ({ headline: st.headline, sources: st.sources, day: picked[st.index]?.last })) }));
+        report.attributed = !!sources;
       }
-
-      // content and briefing both carry the prose: the reader renders `content`, the player
-      // narrates `briefing`, and for a recap they are the same text.
-      await storeNews(category, endDay, period, text, null, null, null, null, language, text);
-      console.log(`  ✓ ${category} — ${text.split(/\s+/).length} words from ${total} headlines`);
-      results.push({ category, words: text.split(/\s+/).length, headlines: total });
     } catch (err) {
-      // One category failing is not the run failing — the other eleven are still worth having.
-      console.error(`  ✗ ${category} — ${err.message}`);
+      report = { checked: false, passed: false, withheld: true, error: err.message };
     }
+    // A withheld recap clears the stored one: an older, unchecked recap must not keep showing.
+    await storeNews(category, endDay, period, text, null, null, null, null, language, text, null, { briefing: report, stories: picked.length });
+    await saveBriefingSources(category, endDay, period, language, text ? sources : null);
+    console.log(text
+      ? `  ✓ ${category} — ${text.split(/\s+/).length} words from ${picked.length} checked stories${sources ? ', attributed' : ''}`
+      : `  ✗ ${category} — withheld (${report?.error || 'failed its check'})`);
+    results.push({ category, words: text ? text.split(/\s+/).length : 0, stories: picked.length, withheld: !text });
   }
-
-  if (!results.length) return null;   // nothing generated in this window — nothing to recap
-  console.log(`✓ ${period} recaps stored for ${endDay} — ${results.length}/${DEFAULT_CATEGORIES.length} categories`);
+  if (!results.length) return null;   // nothing checked in this window — nothing to recap
+  console.log(`✓ ${period} recaps for ${endDay} — ${results.filter(r => !r.withheld).length}/${results.length} published`);
   return results;
 }
 
@@ -3902,6 +3964,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   // digest and checked against it.
   // An empty string also clears an older recap on regeneration; null would leave it stored.
   let briefing = '';
+  let briefingSources = null;
   const digestVerified = gate && auditResult?.checked && !auditResult.error && !auditResult.recheckError
     && (!auditResult.reserveCheck || (auditResult.reserveCheck.checked && !auditResult.reserveCheck.error && !auditResult.reserveCheck.recheckError));
   if (!auditResult) auditResult = { checked: false, flags: [] };
@@ -3913,6 +3976,10 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
       const gb = await groundBriefing({ category, timeSlot, language, briefing: candidate, digest: digestContent });
       briefing = gb.briefing;
       auditResult.briefing = gb.report;
+      if (briefing) {
+        briefingSources = await attributeRecap({ category, timeSlot, language, recap: briefing, digest: digestContent });
+        auditResult.briefing.attributed = !!briefingSources;
+      }
     } catch (err) {
       auditResult.briefing = { checked: false, passed: false, withheld: true, error: err.message };
       console.warn(`Briefing withheld for ${category}:`, err.message);
@@ -3927,6 +3994,8 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   }
 
   await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl, auditResult, retrievalStats);
+  // Cleared along with a withheld recap, so stale attributions never outlive the text.
+  await saveBriefingSources(category, targetDay, timeSlot, language, briefing ? briefingSources : null);
 
   if (retrievalStats && typeof retrievalStats.headlineOnly === 'number') {
     runRetrievalTally.headlineOnly += retrievalStats.headlineOnly;
@@ -4450,9 +4519,9 @@ app.post('/api/generate/custom-category', async (req, res) => {
 // POST /api/generate/period/monthly { day?, language? }
 //
 // `day` is the LAST day of the period and defaults to today, so the weekly job runs on a
-// Sunday and the monthly on the last of the month with no argument. Still synchronous: one
-// Claude call per category over headlines already in the database — a dozen quick calls, not
-// the tens of minutes a full category sweep with web search takes.
+// Sunday and the monthly on the last of the month with no argument. Still synchronous: a few
+// Claude calls per category (write, check, attribute) over stories already in the database —
+// minutes, not the tens of minutes a full category sweep with web search takes.
 app.post('/api/generate/period/:period', async (req, res) => {
   try {
     const raw = String(req.params.period || '').toLowerCase();
@@ -4465,6 +4534,8 @@ app.post('/api/generate/period/:period', async (req, res) => {
 
     const endDay = req.body?.day || getTodayDate();
     const language = req.body?.language || 'en';
+    const preflight = await anthropicPreflight();
+    if (!preflight.ok) return res.status(503).json({ error: `Not started — ${preflight.error}` });
     const results = await generatePeriodRecap(period, endDay, language);
     if (!results) {
       return res.json({ status: 'skipped', message: `No digests found in the ${period.toLowerCase()} window ending ${endDay} — nothing to recap.` });
@@ -5228,6 +5299,37 @@ app.get('/admin/api/similarity', async (req, res) => {
       wouldMerge: cosine(vecs[i * 2], vecs[i * 2 + 1]) >= POOL_SIM_THRESHOLD,
     }));
     res.json({ threshold: POOL_SIM_THRESHOLD, pairs: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Write and check a category recap from a digest already stored, without saving it — so a
+// change to the recap can be judged on real news before it reaches a run.
+app.get('/admin/api/recap-preview', async (req, res) => {
+  try {
+    const category = req.query.category || 'World News';
+    const language = req.query.language === 'ar' ? 'ar' : 'en';
+    const timeSlot = req.query.timeSlot === 'Evening' ? 'Evening' : 'Morning';
+    const day = req.query.day || getTodayDate();
+    const { data: row } = await supabaseAdmin.from('news_summaries')
+      .select('content, briefing').eq('category', category).eq('day', day)
+      .eq('time_slot', timeSlot).eq('language', language)
+      .is('user_id', null).is('shared_key', null).maybeSingle();
+    if (!row?.content) return res.status(404).json({ error: `No stored digest for ${category} ${day} ${timeSlot} ${language}` });
+    const draft = await generateBriefing(category, day, timeSlot, row.content, language);
+    const checked = await groundBriefing({ category, timeSlot, language, briefing: draft, digest: row.content });
+    // ?attribute=1 also records which story each sentence came from (the "Sources · N" data).
+    const sources = checked.briefing && req.query.attribute === '1'
+      ? await attributeRecap({ category, timeSlot, language, recap: checked.briefing, digest: row.content }) : undefined;
+    const words = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
+    res.json({
+      category, day, timeSlot, language,
+      stories: parseDoc(row.content).stories.map(st => st.headline),
+      stored: { words: words(row.briefing), text: row.briefing || '' },
+      draft: { words: words(draft), text: draft },
+      published: { words: words(checked.briefing), text: checked.briefing },
+      check: checked.report,
+      ...(sources !== undefined ? { sources } : {}),
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -6406,15 +6508,45 @@ app.get('/api/saves/interesting', async (req, res) => {
   res.json(result);
 });
 
-// POST /api/reads/sync — record that the user read a story
+// POST /api/reads/sync — record that the user read a story.
+//
+// The server copy is the one that counts: the app used to keep reads only on the phone, so a
+// story read on a laptop showed as Unread on the phone, and clearing storage lost them all
+// (Roy: "this is not a good practice", 2026-10-15). A read is keyed by the story — its
+// headline key — not by its position in a list, which moved when the evening run reordered.
+// `headline` and `day` (the news date) let another device rebuild the read and the challenge.
+let userReadsExtraColumns = true;
 app.post('/api/reads/sync', async (req, res) => {
-  const { user_id, category, story_index, headline } = req.body;
+  const { user_id, category, story_index, headline, day } = req.body;
   if (!user_id || !category || story_index === undefined || !headline) return res.status(400).json({ error: 'Missing required fields' });
-  const key = storyKey(headline);
-  await supabaseAdmin.from('user_reads').upsert({
-    user_id, story_key: key, category, story_index, read_at: new Date().toISOString(),
-  }, { onConflict: 'user_id,story_key', ignoreDuplicates: true });
+  const row = { user_id, story_key: storyKey(headline), category, story_index, read_at: new Date().toISOString() };
+  const opts = { onConflict: 'user_id,story_key', ignoreDuplicates: true };
+  if (userReadsExtraColumns) {
+    const { error } = await supabaseAdmin.from('user_reads').upsert({ ...row, headline, day: day || null }, opts);
+    if (!error) return res.json({ ok: true });
+    if (!/headline|day/.test(error.message || '')) return res.status(500).json({ error: error.message });
+    userReadsExtraColumns = false;
+    console.warn(`⚠️  user_reads has no headline/day columns yet — reads are saved without them. Run in Supabase:\n  ALTER TABLE user_reads ADD COLUMN IF NOT EXISTS headline text, ADD COLUMN IF NOT EXISTS day date;`);
+  }
+  const { error } = await supabaseAdmin.from('user_reads').upsert(row, opts);
+  if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
+});
+
+// GET /api/reads?user_id=…&since=YYYY-MM-DD — the user's reads, newest first, so every device
+// shows the same Read badges and the same challenge progress.
+app.get('/api/reads', async (req, res) => {
+  const { user_id, since } = req.query;
+  if (!user_id) return res.status(400).json({ error: 'user_id is required' });
+  const run = (cols) => {
+    let q = supabaseAdmin.from('user_reads').select(cols).eq('user_id', user_id).order('read_at', { ascending: false }).limit(2000);
+    if (since) q = q.gte('read_at', `${since}T00:00:00Z`);
+    return q;
+  };
+  let { data, error } = await run('story_key, category, story_index, read_at, headline, day');
+  if (error && /headline|day/.test(error.message || '')) ({ data, error } = await run('story_key, category, story_index, read_at'));
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
 // Start server
