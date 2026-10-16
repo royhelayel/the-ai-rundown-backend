@@ -3800,15 +3800,23 @@ function parseStoriesForTTS(raw) {
   }).filter(Boolean);
 }
 
-// Mirrors buildStoryScript() + cleanForTTS() in the frontend — must stay in sync so MD5 cache keys align
+// Mirrors buildStoryScript() + cleanForTTS() in the frontend — must stay in sync so MD5 cache keys
+// align. The app reads the headline and the takeaways only (2026-10-15), so this does too.
 function buildStoryScript(story) {
   const cl = cleanForTTS;
   const parts = [cl(story.headline) + '.'];
   story.bullets.forEach(b => parts.push(cl(b) + '.'));
-  if (story.perspectives) parts.push('On the other hand, ' + cl(story.perspectives) + '.');
-  if (story.why) parts.push('Here is why this matters. ' + cl(story.why) + '.');
   return parts.filter(Boolean).join(' ');
 }
+
+// The same file name /api/tts-stream looks up. Since 27 May that has included the voice, and this
+// pre-recording didn't — so every file it saved was one the app never asked for, and every
+// listen needed the voice service live. Listening with no voice credit fell back to the phone's
+// voice, which the iPhone silent switch mutes.
+const ttsCacheFile = (text) => {
+  const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
+  return `${crypto.createHash('md5').update(`${voiceId}:${text.trim()}`).digest('hex')}.mp3`;
+};
 
 async function pregenerateTTSForContent(content, label, meta = {}) {
   if (!process.env.UNREALSPEECH_API_KEY) { console.log('⚠️  UNREALSPEECH_API_KEY not set — skipping TTS pre-gen'); return; }
@@ -3821,8 +3829,7 @@ async function pregenerateTTSForContent(content, label, meta = {}) {
   for (const story of stories) {
     try {
       const text   = buildStoryScript(story);
-      const key    = crypto.createHash('md5').update(text.trim()).digest('hex');
-      const fileName = `${key}.mp3`;
+      const fileName = ttsCacheFile(text);
 
       // Skip if already cached
       const { data: existing } = await supabaseAdmin.storage
@@ -4023,16 +4030,14 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     }
   }
 
-  // Only pre-generate TTS for English (Arabic TTS not supported yet)
+  // Only pre-generate TTS for English (Arabic TTS not supported yet). The app reads each story's
+  // card (headline + takeaways), falling back to the digest's first bullets only when there are no
+  // cards — so record that, once. Recording the digest as well paid for audio nobody plays.
   if (language === 'en') {
-    pregenerateTTSForContent(digestContent, `${category} / ${timeSlot} / digest`, { category, timeSlot, language }).catch(err =>
-      console.warn(`TTS pre-gen (digest) failed for ${category}:`, err.message)
+    const which = storiesContent ? 'stories' : 'digest';
+    pregenerateTTSForContent(storiesContent || digestContent, `${category} / ${timeSlot} / ${which}`, { category, timeSlot, language }).catch(err =>
+      console.warn(`TTS pre-gen (${which}) failed for ${category}:`, err.message)
     );
-    if (storiesContent) {
-      pregenerateTTSForContent(storiesContent, `${category} / ${timeSlot} / stories`, { category, timeSlot, language }).catch(err =>
-        console.warn(`TTS pre-gen (stories) failed for ${category}:`, err.message)
-      );
-    }
   }
 }
 
