@@ -4559,9 +4559,6 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   }
 }
 
-// Cloud Scheduler will trigger the /api/generate/:timeSlot endpoints
-// No local cron jobs needed on Cloud Run
-
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -4745,20 +4742,9 @@ app.post('/api/generate/period/:period', async (req, res) => {
   }
 });
 
-app.get('/api/generate/:timeSlot', async (req, res) => {
-  try {
-    const timeSlot = req.params.timeSlot;
-    const day = req.query.day || null; // e.g. ?day=2026-05-10
-    const slot = TIME_SLOTS.find(s => s.label.toLowerCase() === timeSlot.toLowerCase());
-    if (!slot) return res.status(400).json({ error: 'Invalid time slot' });
-    const targetDay = day || getTodayDate();
-    res.json({ status: 'accepted', message: `News generation started for ${slot.label} on ${targetDay}`, timestamp: new Date().toISOString() });
-    generateAllNewsForTimeSlot(slot.label, targetDay).catch(err => console.error(`Background generation failed for ${slot.label}:`, err.message));
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
+// POST only. There was a GET twin that started a whole paid run with none of the checks
+// below — no pause switch, no running-slot lock — so a crawler, a link prefetch or a pasted
+// URL could start one. Nothing called it; keep it that way.
 app.post('/api/generate/:timeSlot', async (req, res) => {
   try {
     const timeSlot = req.params.timeSlot;
