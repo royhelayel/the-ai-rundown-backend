@@ -6343,6 +6343,24 @@ app.get('/admin/api/debug-serper', async (req, res) => {
   } catch (err) { res.json({ ok: false, error: err.message }); }
 });
 
+// Why a Google link does or does not decode from this server: each step's status, and what the
+// article page looked like when it carried no signature (a consent page, a block page).
+app.get('/admin/api/google-decode-probe', async (req, res) => {
+  try {
+    const link = req.query.link;
+    const id = new URL(link).pathname.split('/').pop();
+    const page = await fetch(`https://news.google.com/articles/${id}`, { headers: { 'User-Agent': BROWSER_UA }, redirect: 'manual', signal: AbortSignal.timeout(10000) });
+    const html = await page.text().catch(() => '');
+    const sg = html.match(/data-n-a-sg="([^"]+)"/)?.[1];
+    const ts = html.match(/data-n-a-ts="([^"]+)"/)?.[1];
+    googleDecodeCache.delete(id);
+    resetGoogleDecodeTally();
+    const decoded = await decodeGoogleNewsUrl(link, null);
+    res.json({ pageStatus: page.status, location: page.headers.get('location'), hasSignature: !!sg, hasTimestamp: !!ts,
+      title: html.match(/<title>([^<]*)/)?.[1] || null, sample: sg ? null : html.replace(/\s+/g, ' ').slice(0, 300), decoded });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // What a category's briefs would be written from, without writing them: the stories the reader
 // chose and the material each one has — article, description or headline. No Serper and nothing
 // stored, so retrieval can be checked while generation is paused (2026-10-17).
