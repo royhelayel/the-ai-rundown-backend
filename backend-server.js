@@ -3837,6 +3837,7 @@ async function generatePeriodRecap(period, endDay, language = 'en') {
     // A withheld recap clears the stored one: an older, unchecked recap must not keep showing.
     await storeNews(category, endDay, period, text, null, null, null, null, language, text, null, { briefing: report, stories: picked.length });
     await saveBriefingSources(category, endDay, period, language, text ? sources : null);
+    if (text && language === 'en') await pregenerateRecapTTS(text, `${category} / ${period} recap`, { category, timeSlot: period, language });
     console.log(text
       ? `  ✓ ${category} — ${text.split(/\s+/).length} words from ${picked.length} checked stories${sources ? ', attributed' : ''}`
       : `  ✗ ${category} — withheld (${report?.error || 'failed its check'})`);
@@ -3994,7 +3995,7 @@ async function callUnrealSpeech(text) {
     const res = await fetch('https://api.v7.unrealspeech.com/stream', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '192k', Speed: '0', Pitch: '1' }),
+      body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '64k', Speed: '0', Pitch: '1' }),
     });
     if (!res.ok) {
       const err = await res.text();
@@ -4007,7 +4008,7 @@ async function callUnrealSpeech(text) {
   const res = await fetch('https://api.v7.unrealspeech.com/speech', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '192k', Speed: '0', Pitch: '1' }),
+    body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '64k', Speed: '0', Pitch: '1' }),
   });
   if (!res.ok) {
     const err = await res.text();
@@ -4046,19 +4047,20 @@ function parseStoriesForTTS(raw) {
 }
 
 // Mirrors buildStoryScript() + cleanForTTS() in the frontend — must stay in sync so MD5 cache keys
-// align. The narrator reads what the card shows (Roy, 2026-10-18): the headline, then the story's
-// paragraph — its Summary, or for a story without one its takeaways joined into sentences, as the
-// card joins them (storyParagraph / asSentences in src/lib/stories.js). It used to read the
-// takeaways while the card showed the Summary, so what you heard was not what you saw. A sentence
-// gets one full stop: appending one to every takeaway produced "..".
+// align. The narrator reads the story's paragraph, as the card shows it: its Summary, or for a
+// story without one its takeaways joined into sentences (storyParagraph / asSentences in
+// src/lib/stories.js). No headline (Roy, 2026-10-18): the paragraph's first sentence already
+// carries it, so reading both said the news twice. A sentence gets one full stop, never "..".
 const endSentence = (t) => (/[.!?…"”’')]$/.test(t) ? t : `${t}.`);
 function buildStoryScript(story) {
-  const cl = cleanForTTS;
   const paragraph = story.summary && story.summary.trim()
     ? story.summary.trim()
     : story.bullets.map(b => (b || '').trim()).filter(Boolean).map(endSentence).join(' ');
-  return [endSentence(cl(story.headline)), cl(paragraph)].filter(Boolean).join(' ');
+  return cleanForTTS(paragraph);
 }
+// A recap is read as it stands, exactly as the app reads one (a pseudo-story whose takeaway is
+// the whole recap text).
+const buildRecapScript = (text) => cleanForTTS(endSentence(String(text || '').trim()));
 
 // The same file name /api/tts-stream looks up. Since 27 May that has included the voice, and this
 // pre-recording didn't — so every file it saved was one the app never asked for, and every
@@ -4068,6 +4070,33 @@ const ttsCacheFile = (text) => {
   const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
   return `${crypto.createHash('md5').update(`${voiceId}:${text.trim()}`).digest('hex')}.mp3`;
 };
+
+// Whether a recording is already saved — a listing, not a download of the whole file.
+async function ttsCached(fileName) {
+  const { data } = await supabaseAdmin.storage.from('tts-cache').list('', { search: fileName, limit: 1 }).catch(() => ({ data: null }));
+  return !!(data || []).some(f => f.name === fileName);
+}
+
+// Record one text and save it under the name the app will look for. Returns what happened.
+async function pregenerateTTSText(text, label, meta = {}) {
+  if (!process.env.UNREALSPEECH_API_KEY || !text || !text.trim()) return 'skipped';
+  const fileName = ttsCacheFile(text);
+  if (await ttsCached(fileName)) return 'cached';
+  const audioBuffer = await callUnrealSpeech(text);
+  trackTTSUsage(text.length, { ...meta, label });
+  const { error } = await supabaseAdmin.storage.from('tts-cache').upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false });
+  if (error) throw new Error(`upload failed: ${error.message}`);
+  return 'recorded';
+}
+
+// Recaps are recorded when they are written, like stories, so the first listener does not wait
+// for the whole recap to be made (4.4 s for World's on Oct 17, measured) (Roy, 2026-10-18).
+async function pregenerateRecapTTS(text, label, meta = {}) {
+  try {
+    const what = await pregenerateTTSText(buildRecapScript(text), label, meta);
+    console.log(`🔊 Recap audio ${what}: ${label}`);
+  } catch (e) { console.warn(`  ✗ Recap audio failed for ${label}: ${e.message}`); }
+}
 
 async function pregenerateTTSForContent(content, label, meta = {}) {
   if (!process.env.UNREALSPEECH_API_KEY) { console.log('⚠️  UNREALSPEECH_API_KEY not set — skipping TTS pre-gen'); return; }
@@ -4083,9 +4112,7 @@ async function pregenerateTTSForContent(content, label, meta = {}) {
       const fileName = ttsCacheFile(text);
 
       // Skip if already cached
-      const { data: existing } = await supabaseAdmin.storage
-        .from('tts-cache').download(fileName).catch(() => ({ data: null }));
-      if (existing) {
+      if (await ttsCached(fileName)) {
         console.log(`  ⏭️  Cached: ${story.headline.slice(0, 50)}`);
         continue;
       }
@@ -4254,6 +4281,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl, auditResult, retrievalStats);
   // Cleared along with a withheld recap, so stale attributions never outlive the text.
   await saveBriefingSources(category, targetDay, timeSlot, language, briefing ? briefingSources : null);
+  if (briefing && language === 'en') pregenerateRecapTTS(briefing, `${category} / ${timeSlot} recap`, { category, timeSlot, language });
 
   if (retrievalStats && typeof retrievalStats.headlineOnly === 'number') {
     runRetrievalTally.headlineOnly += retrievalStats.headlineOnly;
@@ -6547,6 +6575,21 @@ app.post('/admin/api/test-email', async (req, res) => {
 // Cache hit:  downloads from Supabase (~300ms), streams to client
 // Cache miss: pipes Unreal Speech /stream response chunk-by-chunk to client (~200ms to first byte),
 //             uploads to Supabase in the background so the next request is a fast cache hit
+// The address of a saved recording, for the app to play straight from storage — it starts as
+// soon as the first bytes arrive, instead of after the backend has downloaded the whole file and
+// passed it on (1.6 s for a saved recap, measured 2026-10-18). { url: null } when nothing is
+// saved yet; the app then asks /api/tts-stream to make it.
+app.post('/api/tts-url', async (req, res) => {
+  const { text } = req.body || {};
+  if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
+  try {
+    const fileName = ttsCacheFile(text);
+    if (!(await ttsCached(fileName))) return res.json({ url: null });
+    const { data, error } = await supabaseAdmin.storage.from('tts-cache').createSignedUrl(fileName, 6 * 3600);
+    res.json({ url: error ? null : data?.signedUrl || null });
+  } catch (e) { res.json({ url: null }); }
+});
+
 app.post('/api/tts-stream', async (req, res) => {
   const { text } = req.body;
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
@@ -6577,7 +6620,7 @@ app.post('/api/tts-stream', async (req, res) => {
       const unrealRes = await fetch('https://api.v7.unrealspeech.com/stream', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '192k', Speed: '0', Pitch: '1' }),
+        body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '64k', Speed: '0', Pitch: '1' }),
       });
       if (!unrealRes.ok) {
         const errBody = await unrealRes.text().catch(() => '');
