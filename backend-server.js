@@ -1250,6 +1250,11 @@ const GOOGLE_DECODE_PER_CATEGORY = 80;
 let googleDecodeTally = { tried: 0, decoded: 0 };
 const resetGoogleDecodeTally = () => { googleDecodeTally = { tried: 0, decoded: 0 }; };
 const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+// From Render, Google answers the article page with its "unusual traffic" check
+// (google.com/sorry) — measured 2026-10-17. That is bot detection, and we do not work around
+// it: the decoder stands down for six hours and Serper's lookup takes over.
+let googleBlockedUntil = 0;
+const GOOGLE_BLOCK_BACKOFF_MS = 6 * 3600 * 1000;
 
 async function decodeGoogleNewsUrl(link, domain) {
   let id;
@@ -1269,11 +1274,18 @@ async function decodeGoogleNewsUrl(link, domain) {
     } catch { return null; }
   };
   if (googleDecodeCache.has(id)) return onOutlet(googleDecodeCache.get(id));
+  if (Date.now() < googleBlockedUntil) { googleDecodeTally.blocked = true; return null; }
   if (googleDecodeTally.tried >= GOOGLE_DECODE_PER_CATEGORY) return null;
   googleDecodeTally.tried++;
   let out = null;
   try {
-    const page = await fetch(`https://news.google.com/articles/${id}`, { headers: { 'User-Agent': BROWSER_UA }, signal: AbortSignal.timeout(10000) });
+    const page = await fetch(`https://news.google.com/articles/${id}`, { headers: { 'User-Agent': BROWSER_UA }, redirect: 'manual', signal: AbortSignal.timeout(10000) });
+    if (page.status >= 300 && page.status < 400 && /\/sorry\//.test(page.headers.get('location') || '')) {
+      googleBlockedUntil = Date.now() + GOOGLE_BLOCK_BACKOFF_MS;
+      googleDecodeTally.blocked = true;
+      console.warn('⚠️  Google is answering with its unusual-traffic check — link decoding off for 6h, Serper resolves instead');
+      return null;     // not cached: the link itself is fine, the server is what was refused
+    }
     const html = page.ok ? await page.text() : '';
     const sg = html.match(/data-n-a-sg="([^"]+)"/)?.[1];
     const ts = html.match(/data-n-a-ts="([^"]+)"/)?.[1];
@@ -1940,7 +1952,7 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
       fromDescription: filled.filter(st => st.material === 'description').length,
       fromHeadline: filled.filter(st => st.material === 'headline').length,
       headlineOnly: filled.filter(st => st.material === 'headline').length,
-      googleDecoded: googleDecodeTally.decoded, googleDecodeTried: googleDecodeTally.tried,
+      googleDecoded: googleDecodeTally.decoded, googleDecodeTried: googleDecodeTally.tried, googleBlocked: !!googleDecodeTally.blocked,
       reservesReady: reserves.length,
       // Now only stories no reader could open at all — paywalled on every outlet.
       droppedForNoBody: droppedNoBody.length,
@@ -2497,7 +2509,7 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
       fromDescription: filled.filter(st => st.material === 'description').length,
       fromHeadline: filled.filter(st => st.material === 'headline').length,
       headlineOnly: filled.filter(st => st.material === 'headline').length,
-      googleDecoded: googleDecodeTally.decoded, googleDecodeTried: googleDecodeTally.tried,
+      googleDecoded: googleDecodeTally.decoded, googleDecodeTried: googleDecodeTally.tried, googleBlocked: !!googleDecodeTally.blocked,
       reservesReady: reserves.length,
       // Now only stories no reader could open at all — paywalled on every outlet.
       droppedForNoBody: droppedNoBody.length,
@@ -6375,7 +6387,7 @@ app.get('/admin/api/material', async (req, res) => {
     res.json({
       category, language, seconds: Math.round((Date.now() - t0) / 1000),
       stats: Object.fromEntries(['source', 'fetched', 'storiesAfterGrouping', 'candidates', 'offRegion', 'storiesTried',
-        'fromArticle', 'fromDescription', 'fromHeadline', 'googleDecoded', 'googleDecodeTried', 'droppedForNoBody',
+        'fromArticle', 'fromDescription', 'fromHeadline', 'googleDecoded', 'googleDecodeTried', 'googleBlocked', 'droppedForNoBody',
         'reservesReady', 'byLane'].map(k => [k, pick(k)])),
       stories: (stats.storyRetrieval || []).map(st => ({
         rank: st.rank, material: st.material, outlets: st.outletCount, headline: st.headline,
