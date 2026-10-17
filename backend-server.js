@@ -3402,8 +3402,8 @@ ${numbered(sentences)}`;
         catch (e) { if (attempt) throw e; }
       }
     },
-    // Only the flagged sentences are rewritten, and a story left out gets one sentence of its own;
-    // every other sentence stays exactly as it was.
+    // Only the flagged sentences are rewritten — including the longest ones when the recap is over
+    // length — and a story left out gets one sentence of its own; every other sentence stays as it was.
     repairSentences: async (text, issues, missing) => {
       const sentences = sentencesOf(text);
       const flagged = [...new Set(issues.map(i => i.s))];
@@ -3422,14 +3422,6 @@ ${numbered(sentences)}`;
       if (!Array.isArray(parsed.sentences) || parsed.sentences.some(x => !flagged.includes(x?.s) || !okText(x.text))) throw new Error('Invalid recap repair');
       const added = Array.isArray(parsed.added) ? parsed.added.filter(a => missing.includes(a?.story) && okText(a.text)) : [];
       return replaceSentences(text, sentences, new Map(parsed.sentences.map(x => [x.s, x.text.trim()])), added.map(a => a.text.trim()));
-    },
-    // The whole recap is rewritten only when it is too long — the one problem no single sentence fixes.
-    rewrite: async (text, issues) => {
-      const prompt = `Rewrite the entire recap to fix these problems:\n${issues.join('\n')}\nUse only the digest. Cover EVERY story, preserve essential qualifications and attribution, copy numbers, names and titles exactly, and use complete sentences. Maximum ${RECAP_MAX_WORDS} words; no minimum length. One sentence per story, carrying only that story's facts — never merge two stories into one sentence. Weight the stories equally, no story favoured because it comes first. Do not add details back; transitions only name the subject. Do not add filler or outside knowledge. Plain flowing prose, no headings, bullets or URLs.${arabic}\nRECAP:\n${text}`;
-      const data = await callClaudeCached(prefix, prompt, 1800);
-      trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_repair' });
-      if (data.stop_reason === 'max_tokens') throw new Error('Truncated recap repair');
-      return stripRecapChrome((data.content || []).filter(c => c.type === 'text').map(c => c.text).join('\n'));
     },
   });
 }

@@ -100,14 +100,25 @@ test('withheld only when nothing survives', async () => {
   const r = await validateRecap({ text: 'Only sentence.', audit: async () => flag(1), repairSentences: async (t) => t });
   assert.equal(r.briefing, ''); assert.equal(r.report.withheld, true);
 });
-test('length is the one problem fixed by rewriting the whole recap', async () => {
-  let rewrites = 0;
-  const r = await validateRecap({ text: 'word '.repeat(171), audit: async () => clean, repairSentences: async () => { throw Error('not for length'); }, rewrite: async () => { rewrites++; return 'Short now.'; } });
-  assert.equal(rewrites, 1); assert.equal(r.briefing, 'Short now.');
-  const still = await validateRecap({ text: 'word '.repeat(171), audit: async () => clean, rewrite: async () => 'word '.repeat(171) });
-  assert.equal(still.briefing, '');
-  const short = await validateRecap({ text: 'One short story.', audit: async () => clean, rewrite: async () => { throw Error('no'); } });
+test('too long is mended by tightening the longest sentences, not a whole rewrite', async () => {
+  const long = 'This sentence is deliberately padded with many extra words to push the recap far past its limit today. ';
+  const text = long.repeat(3) + 'Short one.';
+  const r = await validateRecap({ text, maxWords: 40, audit: async () => clean, repairSentences: async (t, issues) => {
+    assert.ok(issues.length && issues.every(i => i.type === 'long'));
+    const sents = sentencesOf(t);
+    return replaceSentences(t, sents, new Map(issues.map(i => [i.s, 'Tight.'])));
+  } });
+  assert.equal(r.report.passed, true); assert.ok(r.briefing.split(/\s+/).length <= 40);
+  const stuck = await validateRecap({ text, maxWords: 40, audit: async () => clean, repairSentences: async t => t });
+  assert.equal(stuck.briefing, '');
+  const short = await validateRecap({ text: 'One short story.', audit: async () => clean, repairSentences: async () => { throw Error('no'); } });
   assert.equal(short.report.passed, true);
+});
+test('a recap that only shortens the source is not "wrong"', () => {
+  const r = provenRecapIssues({ missingStories: [], issues: [
+    { s: 1, type: 'wrong', recap: 'Three men were sentenced', digest: 'Three men were sentenced to 158 years', why: 'omits the term' },
+  ] }, { sentences: ['Three men were sentenced in court.'], digestText: 'Three men were sentenced to 158 years and nine months.', storyIds: ['S1'] });
+  assert.equal(r.issues.length, 0); assert.equal(r.dismissed.length, 1);
 });
 
 test('production orchestration clears recaps when source verification is unavailable', async () => {

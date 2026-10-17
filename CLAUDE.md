@@ -106,7 +106,8 @@ Hard product constraints, set by Roy and not negotiable:
   every finding; `provenRecapIssues` confirms the quotes are really there and dismisses any
   finding that can't show conflicting words. Repairs rewrite only the flagged sentences, up to
   three times (`validateRecap`); a sentence still flagged after that comes out, and the recap is
-  withheld only when nothing survives. The whole recap is rewritten only when it's too long.
+  withheld only when nothing survives. Too long is mended the same way, by tightening the longest
+  sentences — a whole rewrite of an over-length recap made it longer and dropped stories.
   `POST /admin/api/recap-redo` re-writes a slot's empty recaps under the same rules.
 - **No "Why this matters" and no "Perspectives differ".** A story is its headline and its facts
   (Roy, 2026-10-15). `GROUNDING_RULES` says so; no prompt asks for either.
