@@ -30,15 +30,6 @@ export function sentencesOf(text) {
     .map(s => s.replace(/\uE000(\d+)\uE001/g, (_, i) => marks[Number(i)]).trim()).filter(Boolean);
 }
 
-export function unsupportedMap(parsed, validIds) {
-  if (!Array.isArray(parsed.unsupported)) throw new Error('Missing unsupported array');
-  const out = new Map();
-  for (const u of parsed.unsupported) {
-    if (!u || typeof u.id !== 'string' || !validIds.has(u.id) || typeof u.reason !== 'string' || !u.reason.trim()) throw new Error('Invalid audit finding');
-    out.set(u.id, u.reason.slice(0, 500));
-  }
-  return out;
-}
 
 export const wordCount = text => String(text || '').trim().split(/\s+/).filter(Boolean).length;
 
@@ -62,8 +53,13 @@ const MEANING_WORDS = new Set(['not', 'no', 'never', 'nor', 'without', 'denied',
 // The recap's words all appear, in order, in the source's words, and nothing left out changes the
 // meaning: the recap only shortened the source. "158 years and nine months each" against "158
 // years and nine months in prison each" is that; "guilty" against "not guilty" is not.
-function onlyShortens(rq, dq) {
-  const r = rq.split(' '), d = dq.split(' ');
+// Small joining words a shortened list or phrase adds ("Arizona and Idaho" from "Arizona,
+// Arkansas, Idaho") — they carry no claim of their own.
+const JOINERS = new Set(['and', 'or', 'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'with', 'for', 'as', 'its', 'their']);
+
+export function onlyShortens(rq, dq) {
+  const d = dq.split(' ');
+  const r = rq.split(' ').filter(w => !JOINERS.has(w) || d.includes(w));
   const dropped = [];
   let i = 0;
   for (const w of d) { if (i < r.length && w === r[i]) i++; else dropped.push(w); }
@@ -97,6 +93,34 @@ export function provenRecapIssues(parsed, { sentences, digestText, storyIds }) {
   }
   return { missing: [...new Set(parsed.missingStories)], issues, dismissed };
 }
+// The same proof for the story check (Roy, 2026-10-18). Each finding names a statement by id and
+// quotes the words in it that are wrong, and — for a wrong fact or a lost qualifier — the words in
+// the outlets' text it contradicts or drops. Code confirms both quotes are really there; a finding
+// that cannot show them, or where the source says the same thing, or where the statement only
+// left words out, is dismissed. On Oct 17 the unproven check flagged 115 statements, rewrote 87
+// stories and dropped 12, some over "by 2045" while granting the source said it.
+export function provenStoryFindings(parsed, { statements, sourceText }) {
+  if (!parsed || !Array.isArray(parsed.unsupported)) throw new Error('Missing unsupported array');
+  const source = normQuote(sourceText);
+  const found = new Map(), dismissed = [];
+  for (const u of parsed.unsupported) {
+    if (!u || typeof u.id !== 'string' || !statements.has(u.id)) throw new Error('Invalid audit finding');
+    const type = ISSUE_TYPES.includes(u.type) ? u.type : 'added';
+    const said = normQuote(statements.get(u.id)), sq = normQuote(u.statement), oq = normQuote(u.source);
+    let dismiss = null;
+    if (!sq || !said.includes(sq)) dismiss = 'its statement words are not in that statement';
+    else if (type === 'wrong' || type === 'qualifier') {
+      if (!oq || !source.includes(oq)) dismiss = 'its source words are not in the source';
+      else if (sq === oq || said.includes(oq)) dismiss = 'the statement already says what the source says';
+      else if (type === 'wrong' && (oq.includes(sq) || onlyShortens(sq, oq))) dismiss = 'the statement shortens the source, it does not contradict it';
+    } else if (type === 'added' && source.includes(sq)) dismiss = 'the source says it';
+    const reason = `${String(u.reason || '').slice(0, 400)}${u.statement ? ` [statement: "${u.statement}"${u.source ? `; source: "${u.source}"` : ''}]` : ''}`;
+    if (dismiss) dismissed.push({ id: u.id, type, reason, dismissed: dismiss });
+    else found.set(u.id, reason.slice(0, 600));
+  }
+  return { found, dismissed };
+}
+
 export const describeIssue = i => (i.type === 'long'
   ? `S${i.s} too long — ${i.why}`
   : `S${i.s} ${i.type}: "${i.recap}"${i.digest ? ` vs source "${i.digest}"` : ''}${i.why ? ` — ${i.why}` : ''}`);

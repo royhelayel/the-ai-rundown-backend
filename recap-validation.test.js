@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAuditJSON, sentencesOf, unsupportedMap, provenRecapIssues, parseRecapLines, validateRecap, attributionMap } from './recap-validation.js';
+import { parseAuditJSON, sentencesOf, provenStoryFindings, provenRecapIssues, parseRecapLines, validateRecap, attributionMap } from './recap-validation.js';
 
 test('parses fenced JSON and prose without greedily joining multiple objects', () => {
   assert.deepEqual(parseAuditJSON('```json\n{"unsupported":[]}\n```\nExplanation.'), { unsupported: [] });
@@ -9,9 +9,10 @@ test('parses fenced JSON and prose without greedily joining multiple objects', (
   assert.throws(() => parseAuditJSON('{"unsupported":['));
 });
 test('invalid schemas and unknown IDs cannot silently pass', () => {
-  assert.throws(() => unsupportedMap({}, new Set(['B1'])));
-  assert.throws(() => unsupportedMap({unsupported:[{id:'B2',reason:'x'}]}, new Set(['B1'])));
-  assert.equal(unsupportedMap({unsupported:[]}, new Set()).size, 0);
+  const st = { statements: new Map([['B1', 'A claim.']]), sourceText: 'A claim.' };
+  assert.throws(() => provenStoryFindings({}, st));
+  assert.throws(() => provenStoryFindings({unsupported:[{id:'B2',statement:'x',reason:'x'}]}, st));
+  assert.equal(provenStoryFindings({unsupported:[]}, st).found.size, 0);
   const ctx = { sentences: ['A claim.'], digestText: 'A claim.', storyIds: ['S1'] };
   assert.throws(() => provenRecapIssues({missingStories:['S9'],issues:[]}, ctx));
   assert.throws(() => provenRecapIssues({missingStories:[]}, ctx));
@@ -143,6 +144,27 @@ test('leaving words out of the middle is shortening; leaving out a qualifier is 
   ] }, ctx);
   assert.deepEqual(r.dismissed.map(d => d.s), [1]);
   assert.deepEqual(r.issues.map(i => i.s), [2, 3]);
+});
+
+// ── The story check must prove its findings too ───────────────────────────────
+const SRC = 'Lawsuits were filed in Arizona, Arkansas, Idaho, Kansas, Montana, Nebraska and West Virginia. Bezos said that by 2045 robots will handle commutes. The court found him not guilty.';
+const STATEMENTS = new Map([
+  ['D1.B1', 'Lawsuits were filed in eight states.'],
+  ['D1.B2', 'Bezos said that by 2045 robots will handle commutes.'],
+  ['D1.B3', 'The court found him guilty.'],
+  ['D1.B4', 'Lawsuits were filed in Arizona and Idaho.'],
+]);
+test('the story check keeps proven findings and dismisses the rest', () => {
+  const r = provenStoryFindings({ unsupported: [
+    { id: 'D1.B1', type: 'wrong', statement: 'eight states', source: 'Arizona, Arkansas, Idaho, Kansas, Montana, Nebraska and West Virginia', reason: 'seven, not eight' },
+    { id: 'D1.B2', type: 'added', statement: 'by 2045 robots will handle commutes', source: '', reason: 'not stated as a prediction' },
+    { id: 'D1.B3', type: 'qualifier', statement: 'found him guilty', source: 'found him not guilty', reason: 'drops the negation' },
+    { id: 'D1.B4', type: 'wrong', statement: 'Arizona and Idaho', source: 'Arizona, Arkansas, Idaho', reason: 'leaves states out' },
+    { id: 'D1.B1', type: 'wrong', statement: 'nine states', source: 'seven states', reason: 'misquoted both sides' },
+  ] }, { statements: STATEMENTS, sourceText: SRC });
+  assert.deepEqual([...r.found.keys()].sort(), ['D1.B1', 'D1.B3']);
+  assert.equal(r.dismissed.length, 3);
+  assert.match(r.found.get('D1.B1'), /source: "Arizona/);
 });
 
 test('production orchestration clears recaps when source verification is unavailable', async () => {

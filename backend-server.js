@@ -1,4 +1,4 @@
-import { parseAuditJSON, sentencesOf, unsupportedMap, validateRecap, attributionMap, provenRecapIssues, describeIssue, parseRecapLines } from './recap-validation.js';
+import { parseAuditJSON, sentencesOf, validateRecap, attributionMap, provenRecapIssues, describeIssue, parseRecapLines, provenStoryFindings } from './recap-validation.js';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -3159,9 +3159,11 @@ async function checkUnits(prefix, unitLines, { category, timeSlot, language, aga
 
 Return the id of every statement that is NOT supported by ${against}. A statement is unsupported if it adds anything that is not stated there: a fact, a number, a name, a quote, background, history, context, a cause, a consequence, a prediction, significance or an interpretation. Your own knowledge does not count, even when it is true. Rewording what is there is fine; adding to it is not. A headline (id ending .H) is unsupported only if it asserts something that is not there. Each numbered story's own headline line in the source is part of its material: a statement that restates it is supported, including for a story whose only material is that headline.
 
+Prove every finding with the exact words involved, copied character for character — except that any double quote (") inside them is written as a single quote ('), so the JSON stays valid. "statement" is the words in that statement that are unsupported. For a wrong name, number, title or attribution, or a lost qualification, "source" is the exact words in ${against} that the statement contradicts or drops. If you cannot quote source words that say something different from the statement, and the statement does not add something the source lacks, it is not a finding: do not report it. Leaving details out is never a finding.
+
 Respond with ONLY JSON, no other text:
-{"unsupported":[{"id":"D3.B2","reason":"short reason"}]}
-If every statement is supported: {"unsupported":[]}
+{"unsupported":[{"id":"D3.B2","type":"wrong","statement":"exact words from the statement","source":"exact words from the source","reason":"short reason"}]}
+"type" is "wrong" (a name, number, title or attribution stated differently from the source), "qualifier" (a lost qualification that changes meaning — alleged, proposed, reportedly, a claim made by someone stated as fact), or "added" (something the source does not contain; "source" may be ""). If every statement is supported: {"unsupported":[]}
 
 STATEMENTS:
 ${unitLines.join('\n')}`;
@@ -3169,8 +3171,10 @@ ${unitLines.join('\n')}`;
   trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_check' });
   const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
   if (data.stop_reason === 'max_tokens') throw new Error('Truncated grounding check');
-  const validIds = new Set(unitLines.map(line => line.match(/^\[([^\]]+)\]/)?.[1]));
-  return unsupportedMap(parseAuditJSON(raw), validIds);
+  const statements = new Map(unitLines.map(line => { const m = line.match(/^\[([^\]]+)\]\s*(.*)$/); return m ? [m[1], m[2]] : null; }).filter(Boolean));
+  const { found, dismissed } = provenStoryFindings(parseAuditJSON(raw), { statements, sourceText: prefix });
+  found.dismissed = dismissed;     // carried to the report, so what was waved off stays visible
+  return found;
 }
 
 async function repairStories(prefix, items, { category, timeSlot, language }) {
@@ -3235,7 +3239,8 @@ const CHECK_BATCH = 3;
 
 async function checkWithRetry(prefix, lines, opts) {
   let last;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // Three tries: a reply that quotes source words is likelier to come back as broken JSON.
+  for (let attempt = 0; attempt < 3; attempt++) {
     try { return await checkUnits(prefix, lines, opts); }
     catch (e) { last = e; }
   }
@@ -3243,7 +3248,7 @@ async function checkWithRetry(prefix, lines, opts) {
 }
 
 async function groundDigest({ category, timeSlot, language, digest, cards, prefix }) {
-  const report = { checked: false, passed: null, flags: [], repaired: 0, removedAfterRepair: [], emptied: [], checked_at: new Date().toISOString() };
+  const report = { checked: false, passed: null, flags: [], dismissed: [], repaired: 0, removedAfterRepair: [], emptied: [], checked_at: new Date().toISOString() };
   const D = parseDoc(digest);
   const C = cards ? parseDoc(cards) : null;
   if (!D.stories.length) return { digest, cards, report };
@@ -3284,6 +3289,7 @@ async function groundDigest({ category, timeSlot, language, digest, cards, prefi
         continue;
       }
       for (const [id, reason] of r.found) if (r.byId.has(id)) found.push({ id, claim: r.byId.get(id).text, reason });
+      for (const d of (r.found.dismissed || [])) report.dismissed.push({ stage, ...d });
     }
     return { found, failed };
   };
@@ -4422,7 +4428,10 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
   // This prevents stale data from a previous (possibly partial) run from showing
   // alongside newly generated content.
   try {
-    const toDelete = [...targetCategories, '__completed__'];
+    // A run for named categories replaces only those rows. Deleting the slot's completion marker
+    // too hid the whole day from the app for as long as one topic took to regenerate — the app
+    // lists a day only once its marker exists (2026-10-18).
+    const toDelete = categories ? [...targetCategories] : [...targetCategories, '__completed__'];
     const { error: delError } = await supabaseAdmin
       .from('news_summaries')
       .delete()
