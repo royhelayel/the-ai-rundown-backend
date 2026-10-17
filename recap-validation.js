@@ -52,7 +52,9 @@ export const normQuote = s => String(s || '').normalize('NFKC').toLowerCase().re
 // before" — is dismissed, not acted on. Missing stories need no quote: the ID is the evidence.
 export const ISSUE_TYPES = ['wrong', 'qualifier', 'added', 'broken'];
 export function provenRecapIssues(parsed, { sentences, digestText, storyIds }) {
-  if (!parsed || !Array.isArray(parsed.missingStories) || !Array.isArray(parsed.issues)) throw new Error('Invalid recap audit schema');
+  if (!parsed || !Array.isArray(parsed.issues)) throw new Error('Invalid recap audit schema');
+  if (parsed.missingStories !== undefined && !Array.isArray(parsed.missingStories)) throw new Error('Invalid recap audit schema');
+  parsed = { ...parsed, missingStories: parsed.missingStories || [] };
   if (parsed.missingStories.some(id => !storyIds.includes(id))) throw new Error('Invalid recap audit findings');
   const digest = normQuote(digestText);
   const issues = [], dismissed = [];
@@ -81,16 +83,31 @@ export const describeIssue = i => (i.type === 'long'
   ? `S${i.s} too long — ${i.why}`
   : `S${i.s} ${i.type}: "${i.recap}"${i.digest ? ` vs source "${i.digest}"` : ''}${i.why ? ` — ${i.why}` : ''}`);
 
-// Too long is mended like everything else: by tightening the longest sentences until the recap
-// fits, never by rewriting it whole — a whole rewrite of a 471-word World recap came back at 513,
-// then 612, dropping stories each time (2026-10-18).
-export function sentencesToTighten(text, maxWords) {
-  const sents = sentencesOf(text).map((t, i) => ({ s: i + 1, w: wordCount(t) }));
-  // What each sentence may run to for the whole to fit, with a little room to spare.
-  const target = Math.max(10, Math.floor((maxWords - 10) / Math.max(1, sents.length)));
-  let excess = wordCount(text) - maxWords + 10;
+// The recap is written as one line per story, each starting with its story number — "[3] In the
+// Middle East, …" (Roy, 2026-10-18). Coverage and length are then counted rather than judged: a
+// World recap written as prose ran to 636 words for twelve stories, and the check's "missing
+// story" findings moved from round to round. Returns null when the text is not written that way.
+export function parseRecapLines(text, storyIds) {
+  const raw = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const lines = [];
+  for (const l of raw) {
+    const m = l.match(/^\[\s*S?(\d+(?:\s*[,&]\s*S?\d+)*)\s*\]\s*(.+)$/i);
+    if (!m) { if (lines.length) lines[lines.length - 1].text += ` ${l}`; continue; }
+    const ids = [...new Set(m[1].split(/[,&]/).map(n => `S${parseInt(n.replace(/\D/g, ''), 10)}`))].filter(id => storyIds.includes(id));
+    if (ids.length) lines.push({ ids, text: m[2].trim() });
+  }
+  return lines.length && lines.length >= Math.ceil(raw.length / 2) ? lines : null;
+}
+
+// Too long is mended like everything else: by tightening the longest lines until the recap fits,
+// never by rewriting it whole — a whole rewrite of a 471-word World recap came back at 513, then
+// 612, dropping stories each time (2026-10-18).
+export function linesToTighten(lines, maxWords) {
+  const counted = lines.map((l, i) => ({ s: i + 1, w: wordCount(l.text) }));
+  const target = Math.max(10, Math.floor((maxWords - 10) / Math.max(1, counted.length)));
+  let excess = counted.reduce((n, x) => n + x.w, 0) - maxWords + 10;
   const picks = [];
-  for (const { s, w } of [...sents].sort((a, b) => b.w - a.w)) {
+  for (const { s, w } of [...counted].sort((x, y) => y.w - x.w)) {
     if (excess <= 0 || w <= target) break;
     picks.push({ s, type: 'long', recap: '', digest: '', why: `cut it to at most ${target} words, keeping its one key point and copying its figures exactly` });
     excess -= w - target;
@@ -98,52 +115,47 @@ export function sentencesToTighten(text, maxWords) {
   return picks;
 }
 
-// Swap, drop or add whole sentences in place, so the recap's paragraphs survive a repair.
-export function replaceSentences(text, sentences, replacements = new Map(), additions = []) {
-  let out = text;
-  for (const [n, next] of replacements) {
-    const old = sentences[n - 1];
-    if (old && out.includes(old)) out = out.replace(old, next);
-  }
-  out = out.replace(/[ \t]{2,}/g, ' ').replace(/ +\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-  return additions.length ? `${out} ${additions.join(' ')}`.trim() : out;
-}
+export const recapText = lines => lines.map(l => l.text).join(' ');
 
-// Check, then mend only what is wrong, up to `repairs` times: each repair rewrites just the
-// sentences the check flagged, tightens the longest ones when the recap is over length, and adds a
-// sentence for a story left out — so fixing one sentence cannot break another the way rewriting
-// the whole recap did. A sentence still flagged after the last repair is taken out; the recap is
-// withheld only if nothing survives, it is still too long, or the check itself cannot run.
-export async function validateRecap({ text, maxWords = 170, repairs = 3, audit, repairSentences }) {
+// Check, then mend only what is wrong, up to `repairs` times: each repair rewrites just the lines
+// the check flagged, tightens the longest ones when the recap is over length, and adds a line for
+// a story left out — so fixing one line cannot break another the way rewriting the whole recap
+// did. When every line carries its story, a missing story is counted, not taken from the check.
+// A line still flagged after the last repair is taken out; the recap is withheld only if nothing
+// survives, it is still too long, or the check itself cannot run.
+export async function validateRecap({ lines, storyIds = [], maxWords = 170, repairs = 3, audit, repairLines }) {
   const report = { checked: false, flags: [], dismissed: [], repairs: 0, repairFailures: 0, removed: [], withheld: false };
+  const tagged = lines.length > 0 && lines.every(l => l.ids && l.ids.length);
   try {
     for (let round = 0; ; round++) {
-      if (!text.trim()) throw new Error('Empty recap');
-      const { missing, issues, dismissed } = await audit(text);
-      const over = wordCount(text) > maxWords;
+      if (!lines.length || !recapText(lines).trim()) throw new Error('Empty recap');
+      const { missing: claimed, issues, dismissed } = await audit(lines.map(l => l.text));
+      const covered = new Set(lines.flatMap(l => l.ids || []));
+      const missing = tagged ? storyIds.filter(id => !covered.has(id)) : claimed;
+      const words = wordCount(recapText(lines));
+      const over = words > maxWords;
       report.checked = true;
       report.dismissed.push(...dismissed.map(d => `${describeIssue(d)} [dismissed: ${d.dismissed}]`));
       report.flags.push(...missing.map(id => `Missing story ${id}`), ...issues.map(describeIssue),
-        ...(over ? [`Exceeds ${maxWords} words (${wordCount(text)})`] : []));
-      if (!missing.length && !issues.length && !over) return { briefing: text, report: { ...report, passed: true } };
+        ...(over ? [`Exceeds ${maxWords} words (${words})`] : []));
+      if (!missing.length && !issues.length && !over) return { briefing: recapText(lines), lines, report: { ...report, passed: true } };
       if (round < repairs) {
-        const tighten = over ? sentencesToTighten(text, maxWords).filter(t => !issues.some(i => i.s === t.s)) : [];
-        try { text = await repairSentences(text, [...issues, ...tighten], missing); report.repairs++; }
+        const tighten = over ? linesToTighten(lines, maxWords).filter(t => !issues.some(i => i.s === t.s)) : [];
+        try { lines = await repairLines(lines, [...issues, ...tighten], missing); report.repairs++; }
         catch { report.repairFailures++; }       // a garbled repair costs a round, not the recap
         continue;
       }
-      // Out of repairs: take out the sentences still flagged. A story still missing stays missing —
-      // a recap that leaves one out is still accurate about the rest.
-      const sents = sentencesOf(text);
+      // Out of repairs: take out the lines still flagged. A story still missing stays missing — a
+      // recap that leaves one out is still accurate about the rest.
       const flagged = new Set(issues.map(i => i.s));
-      report.removed = sents.filter((_, i) => flagged.has(i + 1));
-      text = replaceSentences(text, sents, new Map([...flagged].map(n => [n, ''])));
-      if (!text.trim()) throw new Error('Nothing in the recap survived its check');
-      if (wordCount(text) > maxWords) throw new Error(`Still exceeds ${maxWords} words after repair`);
-      return { briefing: text, report: { ...report, passed: true, trimmed: report.removed.length > 0 } };
+      report.removed = lines.filter((_, i) => flagged.has(i + 1)).map(l => l.text);
+      lines = lines.filter((_, i) => !flagged.has(i + 1));
+      if (!lines.length) throw new Error('Nothing in the recap survived its check');
+      if (wordCount(recapText(lines)) > maxWords) throw new Error(`Still exceeds ${maxWords} words after repair`);
+      return { briefing: recapText(lines), lines, report: { ...report, passed: true, trimmed: report.removed.length > 0 } };
     }
   } catch (e) { report.error = e.message; }
-  return { briefing: '', report: { ...report, passed: false, withheld: true } };
+  return { briefing: '', lines: [], report: { ...report, passed: false, withheld: true } };
 }
 
 // Which digest stories each recap sentence draws on, as returned by the attribution check:

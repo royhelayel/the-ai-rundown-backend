@@ -1,4 +1,4 @@
-import { parseAuditJSON, sentencesOf, unsupportedMap, validateRecap, attributionMap, provenRecapIssues, describeIssue, replaceSentences } from './recap-validation.js';
+import { parseAuditJSON, sentencesOf, unsupportedMap, validateRecap, attributionMap, provenRecapIssues, describeIssue, parseRecapLines } from './recap-validation.js';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -3366,64 +3366,78 @@ async function groundBriefing({ category, timeSlot, language, briefing, digest }
   const ids = stories.map((_, i) => `S${i + 1}`);
   const digestText = stories.map((s, i) => `[${ids[i]}] ${s.headline}\n${s.lines.join('\n')}`).join('\n\n');
   const prefix = `SOURCE DIGEST:\n${digestText}`;
-  const numbered = sentences => sentences.map((t, i) => `${i + 1}. ${t}`).join('\n');
+  const numbered = texts => texts.map((t, i) => `${i + 1}. ${t}`).join('\n');
   const arabic = language === 'ar' ? ' Write in Modern Standard Arabic.' : '';
+  // One line per story, tagged with its number. A draft written as prose (an older prompt, or the
+  // writer ignoring the format) is checked sentence by sentence, with coverage left to the check.
+  const lines = parseRecapLines(briefing, ids)
+    || sentencesOf(String(briefing || '').replace(/^\s*\[\s*S?\d+[^\]]*\]\s*/gm, '')).map(text => ({ ids: null, text }));
 
   // A logical check — the model judges meaning — that must prove every problem with the exact
   // words involved, which the code then confirms are really there (provenRecapIssues). Before
   // this, about a third of the findings were noise ("the week before" is not "the previous
   // week"), and each one cost the whole recap a rewrite (Roy, 2026-10-18).
-  const auditRecapOnce = async text => {
-    const sentences = sentencesOf(text);
+  const auditRecapOnce = async texts => {
     const prompt = `Check the WHOLE recap against ONLY the source digest. A recap gives each story its one key point in about a sentence and is meant to leave everything else out. So never report something the recap leaves out — a detail, a name, a figure, a partner, a date, a feature, how something works — unless it is a word like "alleged", "purported" or "reportedly" whose absence turns something uncertain into fact. Numbers, dates and titles spelled out for speech ("twenty twenty-two", "Pope Leo the Fourteenth") are NOT an issue. Saying the same thing in other words is NOT an issue ("until" for "through", "Saturday" for "Saturday night", "US" for "US-based", "the week before" for "the previous week"). Report only: (1) a story missing entirely; (2) a claim the digest does not contain, including any sentence that characterises a group of stories or the day ("dominated", "escalating", "a sign of"); (3) a name, number, title or attribution stated wrongly; (4) a lost qualification that changes meaning — something uncertain, purported, proposed or alleged stated as fact, or an association stated as a cause; (5) a broken or dangling sentence. Do not use outside knowledge.
 
-Prove every problem with the exact words involved, copied character for character. "recap" is the words in that recap sentence. For a wrong name, number, title or attribution, or a lost qualification, "digest" is the exact words in the digest that the recap contradicts or drops. If you cannot quote digest words that say something different from the recap, it is not a problem: do not report it.
+Prove every problem with the exact words involved, copied character for character. "recap" is the words in that numbered line of the recap. For a wrong name, number, title or attribution, or a lost qualification, "digest" is the exact words in the digest that the recap contradicts or drops. If you cannot quote digest words that say something different from the recap, it is not a problem: do not report it.
 
-The recap is given one numbered sentence per line. Return ONLY JSON:
-{"missingStories":["S1"],"issues":[{"s":3,"type":"wrong","recap":"exact words from recap sentence 3","digest":"exact words from the digest","why":"short reason"}]}
+The recap is given one numbered line per line. Return ONLY JSON:
+{"missingStories":["S1"],"issues":[{"s":3,"type":"wrong","recap":"exact words from recap line 3","digest":"exact words from the digest","why":"short reason"}]}
 "type" is "wrong" (a name, number, title or attribution stated wrongly), "qualifier" (a lost qualification that changes meaning), "added" (a claim the digest does not contain; "digest" may be ""), or "broken" (a broken or dangling sentence; "digest" is ""). Use empty arrays if there are no problems. Missing story IDs must come from the source digest.
 RECAP:
-${numbered(sentences)}`;
+${numbered(texts)}`;
     const data = await callClaudeCached(prefix, prompt, 2500);
     trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_check' });
     if (data.stop_reason === 'max_tokens') throw new Error('Truncated recap audit');
     const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
-    return provenRecapIssues(parseAuditJSON(raw), { sentences, digestText, storyIds: ids });
+    return provenRecapIssues(parseAuditJSON(raw), { sentences: texts, digestText, storyIds: ids });
   };
 
-  return validateRecap({
+  const result = await validateRecap({
     maxWords: RECAP_MAX_WORDS,
     repairs: 3,
-    text: briefing,
-    audit: async text => {
+    lines,
+    storyIds: ids,
+    audit: async texts => {
       // A garbled reply tells us nothing about the recap; ask once more before withholding it.
       for (let attempt = 0; ; attempt++) {
-        try { return await auditRecapOnce(text); }
+        try { return await auditRecapOnce(texts); }
         catch (e) { if (attempt) throw e; }
       }
     },
-    // Only the flagged sentences are rewritten — including the longest ones when the recap is over
-    // length — and a story left out gets one sentence of its own; every other sentence stays as it was.
-    repairSentences: async (text, issues, missing) => {
-      const sentences = sentencesOf(text);
+    // Only the flagged lines are rewritten — including the longest ones when the recap is over
+    // length — and a story left out gets a line of its own; every other line stays as it was.
+    repairLines: async (current, issues, missing) => {
       const flagged = [...new Set(issues.map(i => i.s))];
-      const prompt = `Below is a recap of the source digest, one numbered sentence per line.${flagged.length ? ` Rewrite ONLY sentence${flagged.length > 1 ? 's' : ''} ${flagged.join(', ')}, fixing these problems:\n${issues.map(describeIssue).join('\n')}` : ''}${missing.length ? `\nAlso write ONE new sentence for each story the recap leaves out (${missing.join(', ')}), giving that story's one key point.` : ''}
+      const prompt = `Below is a recap of the source digest, one numbered line per story.${flagged.length ? ` Rewrite ONLY line${flagged.length > 1 ? 's' : ''} ${flagged.join(', ')}, fixing these problems:\n${issues.map(describeIssue).join('\n')}` : ''}${missing.length ? `\nAlso write ONE new line for each story the recap leaves out (${missing.join(', ')}), giving that story's one key point.` : ''}
 
-Each rewritten sentence stays one sentence about the same story — two short ones only if one would lose an essential qualification. Copy numbers, names, titles, status words and attributions exactly as the digest gives them. Use only the digest. Leave every other sentence alone.${arabic}
+Each line stays one sentence about the same story — two short ones only if one would lose an essential qualification — and at most 30 words. Copy numbers, names, titles, status words and attributions exactly as the digest gives them. Use only the digest. Leave every other line alone.${arabic}
 
-Return ONLY JSON: {"sentences":[{"s":3,"text":"the corrected sentence"}],"added":[{"story":"S5","text":"a new sentence"}]}
+Return ONLY JSON: {"lines":[{"n":3,"text":"the corrected line"}],"added":[{"story":"S5","text":"a new line"}]}
 RECAP:
-${numbered(sentences)}`;
+${numbered(current.map(l => l.text))}`;
       const data = await callClaudeCached(prefix, prompt, 1500);
       trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_repair' });
       if (data.stop_reason === 'max_tokens') throw new Error('Truncated recap repair');
       const parsed = parseAuditJSON((data.content || []).filter(c => c.type === 'text').map(c => c.text).join(''));
       const okText = t => typeof t === 'string' && t.trim() && !/\n/.test(t.trim());
-      if (!Array.isArray(parsed.sentences) || parsed.sentences.some(x => !flagged.includes(x?.s) || !okText(x.text))) throw new Error('Invalid recap repair');
-      const added = Array.isArray(parsed.added) ? parsed.added.filter(a => missing.includes(a?.story) && okText(a.text)) : [];
-      return replaceSentences(text, sentences, new Map(parsed.sentences.map(x => [x.s, x.text.trim()])), added.map(a => a.text.trim()));
+      if (!Array.isArray(parsed.lines) || parsed.lines.some(x => !flagged.includes(x?.n) || !okText(x.text))) throw new Error('Invalid recap repair');
+      const fixed = new Map(parsed.lines.map(x => [x.n, x.text.trim()]));
+      const added = (Array.isArray(parsed.added) ? parsed.added : []).filter(a => missing.includes(a?.story) && okText(a.text));
+      return [...current.map((l, i) => (fixed.has(i + 1) ? { ...l, text: fixed.get(i + 1) } : l)),
+        ...added.map(a => ({ ids: [a.story], text: a.text.trim() }))];
     },
   });
+
+  // Which story each part came from, straight from the tags — no separate attribution call.
+  result.sources = result.lines.length && result.lines.every(l => l.ids && l.ids.length)
+    ? result.lines.map(l => ({ text: l.text, stories: l.ids.map(id => {
+        const idx = ids.indexOf(id);
+        return { index: idx, headline: stories[idx].headline, sources: coverageOf(stories[idx]) };
+      }) }))
+    : null;
+  return result;
 }
 
 // ── Which story each recap sentence came from ────────────────────────────────
@@ -3653,7 +3667,7 @@ How to build it:
 
 Use only what the digest says: no significance, background, causes or predictions that the digest does not contain. Preserve essential qualifications, uncertainty and attribution; never turn an allegation into a fact or an association into causation. If the stories need fewer words, use fewer — there is no minimum.
 
-Rules: flowing prose, one short paragraph per group. NO headings, NO bullet points, NO markdown, NO source names or URLs. Conversational and clear. Start immediately with the recap — no preamble, no title, no sign-off.`;
+Write it as one line per story, in the order it should be read aloud, each line starting with that story's number in square brackets: "[3] In the Middle East, ...". One sentence per line — two short ones only if one would lose an essential qualification — and at most 30 words. Every story number from 1 to ${storyCount} appears exactly once. No other lines: no title, no preamble, no sign-off, no headings, no bullets, no markdown, no source names or URLs. Conversational and clear.`;
 
   const data = await callClaude(prompt, 1400);
   if (data.stop_reason === 'max_tokens') throw new Error('Truncated briefing generation');
@@ -3805,7 +3819,7 @@ async function generatePeriodRecap(period, endDay, language = 'en') {
       if (text) {
         // Stories from different days have no place in one day's list, so these carry the day
         // they were last reported instead of a position.
-        const attributed = await attributeRecap({ category, timeSlot: period, language, recap: text, digest });
+        const attributed = gb.sources || await attributeRecap({ category, timeSlot: period, language, recap: text, digest });
         sources = attributed && attributed.map(part => ({ ...part, stories: part.stories.map(st => ({ headline: st.headline, sources: st.sources, day: picked[st.index]?.last })) }));
         report.attributed = !!sources;
       }
@@ -4207,7 +4221,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
       briefing = gb.briefing;
       auditResult.briefing = gb.report;
       if (briefing) {
-        briefingSources = await attributeRecap({ category, timeSlot, language, recap: briefing, digest: digestContent });
+        briefingSources = gb.sources || await attributeRecap({ category, timeSlot, language, recap: briefing, digest: digestContent });
         auditResult.briefing.attributed = !!briefingSources;
       }
     } catch (err) {
@@ -5535,7 +5549,7 @@ app.get('/admin/api/recap-preview', async (req, res) => {
     const checked = await groundBriefing({ category, timeSlot, language, briefing: draft, digest: row.content });
     // ?attribute=1 also records which story each sentence came from (the "Sources · N" data).
     const sources = checked.briefing && req.query.attribute === '1'
-      ? await attributeRecap({ category, timeSlot, language, recap: checked.briefing, digest: row.content }) : undefined;
+      ? (checked.sources || await attributeRecap({ category, timeSlot, language, recap: checked.briefing, digest: row.content })) : undefined;
     const words = (t) => String(t || '').trim().split(/\s+/).filter(Boolean).length;
     res.json({
       category, day, timeSlot, language,
@@ -5544,6 +5558,7 @@ app.get('/admin/api/recap-preview', async (req, res) => {
       draft: { words: words(draft), text: draft },
       published: { words: words(checked.briefing), text: checked.briefing },
       check: checked.report,
+      lines: checked.lines,
       ...(sources !== undefined ? { sources } : {}),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -5578,12 +5593,12 @@ app.post('/admin/api/recap-redo', async (req, res) => {
           const gb = await groundBriefing({ category: row.category, timeSlot, language, briefing: draft, digest: row.content });
           let sources = null;
           if (gb.briefing) {
-            sources = await attributeRecap({ category: row.category, timeSlot, language, recap: gb.briefing, digest: row.content });
+            sources = gb.sources || await attributeRecap({ category: row.category, timeSlot, language, recap: gb.briefing, digest: row.content });
             gb.report.attributed = !!sources;
           }
           await supabaseAdmin.from('news_summaries').update({ briefing: gb.briefing, audit_result: { ...a, briefing: gb.report } }).eq('id', row.id);
           await saveBriefingSources(row.category, day, timeSlot, language, gb.briefing ? sources : null);
-          console.log(`↩️  recap redo ${row.category}: ${gb.briefing ? `published (${gb.report.repairs} repair(s), ${gb.report.removed.length} sentence(s) removed, ${gb.report.dismissed.length} finding(s) dismissed)` : `withheld — ${gb.report.error}`}`);
+          console.log(`↩️  recap redo ${row.category}: ${gb.briefing ? `published (${gb.report.repairs} repair(s), ${gb.report.removed.length} line(s) removed, ${gb.report.dismissed.length} finding(s) dismissed)` : `withheld — ${gb.report.error}`}`);
         } catch (e) { console.warn(`↩️  recap redo ${row.category} failed:`, e.message); }
       }
     })();

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAuditJSON, sentencesOf, unsupportedMap, provenRecapIssues, replaceSentences, validateRecap, attributionMap } from './recap-validation.js';
+import { parseAuditJSON, sentencesOf, unsupportedMap, provenRecapIssues, parseRecapLines, validateRecap, attributionMap } from './recap-validation.js';
 
 test('parses fenced JSON and prose without greedily joining multiple objects', () => {
   assert.deepEqual(parseAuditJSON('```json\n{"unsupported":[]}\n```\nExplanation.'), { unsupported: [] });
@@ -15,6 +15,8 @@ test('invalid schemas and unknown IDs cannot silently pass', () => {
   const ctx = { sentences: ['A claim.'], digestText: 'A claim.', storyIds: ['S1'] };
   assert.throws(() => provenRecapIssues({missingStories:['S9'],issues:[]}, ctx));
   assert.throws(() => provenRecapIssues({missingStories:[]}, ctx));
+  assert.throws(() => provenRecapIssues({missingStories:'S1',issues:[]}, ctx));
+  assert.equal(provenRecapIssues({issues:[]}, ctx).missing.length, 0);   // coverage may be counted by code instead
   assert.throws(() => provenRecapIssues({missingStories:[],issues:['a bare string']}, ctx));
 });
 test('US PhD regression keeps the complete claim intact', () => {
@@ -49,70 +51,80 @@ test('a lost qualifier with the source words that carry it is kept', () => {
   const r = prove([{ s: 1, type: 'qualifier', recap: 'Unemployment fell 42 percent', digest: 'officials said', why: 'attribution dropped' }]);
   assert.equal(r.issues.length, 1);
 });
-test('replacing sentences keeps paragraphs and drops cleanly', () => {
-  const text = 'First one. Second one.\n\nThird one.';
-  const sents = sentencesOf(text);
-  assert.equal(replaceSentences(text, sents, new Map([[2, 'Second, fixed.']])), 'First one. Second, fixed.\n\nThird one.');
-  assert.equal(replaceSentences(text, sents, new Map([[2, '']])), 'First one.\n\nThird one.');
-  assert.equal(replaceSentences(text, sents, new Map(), ['Added one.']), 'First one. Second one.\n\nThird one. Added one.');
+test('a recap written one tagged line per story parses into its stories', () => {
+  const ids = ['S1', 'S2', 'S3'];
+  const lines = parseRecapLines('[1] In the Gulf, one thing.\n[S2] Two things.\ncontinued on a new line\n[3, 1] Joined.', ids);
+  assert.deepEqual(lines, [{ ids: ['S1'], text: 'In the Gulf, one thing.' }, { ids: ['S2'], text: 'Two things. continued on a new line' }, { ids: ['S3', 'S1'], text: 'Joined.' }]);
+  assert.equal(parseRecapLines('Plain prose with no tags. Another sentence.', ids), null);
+  assert.equal(parseRecapLines('[9] Unknown story.', ids), null);
 });
 
 // ── Check, then mend only what is wrong ───────────────────────────────────────
 const clean = { missing: [], issues: [], dismissed: [] };
 const flag = (s, extra = {}) => ({ missing: [], dismissed: [], issues: [{ s, type: 'wrong', recap: 'x', digest: 'y', why: 'z' }], ...extra });
+const L = (...texts) => texts.map((text, i) => ({ ids: [`S${i + 1}`], text }));
+const IDS = n => Array.from({ length: n }, (_, i) => `S${i + 1}`);
 
 test('audit failure withholds recap rather than publishing unchecked', async () => {
-  const result = await validateRecap({ text: 'A claim.', audit: async () => { throw Error('invalid JSON'); }, repairSentences: async () => { throw Error('must not run'); } });
+  const result = await validateRecap({ lines: L('A claim.'), storyIds: IDS(1), audit: async () => { throw Error('invalid JSON'); }, repairLines: async () => { throw Error('must not run'); } });
   assert.equal(result.briefing, ''); assert.equal(result.report.withheld, true);
 });
-test('only the flagged sentence is rewritten, and the rest is untouched', async () => {
+test('only the flagged line is rewritten, and the rest is untouched', async () => {
   let checks = 0;
   const r = await validateRecap({
-    text: 'Good one. Bad one. Good two.',
+    lines: L('Good one.', 'Bad one.', 'Good two.'), storyIds: IDS(3),
     audit: async () => (++checks === 1 ? flag(2) : clean),
-    repairSentences: async (text, issues, missing) => {
+    repairLines: async (lines, issues, missing) => {
       assert.deepEqual(issues.map(i => i.s), [2]); assert.deepEqual(missing, []);
-      return replaceSentences(text, sentencesOf(text), new Map([[2, 'Fixed one.']]));
+      return lines.map((l, i) => (i === 1 ? { ...l, text: 'Fixed one.' } : l));
     },
   });
   assert.equal(r.report.passed, true); assert.equal(r.briefing, 'Good one. Fixed one. Good two.'); assert.equal(r.report.repairs, 1);
 });
-test('a story left out gets a sentence of its own', async () => {
+test('a missing story is counted from the lines, not taken from the check', async () => {
   let checks = 0;
   const r = await validateRecap({
-    text: 'Story one.',
-    audit: async () => (++checks === 1 ? { ...clean, missing: ['S2'] } : clean),
-    repairSentences: async (text, issues, missing) => { assert.deepEqual(missing, ['S2']); return replaceSentences(text, sentencesOf(text), new Map(), ['Story two.']); },
+    lines: L('Story one.'), storyIds: IDS(2),
+    // The check claims S1 is missing (noise) and never mentions S2; the lines say S2 is the gap.
+    audit: async () => (++checks, { ...clean, missing: ['S1'] }),
+    repairLines: async (lines, issues, missing) => { assert.deepEqual(missing, ['S2']); return [...lines, { ids: ['S2'], text: 'Story two.' }]; },
   });
-  assert.equal(r.briefing, 'Story one. Story two.');
+  assert.equal(r.briefing, 'Story one. Story two.'); assert.equal(checks, 2);
 });
-test('after three failed repairs only the still-flagged sentence comes out', async () => {
+test('untagged prose falls back to the check for coverage', async () => {
+  let checks = 0;
+  const r = await validateRecap({
+    lines: [{ ids: null, text: 'Story one.' }], storyIds: IDS(2),
+    audit: async () => (++checks === 1 ? { ...clean, missing: ['S2'] } : clean),
+    repairLines: async (lines, issues, missing) => { assert.deepEqual(missing, ['S2']); return [...lines, { ids: ['S2'], text: 'Story two.' }]; },
+  });
+  assert.equal(r.report.passed, true);
+});
+test('after three failed repairs only the still-flagged line comes out', async () => {
   let repairs = 0;
-  const r = await validateRecap({ text: 'Keep this. Lose this.', audit: async () => flag(2), repairSentences: async (t) => { repairs++; return t; } });
+  const r = await validateRecap({ lines: L('Keep this.', 'Lose this.'), storyIds: IDS(2), audit: async () => flag(2), repairLines: async (l) => { repairs++; return l; } });
   assert.equal(repairs, 3); assert.equal(r.report.passed, true); assert.equal(r.briefing, 'Keep this.');
   assert.deepEqual(r.report.removed, ['Lose this.']);
 });
 test('a garbled repair costs a round, not the recap', async () => {
-  const r = await validateRecap({ text: 'Keep this. Lose this.', audit: async () => flag(2), repairSentences: async () => { throw Error('bad JSON'); } });
+  const r = await validateRecap({ lines: L('Keep this.', 'Lose this.'), storyIds: IDS(2), audit: async () => flag(2), repairLines: async () => { throw Error('bad JSON'); } });
   assert.equal(r.report.repairFailures, 3); assert.equal(r.briefing, 'Keep this.');
 });
 test('withheld only when nothing survives', async () => {
-  const r = await validateRecap({ text: 'Only sentence.', audit: async () => flag(1), repairSentences: async (t) => t });
+  const r = await validateRecap({ lines: L('Only line.'), storyIds: IDS(1), audit: async () => flag(1), repairLines: async (l) => l });
   assert.equal(r.briefing, ''); assert.equal(r.report.withheld, true);
 });
-test('too long is mended by tightening the longest sentences, not a whole rewrite', async () => {
-  const long = 'This sentence is deliberately padded with many extra words to push the recap far past its limit today. ';
-  const text = long.repeat(3) + 'Short one.';
-  const r = await validateRecap({ text, maxWords: 40, audit: async () => clean, repairSentences: async (t, issues) => {
-    assert.ok(issues.length && issues.every(i => i.type === 'long'));
-    const sents = sentencesOf(t);
-    return replaceSentences(t, sents, new Map(issues.map(i => [i.s, 'Tight.'])));
-  } });
+test('too long is mended by tightening the longest lines, not a whole rewrite', async () => {
+  const long = 'This line is deliberately padded with many extra words to push the recap far past its limit today.';
+  const r = await validateRecap({ lines: L(long, long, long, 'Short one.'), storyIds: IDS(4), maxWords: 40, audit: async () => clean,
+    repairLines: async (lines, issues) => {
+      assert.ok(issues.length && issues.every(i => i.type === 'long'));
+      const cut = new Set(issues.map(i => i.s));
+      return lines.map((l, i) => (cut.has(i + 1) ? { ...l, text: 'Tight.' } : l));
+    } });
   assert.equal(r.report.passed, true); assert.ok(r.briefing.split(/\s+/).length <= 40);
-  const stuck = await validateRecap({ text, maxWords: 40, audit: async () => clean, repairSentences: async t => t });
+  const stuck = await validateRecap({ lines: L(long, long, long), storyIds: IDS(3), maxWords: 40, audit: async () => clean, repairLines: async l => l });
   assert.equal(stuck.briefing, '');
-  const short = await validateRecap({ text: 'One short story.', audit: async () => clean, repairSentences: async () => { throw Error('no'); } });
-  assert.equal(short.report.passed, true);
 });
 test('a recap that only shortens the source is not "wrong"', () => {
   const r = provenRecapIssues({ missingStories: [], issues: [
