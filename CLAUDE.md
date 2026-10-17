@@ -68,11 +68,27 @@ articles no lane returned text for — then gates on tier-1 membership, freshnes
 dedupes, and **groups** near-identical articles into single stories before handing them to the
 model. The legacy Serper path is still in the file for comparison.
 
+Google News links (lanes 2 and 3) are decoded to the publisher's own URL by
+`decodeGoogleNewsUrl` — Google's own batchexecute call, free, capped per category — before
+Serper's paid lookup is tried. Every page read also yields its meta description
+(`metaDescription`), kept even when the article itself can't be read. Regional categories run
+`regionFilter` on the ranked headlines before reading, because their outlets' listings carry
+world news that the writer would otherwise discard after it had taken a slot.
+
 Hard product constraints, set by Roy and not negotiable:
 - **Tier-1 sources only.** Anything not in `TIER1_DOMAIN_SET` is dropped, not downranked.
 - **No paywalled content and nothing that isn't permitted.** Paywalled outlets
   (`paywall: true` in the registry) are neither read nor cited; `mayFetchBody()` reflects each
   outlet's robots.txt.
+- **Quick briefs, written from whatever we receive** (Roy, 2026-10-17). RadioNews is fast-paced
+  quick briefs, not long reads, and the briefs are not all equally detailed. A story with a full
+  article is summarised as before; one with only the outlet's one-or-two-sentence description is
+  written from that; one with only its headline gets one plain sentence restating the headline.
+  No story is dropped for want of an article — `readUntilFilled` labels each one `article`,
+  `description` or `headline` (`st.material`), fills the feed richest-first (a story three or
+  more outlets carried counts as top tier whatever we could read of it), and keeps the ranked
+  order. The writer and the fact-check are told each story's material; a story's own headline
+  counts as material. Only a story paywalled on every outlet is passed over.
 - **Summaries say only what we retrieved.** The app tells people what the headlines are,
   explains them a little, and links out. No background, context, causes, consequences,
   predictions or significance unless an article states it; if the articles can't explain
@@ -82,8 +98,8 @@ Hard product constraints, set by Roy and not negotiable:
 - **Every published statement is checked.** `groundDigest` checks the digest *and* the cards
   against the retrieved articles, rewrites stories with untraceable statements, rechecks once,
   removes what's still untraceable, and drops a story left with nothing. A dropped story is
-  replaced from the reserves (`readUntilFilled` reads 12 + up to 4), never published from its
-  headline. The briefing is checked against the finished digest.
+  replaced from the reserves (`readUntilFilled` keeps 12 + up to 4). The briefing is checked
+  against the finished digest.
 - **No "Why this matters" and no "Perspectives differ".** A story is its headline and its facts
   (Roy, 2026-10-15). `GROUNDING_RULES` says so; no prompt asks for either.
 - **Recaps carry their sources.** After a recap passes its check, `attributeRecap` records which
