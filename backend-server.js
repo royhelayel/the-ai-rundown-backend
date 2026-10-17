@@ -2903,7 +2903,7 @@ AFTER the digest above is complete, write the line ===CARDS=== on its own, then 
 - One fact from that story — one full sentence under 20 words.
 - Second fact — one full sentence under 20 words.
 - Third fact, only if that story has one.
-**Summary:** 1–3 plain sentences restating what that story says — as many as it supports. Use nothing that is not in that story — no background, no consequences, no "what happens next". A story with a single fact gets a single bullet and a one-sentence Summary.
+**Summary:** 2–3 plain sentences restating what that story says, drawing on all of its facts — a reader should come away with the whole story, not only its headline. Use nothing that is not in that story — no background, no consequences, no "what happens next". Only a story with a single fact (one written from its headline alone) gets a one-sentence Summary.
 
 Write every bullet and every Summary in full sentences, as a newspaper would: with the verbs and the small words ("a", "the", "was"), never headline shorthand like "Saudi national arrested after planting device". The app shows the Summary as the story's paragraph.
 
@@ -3198,7 +3198,7 @@ Return every story in exactly this format and nothing else:
 ===CARD n===
 ## the same headline
 - one fact, one full sentence under 20 words
-**Summary:** 1–3 full sentences restating the story above — as many as it supports — adding nothing.
+**Summary:** 2–3 full sentences restating the story above (one only if it has a single fact), adding nothing.
 
 If the accounts cannot support even one fact for a story, return only:
 ===STORY n===
@@ -3596,7 +3596,7 @@ For each story in the digest, use this EXACT format — no preamble:
 - One fact from that story — one full sentence under 20 words.
 - Second fact — one full sentence under 20 words.
 - Third fact, only if that story has one.
-**Summary:** 1–3 plain sentences restating what that digest story says — as many as it supports. Use nothing that is not in that story — no background, no consequences, no "what happens next". A story with a single fact gets a single bullet and a one-sentence Summary.
+**Summary:** 2–3 plain sentences restating what that digest story says, drawing on all of its facts — a reader should come away with the whole story, not only its headline. Use nothing that is not in that story — no background, no consequences, no "what happens next". Only a story with a single fact (one written from its headline alone) gets a one-sentence Summary.
 
 Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single short, full sentence. Write every bullet and every Summary as a newspaper would: with the verbs and the small words ("a", "the", "was"), never headline shorthand like "Saudi national arrested after planting device". The app shows the Summary as the story's paragraph.
 
