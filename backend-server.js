@@ -3380,7 +3380,7 @@ async function groundBriefing({ category, timeSlot, language, briefing, digest }
   const auditRecapOnce = async texts => {
     const prompt = `Check the WHOLE recap against ONLY the source digest. A recap gives each story its one key point in about a sentence and is meant to leave everything else out. So never report something the recap leaves out — a detail, a name, a figure, a partner, a date, a feature, how something works — unless it is a word like "alleged", "purported" or "reportedly" whose absence turns something uncertain into fact. Numbers, dates and titles spelled out for speech ("twenty twenty-two", "Pope Leo the Fourteenth") are NOT an issue. Saying the same thing in other words is NOT an issue ("until" for "through", "Saturday" for "Saturday night", "US" for "US-based", "the week before" for "the previous week"). Report only: (1) a story missing entirely; (2) a claim the digest does not contain, including any sentence that characterises a group of stories or the day ("dominated", "escalating", "a sign of"); (3) a name, number, title or attribution stated wrongly; (4) a lost qualification that changes meaning — something uncertain, purported, proposed or alleged stated as fact, or an association stated as a cause; (5) a broken or dangling sentence. Do not use outside knowledge.
 
-Prove every problem with the exact words involved, copied character for character. "recap" is the words in that numbered line of the recap. For a wrong name, number, title or attribution, or a lost qualification, "digest" is the exact words in the digest that the recap contradicts or drops. If you cannot quote digest words that say something different from the recap, it is not a problem: do not report it.
+Prove every problem with the exact words involved, copied character for character — except that any double quote (") inside them is written as a single quote ('), so the JSON stays valid. "recap" is the words in that numbered line of the recap. For a wrong name, number, title or attribution, or a lost qualification, "digest" is the exact words in the digest that the recap contradicts or drops. If you cannot quote digest words that say something different from the recap, it is not a problem: do not report it.
 
 The recap is given one numbered line per line. Return ONLY JSON:
 {"missingStories":["S1"],"issues":[{"s":3,"type":"wrong","recap":"exact words from recap line 3","digest":"exact words from the digest","why":"short reason"}]}
@@ -3400,10 +3400,12 @@ ${numbered(texts)}`;
     lines,
     storyIds: ids,
     audit: async texts => {
-      // A garbled reply tells us nothing about the recap; ask once more before withholding it.
+      // A garbled reply tells us nothing about the recap; ask again — three tries in all — before
+      // withholding it. Quoting exact words makes broken JSON likelier: two of ten recaps were
+      // lost to it on 2026-10-18.
       for (let attempt = 0; ; attempt++) {
         try { return await auditRecapOnce(texts); }
-        catch (e) { if (attempt) throw e; }
+        catch (e) { if (attempt >= 2) throw e; }
       }
     },
     // Only the flagged lines are rewritten — including the longest ones when the recap is over
@@ -3414,7 +3416,7 @@ ${numbered(texts)}`;
 
 Each line stays one sentence about the same story — two short ones only if one would lose an essential qualification — and at most 30 words. Copy numbers, names, titles, status words and attributions exactly as the digest gives them. Use only the digest. Leave every other line alone.${arabic}
 
-Return ONLY JSON: {"lines":[{"n":3,"text":"the corrected line"}],"added":[{"story":"S5","text":"a new line"}]}
+Return ONLY JSON: {"lines":[{"n":3,"text":"the corrected line"}],"added":[{"story":"S5","text":"a new line"}]}. Inside the text, escape any double quote as \\" so the JSON stays valid.
 RECAP:
 ${numbered(current.map(l => l.text))}`;
       const data = await callClaudeCached(prefix, prompt, 1500);
