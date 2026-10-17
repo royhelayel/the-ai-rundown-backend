@@ -133,6 +133,18 @@ test('a recap that only shortens the source is not "wrong"', () => {
   assert.equal(r.issues.length, 0); assert.equal(r.dismissed.length, 1);
 });
 
+test('leaving words out of the middle is shortening; leaving out a qualifier is not', () => {
+  const ctx = { sentences: ['A Mexican judge sentenced three men to 158 years and nine months each.', 'The court found him guilty.', 'Over 250 were arrested.'],
+    digestText: 'A Mexican judge sentenced three men to 158 years and nine months in prison each. The court found him not guilty. With 32,800 participants and over 250 people arrested nationwide.', storyIds: ['S1'] };
+  const r = provenRecapIssues({ issues: [
+    { s: 1, type: 'wrong', recap: 'sentenced three men to 158 years and nine months each', digest: 'sentenced three men to 158 years and nine months in prison each', why: 'omits in prison' },
+    { s: 2, type: 'wrong', recap: 'found him guilty', digest: 'found him not guilty', why: 'drops the negation' },
+    { s: 3, type: 'wrong', recap: 'Over 250 were arrested', digest: 'over 250 people arrested nationwide', why: 'words differ' },
+  ] }, ctx);
+  assert.deepEqual(r.dismissed.map(d => d.s), [1]);
+  assert.deepEqual(r.issues.map(i => i.s), [2, 3]);
+});
+
 test('production orchestration clears recaps when source verification is unavailable', async () => {
   const { readFileSync } = await import('node:fs');
   const { runInNewContext } = await import('node:vm');

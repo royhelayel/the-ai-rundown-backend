@@ -51,6 +51,24 @@ export const normQuote = s => String(s || '').normalize('NFKC').toLowerCase().re
 // not. A finding that cannot show conflicting words — "the week before" flagged against "the week
 // before" — is dismissed, not acted on. Missing stories need no quote: the ID is the evidence.
 export const ISSUE_TYPES = ['wrong', 'qualifier', 'added', 'broken'];
+
+// Words whose absence changes what a sentence claims. Leaving any of these out is never "only
+// shortening": "not guilty" is not "guilty", "proposed" is not done.
+const MEANING_WORDS = new Set(['not', 'no', 'never', 'nor', 'without', 'denied', 'denies', 'deny', 'alleged', 'allegedly',
+  'reportedly', 'reported', 'purported', 'purportedly', 'suspected', 'proposed', 'planned', 'plans', 'may', 'might', 'could',
+  'would', 'unconfirmed', 'according', 'says', 'said', 'claims', 'claimed', 'estimated', 'about', 'nearly', 'almost', 'over',
+  'under', 'up', 'least', 'most', 'only', 'if', 'unless', 'expected', 'likely', 'possible', 'possibly', 'former', 'acting']);
+
+// The recap's words all appear, in order, in the source's words, and nothing left out changes the
+// meaning: the recap only shortened the source. "158 years and nine months each" against "158
+// years and nine months in prison each" is that; "guilty" against "not guilty" is not.
+function onlyShortens(rq, dq) {
+  const r = rq.split(' '), d = dq.split(' ');
+  const dropped = [];
+  let i = 0;
+  for (const w of d) { if (i < r.length && w === r[i]) i++; else dropped.push(w); }
+  return i === r.length && dropped.length > 0 && !dropped.some(w => MEANING_WORDS.has(w));
+}
 export function provenRecapIssues(parsed, { sentences, digestText, storyIds }) {
   if (!parsed || !Array.isArray(parsed.issues)) throw new Error('Invalid recap audit schema');
   if (parsed.missingStories !== undefined && !Array.isArray(parsed.missingStories)) throw new Error('Invalid recap audit schema');
@@ -72,7 +90,7 @@ export function provenRecapIssues(parsed, { sentences, digestText, storyIds }) {
       // "over 250 people arrested" against "over 250 people arrested nationwide": the recap only
       // shortened the source, and leaving things out is a recap's job. A lost qualifier is
       // different — "killed" against "allegedly killed" — so this applies to wrong facts only.
-      else if (it.type === 'wrong' && dq.includes(rq)) dismiss = 'the recap shortens the source, it does not contradict it';
+      else if (it.type === 'wrong' && (dq.includes(rq) || onlyShortens(rq, dq))) dismiss = 'the recap shortens the source, it does not contradict it';
     } else if (it.type === 'added' && digest.includes(rq)) dismiss = 'the digest says it';
     const finding = { s: n, type: it.type, recap: String(it.recap || ''), digest: String(it.digest || ''), why: String(it.why || '').slice(0, 300) };
     if (dismiss) dismissed.push({ ...finding, dismissed: dismiss }); else issues.push(finding);
