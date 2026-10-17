@@ -4038,20 +4038,26 @@ function parseStoriesForTTS(raw) {
       .trim();
     const rest = lines.slice(1).join('\n');
     const bullets = [...rest.matchAll(/^[-*]\s+(.+)$/gm)].map(m => m[1]).slice(0, 3);
-    const perspMatch = rest.match(/\*\*Perspectives differ:\*\*\s*(.+)/);
-    const whyMatch   = rest.match(/\*\*Why this matters:\*\*\s*(.+)/);
+    // The card's Summary, read exactly as the app's parser reads it (src/lib/stories.js).
+    const summaryMatch = rest.match(/\*\*Summary:\*\*\s*([\s\S]+?)(?=\n\*\*[A-Z]|\n#{1,3} |$)/);
     if (!headline || bullets.length === 0) return null;
-    return { headline, bullets, perspectives: perspMatch?.[1] || null, why: whyMatch?.[1] || null };
+    return { headline, bullets, summary: summaryMatch ? summaryMatch[1].trim() : null };
   }).filter(Boolean);
 }
 
 // Mirrors buildStoryScript() + cleanForTTS() in the frontend — must stay in sync so MD5 cache keys
-// align. The app reads the headline and the takeaways only (2026-10-15), so this does too.
+// align. The narrator reads what the card shows (Roy, 2026-10-18): the headline, then the story's
+// paragraph — its Summary, or for a story without one its takeaways joined into sentences, as the
+// card joins them (storyParagraph / asSentences in src/lib/stories.js). It used to read the
+// takeaways while the card showed the Summary, so what you heard was not what you saw. A sentence
+// gets one full stop: appending one to every takeaway produced "..".
+const endSentence = (t) => (/[.!?…"”’')]$/.test(t) ? t : `${t}.`);
 function buildStoryScript(story) {
   const cl = cleanForTTS;
-  const parts = [cl(story.headline) + '.'];
-  story.bullets.forEach(b => parts.push(cl(b) + '.'));
-  return parts.filter(Boolean).join(' ');
+  const paragraph = story.summary && story.summary.trim()
+    ? story.summary.trim()
+    : story.bullets.map(b => (b || '').trim()).filter(Boolean).map(endSentence).join(' ');
+  return [endSentence(cl(story.headline)), cl(paragraph)].filter(Boolean).join(' ');
 }
 
 // The same file name /api/tts-stream looks up. Since 27 May that has included the voice, and this
