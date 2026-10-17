@@ -100,6 +100,14 @@ Hard product constraints, set by Roy and not negotiable:
   removes what's still untraceable, and drops a story left with nothing. A dropped story is
   replaced from the reserves (`readUntilFilled` keeps 12 + up to 4). The briefing is checked
   against the finished digest.
+- **Recaps: prevent, prove, mend** (Roy, 2026-10-18). The recap writer copies numbers, names,
+  titles, status words and attributions exactly — no rounding, no relabelling. The recap check
+  (`groundBriefing`) is a logical check that must quote the exact recap and digest words behind
+  every finding; `provenRecapIssues` confirms the quotes are really there and dismisses any
+  finding that can't show conflicting words. Repairs rewrite only the flagged sentences, up to
+  three times (`validateRecap`); a sentence still flagged after that comes out, and the recap is
+  withheld only when nothing survives. The whole recap is rewritten only when it's too long.
+  `POST /admin/api/recap-redo` re-writes a slot's empty recaps under the same rules.
 - **No "Why this matters" and no "Perspectives differ".** A story is its headline and its facts
   (Roy, 2026-10-15). `GROUNDING_RULES` says so; no prompt asks for either.
 - **Recaps carry their sources.** After a recap passes its check, `attributeRecap` records which

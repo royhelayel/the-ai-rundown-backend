@@ -40,30 +40,86 @@ export function unsupportedMap(parsed, validIds) {
   return out;
 }
 
-export function recapIssues(parsed, storyIds) {
-  if (!Array.isArray(parsed.missingStories) || !Array.isArray(parsed.issues)) throw new Error('Invalid recap audit schema');
-  if (parsed.missingStories.some(id => !storyIds.includes(id)) || parsed.issues.some(s => typeof s !== 'string' || !s.trim())) throw new Error('Invalid recap audit findings');
-  return [...parsed.missingStories.map(id => `Missing story ${id}`), ...parsed.issues];
-}
-
 export const wordCount = text => String(text || '').trim().split(/\s+/).filter(Boolean).length;
 
-// `rounds` is how many times the recap is checked; every check but the last may be followed by a
-// rewrite. Two (check, rewrite, recheck) is the default; the category recap uses three, because a
-// rewrite that fixes one problem often leaves another, and a withheld recap shows nothing at all.
-export async function validateRecap({ text, maxWords = 170, rounds = 2, audit, rewrite }) {
-  const report = { checked: false, flags: [], rewritten: false, removed: [], withheld: false };
+// For "is this quote really there": case, punctuation, quote marks and spacing do not count.
+export const normQuote = s => String(s || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+
+// The recap check must prove each problem with the words involved (Roy, 2026-10-18). A finding is
+// kept only when its recap words really are in the sentence it names and, for a wrong fact or a
+// lost qualifier, its source words really are in the digest and say something the recap does
+// not. A finding that cannot show conflicting words — "the week before" flagged against "the week
+// before" — is dismissed, not acted on. Missing stories need no quote: the ID is the evidence.
+export const ISSUE_TYPES = ['wrong', 'qualifier', 'added', 'broken'];
+export function provenRecapIssues(parsed, { sentences, digestText, storyIds }) {
+  if (!parsed || !Array.isArray(parsed.missingStories) || !Array.isArray(parsed.issues)) throw new Error('Invalid recap audit schema');
+  if (parsed.missingStories.some(id => !storyIds.includes(id))) throw new Error('Invalid recap audit findings');
+  const digest = normQuote(digestText);
+  const issues = [], dismissed = [];
+  for (const it of parsed.issues) {
+    if (!it || typeof it !== 'object') throw new Error('Invalid recap audit findings');
+    const n = it.s, rq = normQuote(it.recap), dq = normQuote(it.digest);
+    const sentence = Number.isInteger(n) && n >= 1 && n <= sentences.length ? normQuote(sentences[n - 1]) : null;
+    let dismiss = null;
+    if (!ISSUE_TYPES.includes(it.type)) dismiss = 'unknown type';
+    else if (!sentence) dismiss = 'no such sentence';
+    else if (!rq || !sentence.includes(rq)) dismiss = 'its recap words are not in that sentence';
+    else if (it.type === 'wrong' || it.type === 'qualifier') {
+      if (!dq || !digest.includes(dq)) dismiss = 'its source words are not in the digest';
+      else if (rq === dq || sentence.includes(dq)) dismiss = 'the recap already says what the source says';
+    } else if (it.type === 'added' && digest.includes(rq)) dismiss = 'the digest says it';
+    const finding = { s: n, type: it.type, recap: String(it.recap || ''), digest: String(it.digest || ''), why: String(it.why || '').slice(0, 300) };
+    if (dismiss) dismissed.push({ ...finding, dismissed: dismiss }); else issues.push(finding);
+  }
+  return { missing: [...new Set(parsed.missingStories)], issues, dismissed };
+}
+export const describeIssue = i => `S${i.s} ${i.type}: "${i.recap}"${i.digest ? ` vs source "${i.digest}"` : ''}${i.why ? ` — ${i.why}` : ''}`;
+
+// Swap, drop or add whole sentences in place, so the recap's paragraphs survive a repair.
+export function replaceSentences(text, sentences, replacements = new Map(), additions = []) {
+  let out = text;
+  for (const [n, next] of replacements) {
+    const old = sentences[n - 1];
+    if (old && out.includes(old)) out = out.replace(old, next);
+  }
+  out = out.replace(/[ \t]{2,}/g, ' ').replace(/ +\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return additions.length ? `${out} ${additions.join(' ')}`.trim() : out;
+}
+
+// Check, then mend only what is wrong, up to `repairs` times: each repair rewrites just the
+// sentences the check flagged (and adds a sentence for a story left out), so fixing one sentence
+// cannot break another the way rewriting the whole recap did. A sentence still flagged after the
+// last repair is taken out; the recap is withheld only if nothing survives, or the check itself
+// cannot run. `rewrite` (the whole recap) is kept for the one thing a sentence cannot fix: length.
+export async function validateRecap({ text, maxWords = 170, repairs = 3, audit, repairSentences, rewrite }) {
+  const report = { checked: false, flags: [], dismissed: [], repairs: 0, repairFailures: 0, rewritten: false, removed: [], withheld: false };
   try {
-    for (let attempt = 0; attempt < rounds; attempt++) {
+    for (let round = 0; ; round++) {
       if (!text.trim()) throw new Error('Empty recap');
-      const issues = await audit(text);
-      if (wordCount(text) > maxWords) issues.push(`Exceeds ${maxWords} words (${wordCount(text)})`);
+      const { missing, issues, dismissed } = await audit(text);
+      const over = wordCount(text) > maxWords;
       report.checked = true;
-      report.flags.push(...issues);
-      if (!issues.length) return { briefing: text, report: { ...report, passed: true } };
-      if (attempt < rounds - 1) { text = await rewrite(text, issues); report.rewritten = true; }
+      report.dismissed.push(...dismissed.map(d => `${describeIssue(d)} [dismissed: ${d.dismissed}]`));
+      report.flags.push(...missing.map(id => `Missing story ${id}`), ...issues.map(describeIssue),
+        ...(over ? [`Exceeds ${maxWords} words (${wordCount(text)})`] : []));
+      if (!missing.length && !issues.length && !over) return { briefing: text, report: { ...report, passed: true } };
+      if (round < repairs) {
+        try {
+          if (over) { text = await rewrite(text, [...missing.map(id => `Missing story ${id}`), ...issues.map(describeIssue), `Exceeds ${maxWords} words`]); report.rewritten = true; }
+          else { text = await repairSentences(text, issues, missing); report.repairs++; }
+        } catch { report.repairFailures++; }       // a garbled repair costs a round, not the recap
+        continue;
+      }
+      // Out of repairs: take out the sentences still flagged. A story still missing stays missing —
+      // a recap that leaves one out is still accurate about the rest.
+      const sents = sentencesOf(text);
+      const flagged = new Set(issues.map(i => i.s));
+      report.removed = sents.filter((_, i) => flagged.has(i + 1));
+      text = replaceSentences(text, sents, new Map([...flagged].map(n => [n, ''])));
+      if (!text.trim()) throw new Error('Nothing in the recap survived its check');
+      if (wordCount(text) > maxWords) throw new Error(`Still exceeds ${maxWords} words after repair`);
+      return { briefing: text, report: { ...report, passed: true, trimmed: report.removed.length > 0 } };
     }
-    report.error = 'Recap still fails validation after repair';
   } catch (e) { report.error = e.message; }
   return { briefing: '', report: { ...report, passed: false, withheld: true } };
 }
