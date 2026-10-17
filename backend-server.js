@@ -2714,10 +2714,12 @@ ${GROUNDING_RULES}`;
 AFTER the digest above is complete, write the line ===CARDS=== on its own, then turn every story you just wrote into a short card for mobile reading and audio. Same stories, same order, headlines copied exactly.
 
 ## [the EXACT headline you used above, plain text]
-- One fact from that story — one sentence under 20 words.
-- Second fact — one sentence under 20 words.
+- One fact from that story — one full sentence under 20 words.
+- Second fact — one full sentence under 20 words.
 - Third fact, only if that story has one.
 **Summary:** 2–3 plain sentences restating what that story says, for a reader who wants a little more than the bullets. Use nothing that is not in that story — no background, no consequences, no "what happens next".
+
+Write every bullet and every Summary in full sentences, as a newspaper would: with the verbs and the small words ("a", "the", "was"), never headline shorthand like "Saudi national arrested after planting device". The app shows the Summary as the story's paragraph.
 
 No Coverage lines and no Sources section in the cards. The grounding rules apply to the cards too.`;
 
@@ -3009,8 +3011,8 @@ Return every story in exactly this format and nothing else:
 - fact
 ===CARD n===
 ## the same headline
-- one fact, under 20 words
-**Summary:** 2–3 sentences restating the story above, adding nothing.
+- one fact, one full sentence under 20 words
+**Summary:** 2–3 full sentences restating the story above, adding nothing.
 
 If the accounts cannot support even one fact for a story, return only:
 ===STORY n===
@@ -3358,12 +3360,12 @@ ${digestContent}
 For each story in the digest, use this EXACT format — no preamble:
 
 ## [Use the EXACT same headline as the corresponding digest story — copy it verbatim, plain text. Do NOT shorten, rephrase, or invent a new headline.]
-- One fact from that story — one sentence under 20 words.
-- Second fact — one sentence under 20 words.
+- One fact from that story — one full sentence under 20 words.
+- Second fact — one full sentence under 20 words.
 - Third fact, only if that story has one.
 **Summary:** 2–3 plain sentences restating what that digest story says, for a reader who wants a little more than the bullets. Use nothing that is not in that story — no background, no consequences, no "what happens next".
 
-Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single short sentence.
+Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single short, full sentence. Write every bullet and every Summary as a newspaper would: with the verbs and the small words ("a", "the", "was"), never headline shorthand like "Saudi national arrested after planting device". The app shows the Summary as the story's paragraph.
 
 ${GROUNDING_RULES.replace(/the accounts you were given/g, 'the digest above').replace(/the accounts/g, 'the digest').replace(/an account/g, 'the digest')}`;
 
