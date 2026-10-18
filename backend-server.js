@@ -1,3 +1,4 @@
+import { confineCoverageLinks } from './coverage-links.js';
 import { parseAuditJSON, sentencesOf, validateRecap, attributionMap, provenRecapIssues, describeIssue, parseRecapLines, provenStoryFindings } from './recap-validation.js';
 import express from 'express';
 import cors from 'cors';
@@ -1310,13 +1311,18 @@ async function decodeGoogleNewsUrl(link, domain) {
   return checked;
 }
 
+// Returns { url, outcome }: what the search did is kept on the story (`headlineSearch`), so a
+// story written from its headline alone says whether the search ran and what it found
+// (Roy, 2026-10-18) — before, a miss could be no result, a spent budget or an empty account,
+// and nothing recorded which.
 async function resolveArticleUrl(domain, headline) {
-  if (!domain || !headline || !process.env.SERPER_API_KEY) return null;
+  if (!domain || !headline) return { url: null, outcome: 'no-headline' };
+  if (!process.env.SERPER_API_KEY) return { url: null, outcome: 'no-key' };
   const key = `${domain}|${headline}`.slice(0, 180);
   if (urlResolveCache.has(key)) return urlResolveCache.get(key);
   // Out of budget is not a verdict on the article, so it is not cached: a later category, with
   // its own budget, may still look it up.
-  if (!takeSerperLookup()) return null;
+  if (!takeSerperLookup()) return { url: null, outcome: Date.now() < serperEmptyUntil ? 'skipped-no-credits' : 'skipped-budget-spent' };
   try {
     const r = await fetch('https://google.serper.dev/search', {
       method: 'POST',
@@ -1326,8 +1332,9 @@ async function resolveArticleUrl(domain, headline) {
     });
     if (!r.ok) {
       noteSerperFailure(r.status, await r.text().catch(() => ''));
-      urlResolveCache.set(key, null);
-      return null;
+      const out = { url: null, outcome: `http-${r.status}` };
+      urlResolveCache.set(key, out);
+      return out;
     }
     const j = await r.json();
     // Only a URL on the outlet we asked about, and not a section or tag page — those come
@@ -1340,9 +1347,14 @@ async function resolveArticleUrl(domain, headline) {
         return !/\/(tags?|category|categories|section|topics?|search|author)\//i.test(u) && new URL(u).pathname.length > 12;
       } catch { return false; }
     }) || null;
-    urlResolveCache.set(key, hit);
-    return hit;
-  } catch { urlResolveCache.set(key, null); return null; }
+    const out = { url: hit, outcome: hit ? 'found' : (j.organic || []).length ? 'no-article-on-outlet' : 'no-results' };
+    urlResolveCache.set(key, out);
+    return out;
+  } catch (e) {
+    const out = { url: null, outcome: e.name === 'TimeoutError' ? 'timeout' : 'error' };
+    urlResolveCache.set(key, out);
+    return out;
+  }
 }
 
 function metaDescription(html) {
@@ -1889,11 +1901,14 @@ function storyRetrievalOf(list, blocks) {
   return list.map((st, i) => ({
     rank: i + 1, headline: st.lead.title, outlets: st.outlets, outletCount: st.outletCount,
     accountsRead: st.readable.length, material: st.material || 'article', bodyMissing: st.material !== 'article', reasons: [],
-    members: st.readable.map(m => ({
+    // A story written from its headline has no readable outlet, so it records the ones it tried
+    // instead — which used to leave it with no record at all of why it had no article.
+    members: (st.readable.length ? st.readable : (st.citable?.length ? st.citable : st.members || [])).slice(0, 6).map(m => ({
       source: m.source, domain: m.domain, lane: m.lane, url: m.link,
       ingestChars: m.ingestLen ?? null, bodySource: m.bodySource || 'not-attempted',
       bodyFrom: m.bodyFrom || null, bodyReason: m.bodyReason || null,
       finalChars: (m.snippet || '').length, lane5Filled: m.lane5Filled || null,
+      headlineSearch: m.headlineSearch || null,
     })),
     alsoCarriedBy: (st.citable || []).filter(m => !st.readable.includes(m)).map(m => m.source),
     contextBlock: blocks[i] || null,
@@ -2150,7 +2165,9 @@ async function enrichWithBodies(articles, limit = 12) {
     // Nothing openable among them — which for a lane-2 story is every candidate, since they
     // all point at Google. Ask Serper where this specific article lives, then read that.
     if (a.domain) {
-      const real = fetchable(a) ? null : await resolveArticleUrl(a.domain, a.title);
+      const search = fetchable(a) ? null : await resolveArticleUrl(a.domain, a.title);
+      if (search) a.headlineSearch = search.url ? `found ${search.url}` : search.outcome;
+      const real = search?.url || null;
       if (real) {
         const { text, description, reason } = await fetchArticleBody(real);
         keepDescription(a, description);
@@ -2913,6 +2930,7 @@ No Coverage lines and no Sources section in the cards. The grounding rules apply
   // reserves. The context goes in a cached block so the grounding check that reads the same
   // articles a minute later pays a tenth of the price.
   let firstBatch = true;
+  const linkFixes = [];
   const writeBatch = async (ctx, urls, label) => {
     const prefix = `SEARCH RESULTS (ground truth):\n${ctx}`;
     const { text, usage, truncated } = await callClaudeComplete(prompt + cardsRider, 16000, { label, cachedPrefix: prefix });
@@ -2939,7 +2957,15 @@ No Coverage lines and no Sources section in the cards. The grounding rules apply
     if (guarded.removed.length) {
       console.warn(`🔗 ${label}: dropped ${guarded.removed.length} invented Coverage link(s) — ${guarded.removed.slice(0, 4).join(' | ')}`);
     }
-    return { digest: guarded.content, cards, prefix };
+    // Then each story against its own articles: a link handed over for another story is not
+    // this story's source (see coverage-links.js).
+    const confined = confineCoverageLinks(guarded.content, ctx);
+    if (confined.dropped.length) {
+      linkFixes.push(...confined.dropped);
+      console.warn(`🔗 ${label}: ${confined.dropped.length} Coverage link(s) belonged to another story — `
+        + confined.dropped.slice(0, 3).map(d => `"${d.headline.slice(0, 40)}" ✗ ${d.outlet} (${d.from.slice(0, 40)})`).join(' | '));
+    }
+    return { digest: confined.content, cards, prefix };
   };
 
   // Nothing readable came back: say why, rather than paying for a call whose only possible answer
@@ -2969,6 +2995,7 @@ No Coverage lines and no Sources section in the cards. The grounding rules apply
     ? (n) => writeBatch(reserveBlocks.slice(0, Math.min(reserveBlocks.length, n + 1)).join('\n\n'), reserveCitableUrls, `${category} reserves`)
     : null;
 
+  if (retrievalStats) retrievalStats.coverageLinksFixed = linkFixes;
   return { summary: main.digest, cards: main.cards, sourcesPrefix: main.prefix, searchContext, sourceArticles, retrievalStats, writeReserves };
 }
 
@@ -3903,6 +3930,10 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
         storiesWithMultipleAccounts: retrievalStats.storiesWithMultipleAccounts ?? null,
         stories:                    retrievalStats.storyRetrieval,
         bodyFailures:               (retrievalStats.bodyFailures || []).slice(0, 40),
+        serperUsed:                 retrievalStats.serperUsed ?? null,
+        serperSkipped:              retrievalStats.serperSkipped ?? null,
+        googleBlocked:              retrievalStats.googleBlocked ?? null,
+        coverageLinksFixed:         (retrievalStats.coverageLinksFixed || []).slice(0, 40),
         measuredAt:                 generated_at,
       };
     }
