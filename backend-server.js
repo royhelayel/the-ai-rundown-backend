@@ -1,4 +1,6 @@
 import { confineCoverageLinks } from './coverage-links.js';
+import { readabilityText, headlineShare } from './article-text.js';
+import { sigTokens, groupTokens, joinsStory } from './story-grouping.js';
 import { parseAuditJSON, sentencesOf, validateRecap, attributionMap, provenRecapIssues, describeIssue, parseRecapLines, provenStoryFindings } from './recap-validation.js';
 import express from 'express';
 import cors from 'cors';
@@ -1368,7 +1370,11 @@ function metaDescription(html) {
   return '';
 }
 
-async function fetchArticleBody(url) {
+// A page whose text covers less than a quarter of the article's own headline is not that
+// article. On 18 Oct's 76 readable pages the lowest real article covered 0.40 of its headline.
+const TEXT_MATCH_MIN = 0.25;
+
+async function fetchArticleBody(url, title = null) {
   // Lane 2 and 3 links point at news.google.com, and Google no longer exposes the publisher
   // URL behind them: the token does not decode and the page carries no static link. So those
   // articles are unfetchable by construction, however permissive the outlet is — worth
@@ -1391,16 +1397,23 @@ async function fetchArticleBody(url) {
     // marked all of CNN paywalled — seven accounts thrown away in Business alone.
     if (PAYWALL_SIGNALS.test(stripped)) return { text: null, reason: 'paywalled' };
 
-    const paras = [...stripped.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
+    // Readability finds the article's main body (see article-text.js). Every paragraph on the
+    // page is the fallback, only for a page Readability cannot parse at all: when it parses the
+    // page and finds no article, there is none — France 24's video pages read as a consent notice.
+    const fromReader = readabilityText(html);
+    const paras = fromReader ? [] : [...stripped.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)]
       .map(m => decodeXmlEntities(m[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim())
       .filter(t => t.length > 40 && !looksLikeFurniture(t));
-    const text = paras.join(' ').slice(0, 4000);
+    const text = (fromReader || paras.join(' ')).slice(0, 4000);
     // The outlet's own one-or-two-sentence description of the story, from the page's meta
     // tags. When the article itself cannot be read — a page drawn by script, a short item — it
     // is what the story is written from (Roy, 2026-10-17).
     const description = metaDescription(html);
     // A handful of words is boilerplate or a JS shell, not an article.
-    return text.length > 250 ? { text, description, reason: 'ok' } : { text: null, description, reason: 'too-short' };
+    if (text.length <= 250) return { text: null, description, reason: 'too-short' };
+    const share = title ? headlineShare(text, title) : null;
+    if (share !== null && share < TEXT_MATCH_MIN) return { text: null, description, reason: 'text-mismatch' };
+    return { text, description, reason: 'ok' };
   } catch { return { text: null, reason: 'fetch-failed' }; }
 }
 
@@ -1524,13 +1537,14 @@ const cosine = (a, b) => {
 // Greedy clustering against each cluster's first member. Word overlap could not tell that
 // "OpenAI went rogue and meddled with US government websites" and "OpenAI agents tried to
 // bruteforce a UN website" were one story — they share one significant word. Meaning can.
+
 function groupByTokens(articles) {
   const stories = [];
   for (const a of articles) {
-    const toks = new Set(sigTokens(a.title));
-    const hit = toks.size >= 2 ? stories.find(st => [...toks].filter(t => st.tokens.has(t)).length >= 3) : null;
-    if (hit) { hit.members.push(a); toks.forEach(t => hit.tokens.add(t)); continue; }
-    stories.push({ lead: a, members: [a], tokens: toks, embedding: null });
+    const toks = groupTokens(a.title);
+    const hit = toks.size >= 2 ? stories.find(st => joinsStory(toks, st)) : null;
+    if (hit) { hit.members.push(a); hit.memberTokens.push(toks); toks.forEach(t => hit.tokens.add(t)); continue; }
+    stories.push({ lead: a, members: [a], tokens: new Set(toks), memberTokens: [toks], embedding: null });
   }
   return stories;
 }
@@ -1545,6 +1559,7 @@ function mergeSemanticDuplicates(stories) {
     const twin = out.find(o => o.embedding && cosine(o.embedding, st.embedding) >= POOL_SIM_THRESHOLD);
     if (twin) {
       twin.members.push(...st.members);
+      (twin.memberTokens ||= []).push(...(st.memberTokens || [st.tokens]));
       st.tokens.forEach(t => twin.tokens.add(t));
     } else out.push(st);
   }
@@ -1555,10 +1570,10 @@ function groupByEmbedding(articles) {
   const stories = [];
   for (const a of articles) {
     if (!a.embedding) {              // no vector: fall back to the token test rather than drop it
-      const toks = new Set(sigTokens(a.title));
-      const hit = stories.find(st => [...toks].filter(t => st.tokens?.has(t)).length >= 3);
-      if (hit) { hit.members.push(a); toks.forEach(t => hit.tokens.add(t)); continue; }
-      stories.push({ lead: a, members: [a], tokens: toks, embedding: null });
+      const toks = groupTokens(a.title);
+      const hit = stories.find(st => st.tokens && joinsStory(toks, st));
+      if (hit) { hit.members.push(a); (hit.memberTokens ||= []).push(toks); toks.forEach(t => hit.tokens.add(t)); continue; }
+      stories.push({ lead: a, members: [a], tokens: new Set(toks), memberTokens: [toks], embedding: null });
       continue;
     }
     let best = null, bestSim = 0;
@@ -1568,7 +1583,7 @@ function groupByEmbedding(articles) {
       if (sim > bestSim) { bestSim = sim; best = st; }
     }
     if (best && bestSim >= POOL_SIM_THRESHOLD) best.members.push(a);
-    else stories.push({ lead: a, members: [a], tokens: new Set(sigTokens(a.title)), embedding: a.embedding });
+    else { const toks = groupTokens(a.title); stories.push({ lead: a, members: [a], tokens: new Set(toks), memberTokens: [toks], embedding: a.embedding }); }
   }
   return stories;
 }
@@ -1785,7 +1800,18 @@ const descriptionOf = (m) => {
 };
 const hasDescription = (m) => descriptionOf(m).length >= DESCRIPTION_MIN;
 
-async function readUntilFilled(candidates, { top = FEED_STORIES, reserve = RESERVE_STORIES, perStory = READ_PER_STORY, wave = 6 } = {}) {
+async function readUntilFilled(candidates, { top = FEED_STORIES, reserve = RESERVE_STORIES, perStory = READ_PER_STORY, wave = 6, exclude = null } = {}) {
+  // Evening: an article Morning already used is not news again. A story keeps whatever new
+  // articles it has; one with none left is not read at all.
+  if (exclude?.size) {
+    candidates = candidates.map(st => {
+      const ms = st.members.filter(m => !exclude.has(m.link) && !(m.resolvedUrl && exclude.has(m.resolvedUrl)));
+      if (ms.length === st.members.length) return st;
+      if (!ms.length) return null;
+      const outlets = [...new Set(ms.map(m => m.source).filter(Boolean))];
+      return { ...st, members: ms, lead: ms.includes(st.lead) ? st.lead : ms[0], outlets, outletCount: outlets.length };
+    }).filter(Boolean);
+  }
   resetLane5Tally();
   resetGoogleDecodeTally();
   const laneFiveOn = await isLaneFiveEnabled();
@@ -1841,30 +1867,26 @@ async function readUntilFilled(candidates, { top = FEED_STORIES, reserve = RESER
     return st;
   };
 
-  // In waves, not one at a time: serially one category once took 37 minutes. Reading goes on
-  // down the list while there are too few stories with a full article, so the briefs are as
-  // well-sourced as the day allows — but what is found is never thrown away.
+  // In waves, not one at a time: serially one category once took 37 minutes. Reading stops once
+  // the feed and its reserves are filled in ranked order; a story is passed over only when no
+  // outlet on it may be shown at all.
   const depth = Math.min(candidates.length, READ_DEPTH);
-  let articles = 0;
-  for (let i = 0; i < depth && articles < want; i += wave) {
+  for (let i = 0; i < depth && got.length < want; i += wave) {
     const batch = candidates.slice(i, Math.min(i + wave, depth));
     const results = await Promise.all(batch.map(readOne));
     results.forEach((r, k) => {
-      if (r) { got.push({ st: r, idx: i + k }); if (r.material === 'article') articles++; }
+      if (r) got.push({ st: r, idx: i + k });
       else unusable.push(batch[k].lead.title);
     });
   }
 
-  // The best material first, then the ranking: articles, then descriptions, then headlines with a
-  // link a reader can open, then headlines alone. A story three or more outlets carried is the
-  // day's news whatever we could read of it, so it competes with the articles. The ones chosen
-  // keep their ranked order.
-  const LEVEL = { article: 0, description: 2, headline: 4 };
-  const tier = (st) => (st.outletCount >= 3 ? 0 : LEVEL[st.material] + (st.linked ? 0 : 1));
-  const best = [...got].sort((a, b) => (tier(a.st) - tier(b.st)) || (a.idx - b.idx));
-  const inOrder = (list) => list.sort((a, b) => a.idx - b.idx).map(x => x.st);
+  // The ranking alone decides what is published. Whether we could read an article decides only
+  // how much the brief says, never whether the story is in (Roy, 2026-10-18): material used to
+  // rank first, so an easy-to-fetch story could push out a more important one we could only
+  // see the headline of.
+  const ranked = [...got].sort((a, b) => a.idx - b.idx).map(x => x.st);
   return {
-    filled: inOrder(best.slice(0, top)), reserves: inOrder(best.slice(top, want)),
+    filled: ranked.slice(0, top), reserves: ranked.slice(top, want),
     attempted: [...attempted], droppedNoBody: unusable,
   };
 }
@@ -1915,7 +1937,7 @@ function storyRetrievalOf(list, blocks) {
   }));
 }
 
-async function contextFromSharedPool(category, day, language, timeSlot) {
+async function contextFromSharedPool(category, day, language, timeSlot, opts = {}) {
   const pool = await getSharedPool(day, language, timeSlot);
 
   let candidates = [...(pool.byCategory[category] || [])];
@@ -1932,7 +1954,7 @@ async function contextFromSharedPool(category, day, language, timeSlot) {
   }
 
   const shortlist = candidates.slice(0, 30);
-  const { filled, reserves, attempted, droppedNoBody } = await readUntilFilled(shortlist);
+  const { filled, reserves, attempted, droppedNoBody } = await readUntilFilled(shortlist, { exclude: opts.exclude });
 
   const offeredUrls = new Set();
   const storyBlocks = buildStoryBlocks(filled, 0, offeredUrls);
@@ -2071,7 +2093,16 @@ async function fetchBodyViaClaude(url, outlet) {
   });
   if (!r.ok) return { text: null, reason: `claude-http-${r.status}` };
   const d = await r.json();
-  const text = (d.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
+  // Only what follows a successful fetch is the article. The reply also carries the model's own
+  // words — "I'll fetch that URL for you." before the fetch, "I was unable to access the URL…"
+  // after a failed one — and all of it was being joined and kept: an MTV Lebanon account on
+  // 17 Oct began "I'll fetch that article for you.", and a failure explained at length would
+  // have passed as an article (2026-10-18).
+  const blocks = d.content || [];
+  const at = blocks.map(c => c.type).lastIndexOf('web_fetch_tool_result');
+  if (at < 0) return { text: null, reason: 'claude-no-fetch' };
+  if (blocks[at].content?.type !== 'web_fetch_result') return { text: null, reason: `claude-${blocks[at].content?.error_code || 'fetch-error'}` };
+  const text = blocks.slice(at + 1).filter(c => c.type === 'text').map(c => c.text).join('').trim();
   if (!text || /^NO_ARTICLE/i.test(text)) return { text: null, reason: 'claude-no-article' };
   if (text.length < 250) return { text: null, reason: 'claude-too-short' };
   return { text: text.slice(0, 4000), reason: 'ok' };
@@ -2113,7 +2144,10 @@ async function enrichViaLaneFive(articles, limit = 12) {
       // resolution step found one earlier.
       const url = /(^|\.)google\.com/.test(new URL(a.link).hostname) ? (a.resolvedUrl || null) : a.link;
       if (!url) { a.bodyReason = before + ' + lane5-no-publisher-url'; return; }
-      const { text, reason } = await fetchBodyViaClaude(url, a.source);
+      const got = await fetchBodyViaClaude(url, a.source);
+      // The same test as a page we read ourselves: the text has to be about this article.
+      const off = got.text && a.title && (headlineShare(got.text, a.title) ?? 1) < TEXT_MATCH_MIN;
+      const text = off ? null : got.text, reason = off ? 'text-mismatch' : got.reason;
       if (text) {
         a.snippet = text;
         a.link = url;
@@ -2152,7 +2186,7 @@ async function enrichWithBodies(articles, limit = 12) {
     }
     const candidates = [{ link: a.link, source: a.source }, ...(a.variants || [])];
     for (const c of candidates) {
-      const { text, description, reason } = await fetchArticleBody(c.link);
+      const { text, description, reason } = await fetchArticleBody(c.link, a.title);
       if (c.link === a.link) keepDescription(a, description);
       if (text) {
         a.snippet = text;
@@ -2169,7 +2203,7 @@ async function enrichWithBodies(articles, limit = 12) {
       if (search) a.headlineSearch = search.url ? `found ${search.url}` : search.outcome;
       const real = search?.url || null;
       if (real) {
-        const { text, description, reason } = await fetchArticleBody(real);
+        const { text, description, reason } = await fetchArticleBody(real, a.title);
         keepDescription(a, description);
         if (text) {
           a.snippet = text;
@@ -2223,19 +2257,19 @@ const CORPUS_WINDOW_HOURS = { Morning: 24, Evening: 14 };
 // unfiltered into the digest, which is how a Kyrgyz aggregator ended up cited. Put it behind
 // the same allowlist gate lane 3 goes through and it becomes a discovery funnel: good at
 // finding, not trusted to choose.
-async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Morning', withSerper = true) {
+async function buildCorpusContext(category, day, language = 'en', timeSlot = 'Morning', withSerper = true, opts = {}) {
   resetSerperBudget();
   if (TOPICAL_CATEGORIES.includes(category) && await isSharedPoolEnabled()) {
     try {
-      return await contextFromSharedPool(category, day, language, timeSlot);
+      return await contextFromSharedPool(category, day, language, timeSlot, opts);
     } catch (e) {
       console.warn(`🗂️  ${category}: shared pool failed (${e.message}) — falling back to the per-category path`);
     }
   }
-  return buildCorpusContextPerCategory(category, day, language, timeSlot, withSerper);
+  return buildCorpusContextPerCategory(category, day, language, timeSlot, withSerper, opts);
 }
 
-async function buildCorpusContextPerCategory(category, day, language = 'en', timeSlot = 'Morning', withSerper = true) {
+async function buildCorpusContextPerCategory(category, day, language = 'en', timeSlot = 'Morning', withSerper = true, opts = {}) {
   // ── Who to ask, widened by the category tree ─────────────────────────────
   // The registry was too literal: Football had three outlets because only three had a
   // 'Football' key, while eight more cover football under 'Sports'. So a category also reads
@@ -2392,14 +2426,16 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
   // see that AP, Al Jazeera and the Economist were describing one thing.
   const stories = [];
   for (const a of articles) {
-    const toks = new Set(sigTokens(a.title));
-    if (toks.size < 2) { stories.push({ lead: a, members: [a], tokens: toks }); continue; }
+    const toks = groupTokens(a.title);
+    if (toks.size < 2) { stories.push({ lead: a, members: [a], tokens: new Set(toks), memberTokens: [toks] }); continue; }
     // Three shared significant words, not two. Two is what computeEchoScores uses for a
     // loose "is this echoed" signal; for merging it is too eager — "Saudi" plus "Iran" would
-    // fold unrelated stories together, and a wrong merge silently deletes a story.
-    const hit = stories.find(st => [...toks].filter(t => st.tokens.has(t)).length >= 3);
+    // fold unrelated stories together, and a wrong merge silently deletes a story. And three
+    // with one article of the story, not with every word the story has gathered (see joinsStory).
+    const hit = stories.find(st => joinsStory(toks, st));
     if (hit) {
       hit.members.push(a);
+      hit.memberTokens.push(toks);
       toks.forEach(t => hit.tokens.add(t));
       // The lead is the member most worth reading: prose already in hand beats a headline,
       // and a fetchable publisher URL beats a Google redirect we cannot resolve.
@@ -2407,7 +2443,7 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
                              > ((y.snippet || '').length > 400 ? 2 : 0) + (y.lane <= 1 ? 1 : 0);
       if (better(a, hit.lead)) hit.lead = a;
     } else {
-      stories.push({ lead: a, members: [a], tokens: toks });
+      stories.push({ lead: a, members: [a], tokens: new Set(toks), memberTokens: [toks] });
     }
   }
 
@@ -2463,7 +2499,7 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
     offRegion = head.length - kept.length;
     toRank = kept;
   }
-  const { filled, reserves, attempted, droppedNoBody } = await readUntilFilled(toRank);
+  const { filled, reserves, attempted, droppedNoBody } = await readUntilFilled(toRank, { exclude: opts.exclude });
   const toRead = attempted;
   if (lane5Tally.attempted) {
     console.log(`🌐 ${category}: lane 5 tried ${lane5Tally.attempted} page(s) our fetcher could not open, `
@@ -2791,7 +2827,9 @@ const GROUNDING_RULES = `GROUNDING — these rules override every other instruct
 5. Write no "Why this matters" and no "Perspectives differ" lines. A story is its headline and its facts.
 6. Write each story from the material it has: full articles, the outlets' short descriptions, or only its headline. A story's headline counts as material. A story with only its headline gets one plain sentence stating what the headline reports, and nothing more. Stories will not all be equally detailed, and that is right — these are quick briefs.`;
 
-async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null, language = 'en') {
+// `morning` (Evening only): { digest, urls } — the stories already published today and the
+// articles they used. Evening writes only what is new; see generateAndStoreCategory.
+async function generateNews(category, day, timeSlot, retries = 3, searchQuery = null, prebuiltContext = null, language = 'en', morning = null) {
   const categoryQuery = searchQuery || (language === 'ar' ? (ARABIC_CATEGORY_QUERIES[category] || category) : (CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category)));
   const dayInfo = day === getTodayDate() ? 'today' : `on ${day}`;
   const isRegional = REGIONAL_CATEGORIES_SET.has(category);
@@ -2807,7 +2845,7 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     // Ask each trusted outlet what it published, rather than asking a search engine what
     // happened. Serper stays on inside it as lane 4 — it is the only lane returning real
     // publisher URLs, which is what lets the rest be read.
-    const { context, articles, stats, offeredUrls, reserveBlocks: rb = [], reserveUrls: ru = [] } = await buildCorpusContext(category, day, language, timeSlot, true);
+    const { context, articles, stats, offeredUrls, reserveBlocks: rb = [], reserveUrls: ru = [] } = await buildCorpusContext(category, day, language, timeSlot, true, { exclude: morning?.urls });
     reserveStoryBlocks = rb; reserveCitableUrls = ru;
     searchContext = context;
     sourceArticles = articles;
@@ -2835,7 +2873,9 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   // The corpus hands over exactly the stories to publish, already grouped, ranked and read; the
   // writer's job is to write each one, not to pick 6 to 9 of them. The Serper fallback still
   // hands over loose results, so it keeps the old instruction.
-  const storyCountInstruction = usedCorpus
+  const storyCountInstruction = usedCorpus && morning
+    ? 'Write a story for every numbered item above that is news since this morning (see ALREADY PUBLISHED below), from whatever material it has — a story with only its headline still gets written, as one plain sentence.'
+    : usedCorpus
     ? 'Write a story for every numbered item above, from whatever material it has — a story with only its headline still gets written, as one plain sentence.'
     : isRegional
       ? 'Cover every genuinely DISTINCT story the results support — usually 6–10, and fewer is fine when one big situation dominates the day. NEVER reach a number by splitting one situation into several stories.'
@@ -2880,6 +2920,14 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
   // Regional categories get the region gate; the three global ones that concentrate get a
   // spread rule. Nothing gets both — they pull in opposite directions.
   const spreadRule = !isRegional ? (SPREAD_RULES[category] || '') : '';
+  // Evening: the stories already out this morning, so the writer adds only what is new. Their
+  // headlines and facts only — a morning story is not rewritten or cited from here.
+  const morningRule = morning ? `
+
+ALREADY PUBLISHED THIS MORNING — these stories are in the feed already and stay there unchanged:
+${parseDoc(morning.digest).stories.map(st => `- ${st.headline}: ${st.lines.filter(l => /^\s*[-*]\s+/.test(l)).map(l => l.replace(/^\s*[-*]\s+/, '').trim()).join(' ')}`.slice(0, 600)).join('\n')}
+
+Leave out any numbered item that only repeats one of them. When an item carries a genuine development of a morning story — a new fact, figure, decision, reaction or outcome the morning story does not have — write it as its own story: a headline about the development, written from that item's own material, without restating what the morning story already says.` : '';
 
   const prompt = `You are a news editor. Above are news articles about "${categoryQuery}" retrieved specifically for ${dayInfo} (${day}). Write quick, factual briefs of them for people who want to know what happened and decide which articles to read — each as detailed as its material allows, and no more.${regionGate}${spreadRule}${arabicInstruction}
 
@@ -2906,7 +2954,7 @@ ACCURACY RULES (violations make the story wrong, not just imprecise):
 - Be precise about what type of agreement or deal is under discussion. A shipping deal and a nuclear deal are different things — do not conflate them.
 - Do not attribute a quote or claim to anyone unless an account directly attributes it to them.
 
-${GROUNDING_RULES}`;
+${GROUNDING_RULES}${morningRule}`;
 
   // The cards are written in the same call — their only input is the story just written, so a
   // second call would pay to re-read it. They inherit the grounding rules: a card restates its
@@ -2977,6 +3025,8 @@ No Coverage lines and no Sources section in the cards. The grounding rules apply
       retrievalStats?.droppedForNoBody ? `${retrievalStats.droppedForNoBody} stories paywalled on every outlet` : null,
       retrievalStats?.lane4?.error ? `Serper: ${retrievalStats.lane4.error}` : null,
     ].filter(Boolean).join('; ');
+    // Evening with nothing new to read is not a failure: Morning's stories stand.
+    if (morning) return { summary: '', cards: null, sourcesPrefix: '', searchContext, sourceArticles, retrievalStats, writeReserves: null };
     throw new Error(`No readable stories for ${category} — ${why}`);
   }
 
@@ -2997,100 +3047,6 @@ No Coverage lines and no Sources section in the cards. The grounding rules apply
 
   if (retrievalStats) retrievalStats.coverageLinksFixed = linkFixes;
   return { summary: main.digest, cards: main.cards, sourcesPrefix: main.prefix, searchContext, sourceArticles, retrievalStats, writeReserves };
-}
-
-// ── Evening incremental update ──────────────────────────────────────────────
-// Evening no longer regenerates a category from scratch — it takes the digest Morning
-// already published and asks Claude to fold in only what's genuinely new: merge a fresh
-// development into its existing story (flagged Updated, same headline, new outlets
-// appended to Coverage), append a genuinely new story at the end (flagged New), or
-// reproduce an untouched story exactly as-is (flagged Unchanged). Reproducing every
-// Morning story — even untouched ones — keeps this digest a complete, self-contained
-// replacement rather than a diff, so the frontend shows Evening's row on its own instead
-// of stitching two rows together (see the Evening-supersedes-Morning filter in App.js).
-// Preserving Morning's story order — new stories only ever appended, never inserted or
-// reordered — is also what keeps a story's position, and therefore its read status,
-// stable across the Morning→Evening transition (see useListenHistory.js).
-async function generateEveningUpdate(category, day, priorDigestContent, language = 'en') {
-  const categoryQuery = language === 'ar' ? (ARABIC_CATEGORY_QUERIES[category] || category) : (CATEGORY_SEARCH_QUERIES[category] || (category === 'All' ? 'top breaking news today' : category));
-  const isRegional = REGIONAL_CATEGORIES_SET.has(category);
-
-  console.log(`Generating evening update for ${category} on ${day}${language === 'ar' ? ' [AR]' : ''}`);
-
-  // Evening takes the same retrieval as Morning, on the Evening window — 14 hours, which
-  // overlaps the morning run rather than abutting it, so a story that broke just before the
-  // morning cutoff is still present when its follow-up lands.
-  const { context: searchContext, articles: sourceArticles, stats: retrievalStats = null } = await isCorpusRetrievalEnabled()
-    ? await buildCorpusContext(category, day, language, 'Evening', true)
-    : await buildSearchContext(categoryQuery, day, language, isRegional, category);
-  const serper_searches = 5;
-  const serper_cost = serper_searches * 0.001;
-
-  const arabicInstruction = language === 'ar'
-    ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines and bullet points must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, **Status:**, ## Sources. Keep source outlet names and URLs in their original form.`
-    : '';
-
-  const prompt = `You are a news analyst updating a digest that was already published earlier today. Below is the digest already published, followed by fresh search results for "${categoryQuery}" from later in the day.${arabicInstruction}
-
-ALREADY PUBLISHED THIS MORNING:
-${priorDigestContent}
-
-FRESH SEARCH RESULTS:
-${searchContext}
-
-Produce an updated digest by working through the ALREADY PUBLISHED stories one at a time, in the SAME ORDER, then appending anything genuinely new:
-
-1. For each already-published story, check whether the fresh search results contain a genuine new development for it — a real escalation, resolution, reaction, new figures, or fact that wasn't in the story before. Do NOT count an outlet simply re-reporting the same facts already in the story as a development.
-   - If there IS a genuine new development: reproduce the story using the EXACT SAME headline text as published (copy it verbatim, do not reword it), keep every existing bullet, and add one or two new bullets covering only the new development. Extend its **Coverage:** line with the new outlet(s) — keep every outlet already listed, only add to it. End the story with a line **Status:** Updated
-   - If there is NO genuine new development: reproduce the story completely unchanged — same headline, same bullets, same **Coverage:**. End the story with a line **Status:** Unchanged
-2. After all already-published stories, add any genuinely new story from the fresh search results that is NOT a continuation of one of them — a distinct topic not covered above. Write it in the normal digest format (own ## headline, **Coverage:**, bullets) and end it with **Status:** New
-3. Never reorder, merge, drop, or rewrite an already-published story beyond what rule 1 allows. Never invent a development that the fresh search results don't support. Never invent, complete or guess a URL, and never add an outlet that is not in the fresh results with a URL beside it.
-
-Use this EXACT format for every story:
-
-## Headline
-**Coverage:** [Outlet Name](exact-article-url) · [Outlet Name](exact-article-url) · ...
-- Key fact or development
-- Another key detail
-**Status:** Updated | Unchanged | New
-
-Coverage must use real URLs from the fresh search results for any new outlets added; keep the original URLs for outlets carried over unchanged. Only list major international or regional news organisations — wire services, broadcasters, national newspapers, and established regional outlets. After all stories, include:
-
-## Sources
-- [Full article headline](exact-article-url)
-
-List every article URL used across all stories (both carried-over and new) with its full headline as the link text. Rules: Start with the first ## heading — no preamble. Headline is plain text — no URL on the ## line. Always include **Coverage:** immediately after each ##, and **Status:** as the last line of each story. Complete all sentences. Never use Wikipedia as a source.
-
-ACCURACY RULES (violations make the story wrong, not just imprecise):
-- Do not attribute a quote or claim to anyone unless a source in the fresh search results directly attributes it to them.
-
-${GROUNDING_RULES.replace(/the accounts you were given/g, 'the fresh search results and the digest already published').replace(/Use only information stated in the accounts/g, 'Use only information stated in the fresh search results or the digest already published')}`;
-
-  // 5,000 tokens could not hold twelve stories with Coverage, bullets, Summary, Why this
-  // matters and Perspectives differ. 16,000 fits them with room to spare, and the helper
-  // continues anyway if a category runs long, so the ceiling stops being a content decision.
-  const { text: rawSummary, usage, truncated } = await callClaudeComplete(prompt, 16000, { label: category });
-  const data = { usage };
-  const summary = filterCoverageTier1(cleanRawSummary(rawSummary), isRegional ? category : null);
-  if (truncated) console.warn(`✂️  ${category}: digest still truncated after continuations`);
-
-  if (data.usage) {
-    const { input_tokens, output_tokens } = data.usage;
-    const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-    const estimated_cost_usd = token_cost_usd + serper_cost;
-    trackUsage({
-      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-      input_tokens, output_tokens,
-      web_searches: serper_searches, search_cost_usd: serper_cost, token_cost_usd, estimated_cost_usd,
-      category, time_slot: 'Evening', content_type: 'digest', language,
-      created_at: new Date().toISOString()
-    });
-  }
-
-  return { summary, cards: null, searchContext, sourceArticles, retrievalStats,
-    // what the grounding check measures an Evening digest against: the fresh results, plus the
-    // Morning digest it carries stories over from, which was itself checked when it was published
-    sourcesPrefix: `SEARCH RESULTS (ground truth):\n${searchContext}\n\nALREADY PUBLISHED AND CHECKED THIS MORNING:\n${priorDigestContent}` };
 }
 
 // ── Grounding check and repair ───────────────────────────────────────────────
@@ -3199,7 +3155,14 @@ ${unitLines.join('\n')}`;
   const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
   if (data.stop_reason === 'max_tokens') throw new Error('Truncated grounding check');
   const statements = new Map(unitLines.map(line => { const m = line.match(/^\[([^\]]+)\]\s*(.*)$/); return m ? [m[1], m[2]] : null; }).filter(Boolean));
-  const { found, dismissed } = provenStoryFindings(parseAuditJSON(raw), { statements, sourceText: prefix });
+  let parsed;
+  try { parsed = parseAuditJSON(raw); }
+  catch (e) {
+    // What came back, so a broken reply can be diagnosed from the logs rather than guessed at.
+    console.warn(`⚠️  ${category}: check reply unreadable (${raw.length} chars, stop ${data.stop_reason}): ${raw.slice(0, 240).replace(/\n/g, ' ')} … ${raw.slice(-240).replace(/\n/g, ' ')}`);
+    throw e;
+  }
+  const { found, dismissed } = provenStoryFindings(parsed, { statements, sourceText: prefix });
   found.dismissed = dismissed;     // carried to the report, so what was waved off stays visible
   return found;
 }
@@ -4178,24 +4141,31 @@ async function pregenerateTTSForContent(content, label, meta = {}) {
 let runRetrievalTally = { headlineOnly: 0, storiesRead: 0, storiesTried: 0, byCategory: [] };
 const resetRetrievalTally = () => { runRetrievalTally = { headlineOnly: 0, storiesRead: 0, storiesTried: 0, byCategory: [] }; };
 
-async function generateAndStoreCategory(category, targetDay, timeSlot, language = 'en') {
-  // Evening builds on Morning's digest when one exists for this category/day — see
-  // generateEveningUpdate. No Morning digest (backfills, or Morning never ran that day)
-  // falls back to a normal independent generation, same as before.
-  let priorDigest = null;
+async function generateAndStoreCategory(category, targetDay, timeSlot, language = 'en', { dryRun = false } = {}) {
+  // Evening adds to Morning (Roy, 2026-10-18). Morning's stories stay exactly as published —
+  // their text, cards, check and recorded audio — and Evening writes only what is new since,
+  // placed on top and marked New, with no twelve-story limit. It used to have the model copy
+  // Morning's stories out again and append the new ones, then rewrote every card, re-checked
+  // everything and kept the first twelve — so with a full Morning, nothing new survived. With
+  // no Morning digest (Morning never ran that day) Evening is an ordinary edition.
+  let morning = null;
   if (timeSlot === 'Evening') {
     const { data: morningRow } = await supabaseAdmin
       .from('news_summaries')
-      .select('content')
+      .select('content, stories_content, source_articles, retrieval_stats')
       .eq('category', category).eq('day', targetDay).eq('time_slot', 'Morning').eq('language', language)
       .is('user_id', null).is('shared_key', null)
       .maybeSingle();
-    if (morningRow?.content) priorDigest = morningRow.content;
+    if (morningRow?.content) {
+      const urls = new Set();
+      for (const a of Object.values(morningRow.source_articles || {})) if (a?.url) urls.add(a.url);
+      for (const st of morningRow.retrieval_stats?.stories || []) for (const m of st.members || []) if (m.url) urls.add(m.url);
+      for (const m of morningRow.content.matchAll(/\]\((https?:\/\/[^)\s]+)\)/g)) urls.add(m[1]);
+      morning = { digest: morningRow.content, cards: morningRow.stories_content || null, urls };
+    }
   }
 
-  const gen = priorDigest
-    ? await generateEveningUpdate(category, targetDay, priorDigest, language)
-    : await generateNews(category, targetDay, timeSlot, 3, null, null, language);
+  const gen = await generateNews(category, targetDay, timeSlot, 3, null, null, language, morning);
   const { sourceArticles, retrievalStats } = gen;
   let digestContent = gen.summary;
   let storiesContent = gen.cards || null;
@@ -4204,7 +4174,8 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   // First real http:// image from the article pool — used as the per-digest lead image
   const leadImageUrl = (sourceArticles || []).find(a => a.imageUrl?.startsWith('http'))?.imageUrl || null;
 
-  if (GENERATE_STORIES_CONTENT && !storiesContent) {
+  const hasStories = (doc) => parseDoc(doc).stories.length > 0;
+  if (GENERATE_STORIES_CONTENT && !storiesContent && hasStories(digestContent)) {
     try {
       storiesContent = await generateStoriesContent(category, targetDay, timeSlot, digestContent, language);
     } catch (err) {
@@ -4217,7 +4188,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   // left with nothing supported is dropped. See groundDigest.
   const gate = await isAuditEnabled();
   let auditResult = null;
-  if (gate) {
+  if (gate && hasStories(digestContent)) {
     const g = await groundDigest({ category, timeSlot, language, digest: digestContent, cards: storiesContent, prefix: sourcesPrefix });
     digestContent = g.digest; storiesContent = g.cards; auditResult = g.report;
   }
@@ -4225,7 +4196,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   // A feed short of its twelve — a story dropped by the check, or one the writer could not
   // support — is topped up from the reserves rather than published short or padded.
   const published = parseDoc(digestContent).stories.length;
-  if (gen.writeReserves && published < FEED_STORIES) {
+  if (!morning && gen.writeReserves && published < FEED_STORIES) {
     const need = FEED_STORIES - published;
     try {
       const extra = await gen.writeReserves(need);
@@ -4249,6 +4220,21 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     }
   }
 
+  // Evening: what is new goes on top, marked New; Morning's stories follow exactly as published.
+  if (morning) {
+    const N = parseDoc(digestContent), M = parseDoc(morning.digest);
+    N.stories.forEach(st => { st.lines = st.lines.filter(l => !/^\*\*Status:\*\*/.test(l)); st.lines.push('**Status:** New'); });
+    const sourceLines = (t) => (t || '').split('\n').filter(l => /^\s*[-*]\s+\[/.test(l));
+    const sources = [...new Set([...sourceLines(N.tail), ...sourceLines(M.tail)])];
+    console.log(`🌆 ${category}: ${N.stories.length} new since this morning, above Morning's ${M.stories.length}`);
+    digestContent = renderDoc({ head: '', stories: [...N.stories, ...M.stories], tail: sources.length ? `## Sources\n${sources.join('\n')}` : '' });
+    if (storiesContent || morning.cards) {
+      const NC = storiesContent ? parseDoc(storiesContent).stories : [];
+      const MC = morning.cards ? parseDoc(morning.cards).stories : [];
+      storiesContent = renderDoc({ head: '', stories: [...NC, ...MC], tail: '' });
+    }
+  }
+
   // Nothing left that passed the check: do not store an empty feed as a success. Failing the
   // category sends it through the normal retry and, if that fails too, the failure alert.
   if (!parseDoc(digestContent).stories.length) {
@@ -4265,7 +4251,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   {
     const D = parseDoc(digestContent);
     const C = storiesContent ? parseDoc(storiesContent) : null;
-    if (D.stories.length > FEED_STORIES) {
+    if (!morning && D.stories.length > FEED_STORIES) {
       const keep = new Set(D.stories.slice(0, FEED_STORIES).map(st => normHeadline(st.headline)));
       const byPosition = C && C.stories.length === D.stories.length;
       console.log(`✂️  ${category}: ${D.stories.length} stories written, trimmed to ${FEED_STORIES}`);
@@ -4275,6 +4261,9 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
     }
     if (C) storiesContent = renderDoc({ ...C, tail: '' });
   }
+
+  // A dry run (local testing only, see LOCAL_PREVIEW) stops here: nothing is stored or recorded.
+  if (dryRun) return { digest: digestContent, cards: storiesContent, auditResult, retrievalStats };
 
   // Category-level briefing — a short synthesis of the whole category, written from the final
   // digest and checked against it.
@@ -6021,15 +6010,6 @@ const GDELT_QUERIES = {
   'LEB':          '(Lebanon OR Beirut)',
 };
 
-const STOPISH = new Set(['the','and','for','with','from','that','this','have','been','will','after','over','into','their','says','said','amid','more','than','what','when','about','which','were','they','could','would']);
-// Arabic kept, and given its own stop list: without one, "من" "في" "على" behave like
-// English "the" and match everything. Measured before the fix — 505 Arabic KSA articles
-// produced 505 stories, because every Arabic title tokenised to an empty set.
-const AR_STOP = new Set(['من','في','على','إلى','عن','مع','أن','إنّ','إن','التي','الذي','هذا','هذه','كان','قال','بعد','بين','خلال','الى','ما','لا','هو','هي','كما','عند','لدى','ضد','أو','او','كل','بعض','حول','منذ','حتى','قبل']);
-const sigTokens = (t) => (t || '').toLowerCase()
-  .replace(/[^a-z0-9\u0600-\u06FF\s]/g, ' ')
-  .split(/\s+/)
-  .filter(w => w.length > 3 && !STOPISH.has(w) && !AR_STOP.has(w));
 
 app.get('/admin/api/completeness', async (req, res) => {
   try {
@@ -6956,6 +6936,23 @@ app.get('/api/reads', async (req, res) => {
 
 // Start server
 const PORT = process.env.PORT || 3001;
+// Local testing only: these exist when the server is started with LOCAL_PREVIEW=1, which Render
+// never sets. A dry run writes nothing; the pool view only reads.
+if (process.env.LOCAL_PREVIEW === '1') {
+  app.post('/local/preview', async (req, res) => {
+    const { category, day = getTodayDate(), timeSlot = 'Morning' } = req.body || {};
+    try { res.json(await generateAndStoreCategory(category, day, timeSlot, 'en', { dryRun: true })); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  app.get('/local/pool', async (req, res) => {
+    try {
+      const pool = await getSharedPool(req.query.day || getTodayDate(), 'en', req.query.timeSlot || 'Morning');
+      const stories = pool.byCategory[req.query.category || 'World News'] || [];
+      res.json(stories.map(st => ({ outlets: st.outletCount, members: st.members.map(m => ({ title: m.title, source: m.source, link: m.link })) })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+}
+
 app.listen(PORT, () => {
   console.log(`\n🎉 Server running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
