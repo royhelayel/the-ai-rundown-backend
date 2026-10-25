@@ -1,3 +1,4 @@
+import { SPOKEN_SUMMARY_STYLE } from './spoken-summary-style.js';
 import { confineCoverageLinks } from './coverage-links.js';
 import { readabilityText, headlineShare } from './article-text.js';
 import { sigTokens, groupTokens, joinsStory } from './story-grouping.js';
@@ -2972,6 +2973,8 @@ AFTER the digest above is complete, write the line ===CARDS=== on its own, then 
 
 Write every bullet and every Summary in full sentences, as a newspaper would: with the verbs and the small words ("a", "the", "was"), never headline shorthand like "Saudi national arrested after planting device". The app shows the Summary as the story's paragraph.
 
+${SPOKEN_SUMMARY_STYLE}
+
 No Coverage lines and no Sources section in the cards. The grounding rules apply to the cards too.`;
 
   // One writer for the published stories and, if one has to be replaced later, for the
@@ -3199,6 +3202,8 @@ If the accounts cannot support even one fact for a story, return only:
 SKIP
 
 Do not write Coverage, Status or Sources lines — they are kept from the original.${arabic}
+
+${SPOKEN_SUMMARY_STYLE}
 
 ${GROUNDING_RULES}
 
@@ -3595,6 +3600,8 @@ For each story in the digest, use this EXACT format — no preamble:
 **Summary:** 2–3 plain sentences restating what that digest story says, drawing on all of its facts — a reader should come away with the whole story, not only its headline. Use nothing that is not in that story — no background, no consequences, no "what happens next". Only a story with a single fact (one written from its headline alone) gets a one-sentence Summary.
 
 Rules: Cover the same stories as the digest, in the same order. Start immediately with the first ## — no introduction, no Sources section, no Coverage lines. Each bullet is a single short, full sentence. Write every bullet and every Summary as a newspaper would: with the verbs and the small words ("a", "the", "was"), never headline shorthand like "Saudi national arrested after planting device". The app shows the Summary as the story's paragraph.
+
+${SPOKEN_SUMMARY_STYLE}
 
 ${GROUNDING_RULES.replace(/the accounts you were given/g, 'the digest above').replace(/the accounts/g, 'the digest').replace(/an account/g, 'the digest')}`;
 
@@ -4265,31 +4272,11 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   // A dry run (local testing only, see LOCAL_PREVIEW) stops here: nothing is stored or recorded.
   if (dryRun) return { digest: digestContent, cards: storiesContent, auditResult, retrievalStats };
 
-  // Category-level briefing — a short synthesis of the whole category, written from the final
-  // digest and checked against it.
-  // An empty string also clears an older recap on regeneration; null would leave it stored.
-  let briefing = '';
-  let briefingSources = null;
-  const digestVerified = gate && auditResult?.checked && !auditResult.error && !auditResult.recheckError
-    && (!auditResult.reserveCheck || (auditResult.reserveCheck.checked && !auditResult.reserveCheck.error && !auditResult.reserveCheck.recheckError));
-  if (!auditResult) auditResult = { checked: false, flags: [] };
-  if (!digestVerified) {
-    auditResult.briefing = { checked: false, passed: false, withheld: true, error: 'Source digest was not fully verified' };
-  } else {
-    try {
-      const candidate = await generateBriefing(category, targetDay, timeSlot, digestContent, language);
-      const gb = await groundBriefing({ category, timeSlot, language, briefing: candidate, digest: digestContent });
-      briefing = gb.briefing;
-      auditResult.briefing = gb.report;
-      if (briefing) {
-        briefingSources = gb.sources || await attributeRecap({ category, timeSlot, language, recap: briefing, digest: digestContent });
-        auditResult.briefing.attributed = !!briefingSources;
-      }
-    } catch (err) {
-      auditResult.briefing = { checked: false, passed: false, withheld: true, error: err.message };
-      console.warn(`Briefing withheld for ${category}:`, err.message);
-    }
-  }
+  // The daily programme reads the verified headline summaries themselves. No separate
+  // daily recap is generated or recorded. Empty text clears one on a targeted regeneration;
+  // weekly/monthly recaps still use the checked digest through generatePeriodRecap.
+  const briefing = '';
+  const briefingSources = null;
 
   if (auditResult?.checked) {
     console.log(`🧾 ${category}${language === 'ar' ? ' [AR]' : ''}: ${auditResult.flags.length} unsupported statement(s) found · `
@@ -4301,7 +4288,6 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl, auditResult, retrievalStats);
   // Cleared along with a withheld recap, so stale attributions never outlive the text.
   await saveBriefingSources(category, targetDay, timeSlot, language, briefing ? briefingSources : null);
-  if (briefing && language === 'en') pregenerateRecapTTS(briefing, `${category} / ${timeSlot} recap`, { category, timeSlot, language });
 
   if (retrievalStats && typeof retrievalStats.headlineOnly === 'number') {
     runRetrievalTally.headlineOnly += retrievalStats.headlineOnly;

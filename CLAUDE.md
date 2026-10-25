@@ -130,3 +130,12 @@ A generation failing with "credit balance is too low" in that period is expected
 Schema changes follow a graceful-degradation pattern: the code tries the new column or table,
 and on failure logs the `CREATE TABLE` / `ALTER TABLE` SQL for Roy to run in Supabase by hand
 rather than crashing. Keep that pattern — do not add a migration runner.
+
+## Shared headline summaries (2026-10-25)
+
+The daily Listen programme uses the same verified Summary paragraphs as Read. The writer,
+fallback card writer and grounding repair use `SPOKEN_SUMMARY_STYLE` from
+`spoken-summary-style.js`; grounding takes precedence. Do not embed presenter introductions,
+category transitions or sign-offs in a story: the frontend supplies these separate clips.
+Daily category recap generation and its TTS recording are retired. Weekly/monthly recaps
+still use the checked source digests and retain their grounding and attribution gates.

@@ -167,30 +167,18 @@ test('the story check keeps proven findings and dismisses the rest', () => {
   assert.match(r.found.get('D1.B1'), /source: "Arizona/);
 });
 
-test('production orchestration clears recaps when source verification is unavailable', async () => {
+test('daily generation clears the retired daily recap without requesting another model call', async () => {
   const { readFileSync } = await import('node:fs');
   const { runInNewContext } = await import('node:vm');
   const source = readFileSync(new URL('./backend-server.js', import.meta.url), 'utf8');
-  const start = source.indexOf("  let briefing = '';", source.indexOf('async function generateAndStoreCategory'));
-  const end = source.indexOf('\n  if (auditResult?.checked)',start);
-  const block = source.slice(start,end);
-  for (const input of [
-    {gate:false,auditResult:null},
-    {gate:true,auditResult:{checked:false}},
-    {gate:true,auditResult:{checked:true,recheckError:'failed'}},
-    {gate:true,auditResult:{checked:true,reserveCheck:{checked:false}}},
-  ]) {
-    const r = await runInNewContext(`(async()=>{${block};return {briefing,auditResult}})()`, {
-      ...input, category:'Test', console,
-      generateBriefing:()=>{throw Error('Should not generate from unverified source')},
-    });
-    assert.equal(r.briefing,''); assert.equal(r.auditResult.briefing.withheld,true);
-  }
-  const result = await runInNewContext(`(async()=>{${block};return {briefing,auditResult}})()`, {
-    gate:true,auditResult:{checked:true},category:'Test',targetDay:'2026-10-14',timeSlot:'Morning',language:'en',digestContent:'Digest',console,
-    generateBriefing:async()=> 'Candidate',groundBriefing:async()=>({briefing:'Verified.',report:{passed:true}}),
+  const start = source.indexOf("  const briefing = '';", source.indexOf('async function generateAndStoreCategory'));
+  const end = source.indexOf('\n  if (auditResult?.checked)', start);
+  const block = source.slice(start, end);
+  const result = runInNewContext(`(()=>{${block};return {briefing,briefingSources}})()`, {
+    generateBriefing: () => { throw Error('Daily recaps must not be generated'); },
   });
-  assert.equal(result.briefing,'Verified.');
+  assert.equal(result.briefing, '');
+  assert.equal(result.briefingSources, null);
 });
 
 test('attributionMap accepts a complete answer and keeps empty transitions', () => {
