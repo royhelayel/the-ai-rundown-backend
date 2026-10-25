@@ -139,3 +139,10 @@ fallback card writer and grounding repair use `SPOKEN_SUMMARY_STYLE` from
 category transitions or sign-offs in a story: the frontend supplies these separate clips.
 Daily category recap generation and its TTS recording are retired. Weekly/monthly recaps
 still use the checked source digests and retain their grounding and attribution gates.
+
+## Narration delivery (2026-10-25)
+
+All Unreal Speech synthesis paths use `unrealSpeechPayload`: Temperature 0.45, Speed
+0.03, Pitch 1, with the existing configured voice. This moderately increases expressiveness
+and pace for new recordings. Existing cached audio is deliberately retained to avoid
+regenerating the library or increasing playback latency.

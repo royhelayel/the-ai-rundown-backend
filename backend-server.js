@@ -3983,6 +3983,14 @@ function trackTTSUsage(chars, { category = null, timeSlot = null, language = 'en
   });
 }
 
+// Shared delivery for pre-generated stories/recaps and on-demand clips.
+// Moderate expressiveness avoids pushing names/numbers toward unstable pronunciation.
+// Preserve existing cached recordings; newly synthesized audio uses this delivery.
+const unrealSpeechPayload = (text, voiceId) => ({
+  Text: text, VoiceId: voiceId, Bitrate: '64k',
+  Speed: '0.03', Pitch: '1', Temperature: 0.45,
+});
+
 // ── Unreal Speech TTS helper ──
 // Uses /stream for texts ≤1000 chars (returns binary directly, ~0.3s latency).
 // Uses /speech for longer texts (returns JSON with OutputUri, then downloads).
@@ -3996,7 +4004,7 @@ async function callUnrealSpeech(text) {
     const res = await fetch('https://api.v7.unrealspeech.com/stream', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '64k', Speed: '0', Pitch: '1' }),
+      body: JSON.stringify(unrealSpeechPayload(trimmed, voiceId)),
     });
     if (!res.ok) {
       const err = await res.text();
@@ -4009,7 +4017,7 @@ async function callUnrealSpeech(text) {
   const res = await fetch('https://api.v7.unrealspeech.com/speech', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '64k', Speed: '0', Pitch: '1' }),
+    body: JSON.stringify(unrealSpeechPayload(trimmed, voiceId)),
   });
   if (!res.ok) {
     const err = await res.text();
@@ -6617,7 +6625,7 @@ app.post('/api/tts-stream', async (req, res) => {
       const unrealRes = await fetch('https://api.v7.unrealspeech.com/stream', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ Text: trimmed, VoiceId: voiceId, Bitrate: '64k', Speed: '0', Pitch: '1' }),
+        body: JSON.stringify(unrealSpeechPayload(trimmed, voiceId)),
       });
       if (!unrealRes.ok) {
         const errBody = await unrealRes.text().catch(() => '');
