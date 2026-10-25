@@ -137,7 +137,7 @@ The daily Listen programme uses the same verified Summary paragraphs as Read. Th
 fallback card writer and grounding repair use `SPOKEN_SUMMARY_STYLE` from
 `spoken-summary-style.js`; grounding takes precedence. Do not embed presenter introductions,
 category transitions or sign-offs in a story: the frontend supplies these separate clips.
-Daily category recap generation and its TTS recording are retired. Weekly/monthly recaps
+Daily category recaps are restored alongside Headlines, Weekly and Monthly. They target roughly 18 words per story, from a fully checked digest, and pass the same grounding and attribution gates. English recap audio is pre-generated. Weekly/monthly recaps
 still use the checked source digests and retain their grounding and attribution gates.
 
 ## Narration delivery (2026-10-25)

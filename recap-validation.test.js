@@ -167,18 +167,25 @@ test('the story check keeps proven findings and dismisses the rest', () => {
   assert.match(r.found.get('D1.B1'), /source: "Arizona/);
 });
 
-test('daily generation clears the retired daily recap without requesting another model call', async () => {
+test('daily recaps publish only from verified digests and clear withheld text', async () => {
   const { readFileSync } = await import('node:fs');
   const { runInNewContext } = await import('node:vm');
   const source = readFileSync(new URL('./backend-server.js', import.meta.url), 'utf8');
-  const start = source.indexOf("  const briefing = '';", source.indexOf('async function generateAndStoreCategory'));
+  const start = source.indexOf('  // An empty string also clears an older recap', source.indexOf('async function generateAndStoreCategory'));
   const end = source.indexOf('\n  if (auditResult?.checked)', start);
   const block = source.slice(start, end);
-  const result = runInNewContext(`(()=>{${block};return {briefing,briefingSources}})()`, {
-    generateBriefing: () => { throw Error('Daily recaps must not be generated'); },
-  });
-  assert.equal(result.briefing, '');
-  assert.equal(result.briefingSources, null);
+  for (const verified of [true, false]) {
+    let called = 0;
+    const result = await runInNewContext(`(async()=>{${block};return {briefing,briefingSources}})()`, {
+      gate: true, auditResult: { checked: verified }, category: 'World News', targetDay: '2026-10-25', timeSlot: 'Morning', digestContent: 'verified facts', language: 'en', console,
+      generateBriefing: async () => { called++; return 'Short daily recap.'; },
+      groundBriefing: async () => ({ briefing: 'Checked recap.', report: {} }),
+      attributeRecap: async () => ['source'],
+    });
+    assert.equal(called, verified ? 1 : 0);
+    assert.equal(result.briefing, verified ? 'Checked recap.' : '');
+    assert.equal(result.briefingSources?.[0] || null, verified ? 'source' : null);
+  }
 });
 
 test('attributionMap accepts a complete answer and keeps empty transitions', () => {

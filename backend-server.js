@@ -3642,7 +3642,8 @@ async function generateBriefing(category, day, timeSlot, digestContent, language
   // and no minimum. 300 words is roughly two minutes read aloud.
   const storyCount = parseDoc(digestContent).stories.length;
   // Aim well under the cap: models overshoot a target by a third, and the cap is a hard limit.
-  const targetWords = Math.min(330, Math.max(40, Math.round(storyCount * 26)));
+  const wordsPerStory = scope === 'day' ? 18 : 26;
+  const targetWords = Math.min(330, Math.max(20, Math.round(storyCount * wordsPerStory)));
 
   // The old prompt said "give the biggest story a sentence or two" and "lead with the biggest
   // story, then move through the rest", which produced exactly that: a ranked list with the
@@ -3659,7 +3660,7 @@ ${digestContent}
 Every one of these ${storyCount} stories must appear in the recap:
 ${parseDoc(digestContent).stories.map((st, i) => `${i + 1}. ${st.headline}`).join('\n')}
 
-Write the recap: about ${targetWords} words in total — roughly 26 words a story — and never more than ${RECAP_MAX_WORDS}. It is read aloud. It is not a shorter copy of the stories: the listener can open any story for its details, so the recap gives only the most important thing in each.
+Write the recap: about ${targetWords} words in total — roughly ${wordsPerStory} words a story — and never more than ${RECAP_MAX_WORDS}. It is read aloud. It is not a shorter copy of the stories: the listener can open any story for its details, so the recap gives only the most important thing in each.
 
 How to build it:
 1. One sentence per story — two short ones only if a single sentence would lose an essential qualification. Keep a name, number or place when it is part of the point.
@@ -4280,11 +4281,29 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   // A dry run (local testing only, see LOCAL_PREVIEW) stops here: nothing is stored or recorded.
   if (dryRun) return { digest: digestContent, cards: storiesContent, auditResult, retrievalStats };
 
-  // The daily programme reads the verified headline summaries themselves. No separate
-  // daily recap is generated or recorded. Empty text clears one on a targeted regeneration;
-  // weekly/monthly recaps still use the checked digest through generatePeriodRecap.
-  const briefing = '';
-  const briefingSources = null;
+  // An empty string also clears an older recap on regeneration; null would leave it stored.
+  let briefing = '';
+  let briefingSources = null;
+  const digestVerified = gate && auditResult?.checked && !auditResult.error && !auditResult.recheckError
+    && (!auditResult.reserveCheck || (auditResult.reserveCheck.checked && !auditResult.reserveCheck.error && !auditResult.reserveCheck.recheckError));
+  if (!auditResult) auditResult = { checked: false, flags: [] };
+  if (!digestVerified) {
+    auditResult.briefing = { checked: false, passed: false, withheld: true, error: 'Source digest was not fully verified' };
+  } else {
+    try {
+      const candidate = await generateBriefing(category, targetDay, timeSlot, digestContent, language);
+      const gb = await groundBriefing({ category, timeSlot, language, briefing: candidate, digest: digestContent });
+      briefing = gb.briefing;
+      auditResult.briefing = gb.report;
+      if (briefing) {
+        briefingSources = gb.sources || await attributeRecap({ category, timeSlot, language, recap: briefing, digest: digestContent });
+        auditResult.briefing.attributed = !!briefingSources;
+      }
+    } catch (err) {
+      auditResult.briefing = { checked: false, passed: false, withheld: true, error: err.message };
+      console.warn(`Briefing withheld for ${category}:`, err.message);
+    }
+  }
 
   if (auditResult?.checked) {
     console.log(`🧾 ${category}${language === 'ar' ? ' [AR]' : ''}: ${auditResult.flags.length} unsupported statement(s) found · `
@@ -4296,6 +4315,7 @@ async function generateAndStoreCategory(category, targetDay, timeSlot, language 
   await storeNews(category, targetDay, timeSlot, digestContent, null, null, storiesContent, sourceArticles, language, briefing, leadImageUrl, auditResult, retrievalStats);
   // Cleared along with a withheld recap, so stale attributions never outlive the text.
   await saveBriefingSources(category, targetDay, timeSlot, language, briefing ? briefingSources : null);
+  if (briefing && language === 'en') pregenerateRecapTTS(briefing, `${category} / ${timeSlot} recap`, { category, timeSlot, language });
 
   if (retrievalStats && typeof retrievalStats.headlineOnly === 'number') {
     runRetrievalTally.headlineOnly += retrievalStats.headlineOnly;
@@ -5657,6 +5677,7 @@ app.post('/admin/api/recap-redo', async (req, res) => {
           }
           await supabaseAdmin.from('news_summaries').update({ briefing: gb.briefing, audit_result: { ...a, briefing: gb.report } }).eq('id', row.id);
           await saveBriefingSources(row.category, day, timeSlot, language, gb.briefing ? sources : null);
+          if (gb.briefing && language === 'en') await pregenerateRecapTTS(gb.briefing, `${row.category} / ${timeSlot} recap`, { category: row.category, timeSlot, language });
           console.log(`↩️  recap redo ${row.category}: ${gb.briefing ? `published (${gb.report.repairs} repair(s), ${gb.report.removed.length} line(s) removed, ${gb.report.dismissed.length} finding(s) dismissed)` : `withheld — ${gb.report.error}`}`);
         } catch (e) { console.warn(`↩️  recap redo ${row.category} failed:`, e.message); }
       }
