@@ -4658,7 +4658,7 @@ async function generateAllNewsForTimeSlot(timeSlot, day = null, language = 'en',
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), newsFormat: 'headline-programme-v1', revision: process.env.RENDER_GIT_COMMIT || process.env.COMMIT_SHA || null });
 });
 
 // ── Generation completeness — real content, not the __completed__ marker ───────
