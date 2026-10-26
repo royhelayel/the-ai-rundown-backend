@@ -1,3 +1,4 @@
+import { registerAudioProgressRoutes } from './audio-progress.js';
 import { SPOKEN_SUMMARY_STYLE } from './spoken-summary-style.js';
 import { confineCoverageLinks } from './coverage-links.js';
 import { readabilityText, headlineShare } from './article-text.js';
@@ -3649,7 +3650,7 @@ async function generateBriefing(category, day, timeSlot, digestContent, language
   // story, then move through the rest", which produced exactly that: a ranked list with the
   // first story taking a quarter of the words. Now the stories are grouped by subject, weighted
   // equally, and each reduced to its one key point.
-  const prompt = `You are a radio news presenter recapping the "${category}" section for a listener who has not read any of it.${arabicInstruction}
+  const prompt = `You are a calm, warm, conversational radio news presenter recapping the "${category}" section for a listener who has not read any of it.${arabicInstruction}
 
 ${scope === 'day'
   ? `Below is today's digest for this section — ${storyCount} ${storyCount === 1 ? 'story' : 'stories'}:`
@@ -3673,7 +3674,7 @@ How to build it:
 
 Use only what the digest says: no significance, background, causes or predictions that the digest does not contain. Preserve essential qualifications, uncertainty and attribution; never turn an allegation into a fact or an association into causation. If the stories need fewer words, use fewer — there is no minimum.
 
-Write it as one line per story, in the order it should be read aloud, each line starting with that story's number in square brackets: "[3] In the Middle East, ...". One sentence per line — two short ones only if one would lose an essential qualification — and at most 30 words. Every story number from 1 to ${storyCount} appears exactly once. No other lines: no title, no preamble, no sign-off, no headings, no bullets, no markdown, no source names or URLs. Conversational and clear.`;
+Write it as one line per story, in the order it should be read aloud, each line starting with that story's number in square brackets: "[3] In the Middle East, ...". One sentence per line — two short ones only if one would lose an essential qualification — and at most 30 words. Every story number from 1 to ${storyCount} appears exactly once. No other lines: no title, no preamble, no sign-off, no headings, no bullets, no markdown, no source names or URLs. Conversational and clear. Use pronounceable, naturally paced sentences with simple punctuation. Preserve numbers, names and qualifications exactly. Avoid semicolons and dense subordinate clauses; use a short second sentence when needed within the word limit. No performance directions, SSML, mood tags or invented commentary.`;
 
   const data = await callClaude(prompt, 1400);
   if (data.stop_reason === 'max_tokens') throw new Error('Truncated briefing generation');
@@ -6948,6 +6949,8 @@ app.get('/api/reads', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
   res.json(data || []);
 });
+
+registerAudioProgressRoutes(app, supabaseAdmin);
 
 // Start server
 const PORT = process.env.PORT || 3001;

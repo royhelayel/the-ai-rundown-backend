@@ -146,3 +146,15 @@ All Unreal Speech synthesis paths use `unrealSpeechPayload`: Temperature 0.45, S
 0.03, Pitch 1, with the existing configured voice. This moderately increases expressiveness
 and pace for new recordings. Existing cached audio is deliberately retained to avoid
 regenerating the library or increasing playback latency.
+
+## Audio programme progress (2026-10-27)
+
+`audio-progress.js` registers authenticated GET/POST `/api/audio-progress`. User identity comes
+only from `auth.getUser(Bearer token)`, never a body/query user id. `user-audio-progress.sql`
+creates a private RLS-enabled table (already applied to production); only the service role
+accesses it through these routes. Merge unique played intervals across devices, derive recap
+completion at 70%, and verify every queue recording before accepting a completed mix.
+Per-user write serialization prevents concurrent device syncs losing intervals on this service.
+The frontend sends batches of 20. Local progress remains usable when sync is unavailable.
+Recap writer instructions now favor clear, naturally paced spoken sentences; grounding,
+qualification and coverage checks remain unchanged. Existing cached recordings are retained.
