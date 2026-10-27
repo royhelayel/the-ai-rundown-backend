@@ -1,3 +1,4 @@
+import { createUsageWriter, createTrackedAnthropicFetch, addAnthropicUsage, searchUsageRow, readAllUsage, summarizeUsage, withUsageContext } from './usage-accounting.js';
 import { registerAudioProgressRoutes } from './audio-progress.js';
 import { SPOKEN_SUMMARY_STYLE } from './spoken-summary-style.js';
 import { confineCoverageLinks } from './coverage-links.js';
@@ -348,6 +349,7 @@ async function serperSearch(query, num = 10, day = null, gl = 'us', hl = 'en') {
     console.warn(`⚠️  Serper non-OK for "${query}": ${lastSerperError}`);
     return { news: [] };
   }
+  await trackUsage(searchUsageRow());
   lastSerperError = null;
   return res.json();
 }
@@ -892,7 +894,7 @@ Generate exactly 3 targeted search queries to find ADDITIONAL important stories 
 
 Return ONLY 3 search queries, one per line, no numbering, no explanation, no preamble.`;
 
-    const data = await callClaude(prompt, 150);
+    const data = await callClaude(prompt, 150, 3, { contentType: 'adaptive_queries' });
     const text = data.content?.filter(c => c.type === 'text').map(c => c.text).join('') || '';
     const queries = text.trim().split('\n').map(l => l.trim()).filter(l => l.length > 5).slice(0, 3);
     console.log(`🔍 Phase 2 adaptive queries for "${categoryQuery}": ${queries.join(' | ')}`);
@@ -1340,6 +1342,7 @@ async function resolveArticleUrl(domain, headline) {
       urlResolveCache.set(key, out);
       return out;
     }
+    await trackUsage(searchUsageRow());
     const j = await r.json();
     // Only a URL on the outlet we asked about, and not a section or tag page — those come
     // back for a headline the index has not caught up with yet, and fetching one would give
@@ -1719,17 +1722,9 @@ async function regionFilter(category, stories) {
   const prompt = `Which of these headlines are centrally about ${subject} — its government, politics, economy, business, security, diplomacy, society, sport, culture or people, or something that happened there?\n\n${listed}\n\n`
     + `Reply with ONLY the numbers that are, comma-separated, no other text. If none are, reply NONE. A story about another country or a world event that only touches ${subject} in passing is not about ${subject}.`;
   try {
-    const data = await callClaude(prompt, 600);
+    const data = await callClaude(prompt, 600, 3, { category, contentType: 'region_filter' });
     const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
-    if (data.usage) {
-      const { input_tokens, output_tokens } = data.usage;
-      const cost = claudeCost(input_tokens, output_tokens);
-      trackUsage({ service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-        input_tokens, output_tokens, web_searches: 0, search_cost_usd: 0,
-        token_cost_usd: cost, estimated_cost_usd: cost,
-        category, time_slot: null, content_type: 'region_filter', language: 'en',
-        created_at: new Date().toISOString() });
-    }
+
     if (/^NONE/i.test(raw)) return [];
     const picks = new Set((raw.match(/\d+/g) || []).map(Number));
     return stories.filter((_, i) => picks.has(i + 1));
@@ -1750,17 +1745,9 @@ async function subjectFilter(child, stories) {
     + `Reply with ONLY the numbers that are genuinely about ${child}, comma-separated, no other text. `
     + `If none are, reply NONE. Be strict: a headline about a different sport, or about a company that merely also works in this area, is not about ${child}.`;
   try {
-    const data = await callClaude(prompt, 300);
+    const data = await callClaude(prompt, 300, 3, { category: child, contentType: 'subject_filter' });
     const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
-    if (data.usage) {
-      const { input_tokens, output_tokens } = data.usage;
-      const cost = claudeCost(input_tokens, output_tokens);
-      trackUsage({ service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-        input_tokens, output_tokens, web_searches: 0, search_cost_usd: 0,
-        token_cost_usd: cost, estimated_cost_usd: cost,
-        category: child, time_slot: null, content_type: 'subject_filter', language: 'en',
-        created_at: new Date().toISOString() });
-    }
+
     if (/^NONE/i.test(raw)) return [];
     const picks = new Set((raw.match(/\d+/g) || []).map(Number));
     return stories.filter((_, i) => picks.has(i + 1));
@@ -2072,7 +2059,7 @@ let lane5Tally = { attempted: 0, succeeded: 0, chars: 0, byOutlet: {}, byPrevRea
 const resetLane5Tally = () => { lane5Tally = { attempted: 0, succeeded: 0, chars: 0, byOutlet: {}, byPrevReason: {}, skipped: 0, skippedOutlets: [] }; };
 
 async function fetchBodyViaClaude(url, outlet) {
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
+  const r = await fetchAnthropic({
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -2092,7 +2079,7 @@ async function fetchBodyViaClaude(url, outlet) {
         + `reply with exactly: NO_ARTICLE` }],
     }),
     signal: AbortSignal.timeout(45000),
-  });
+  }, { contentType: 'article_fetch' });
   if (!r.ok) return { text: null, reason: `claude-http-${r.status}` };
   const d = await r.json();
   // Only what follows a successful fetch is the article. The reply also carries the model's own
@@ -2607,58 +2594,27 @@ async function buildCorpusContextPerCategory(category, day, language = 'en', tim
 // ─── Feature flag — set to false to revert to single-content generation ───────
 const GENERATE_STORIES_CONTENT = true;
 
-// Shared Claude caller — used by both digest and stories generators
-// Haiku 4.5 is $1.00 per million input and $5.00 per million output. The old constants said
-// $0.80 and $4.00 — the rates of an earlier model — so every figure in the back office was
-// about 20% low: a run that reported $1.47 had actually cost $1.82.
-// One writer for every usage row. Seven copies of this insert meant the language column —
-// which does not exist yet — failed seven different times and silently dropped the row, so a
-// run's cost vanished rather than being recorded imperfectly. Losing the language is
-// acceptable; losing the cost is not.
-let _usageHasLanguage = true;
-function trackUsage(row) {
-  const write = (body) => supabaseAdmin.from('api_usage').insert(body);
-  const body = _usageHasLanguage ? row : (({ language, ...rest }) => rest)(row);
-  write(body).then(({ error }) => {
-    if (!error) return;
-    if (error.message?.includes('language') || error.code === '42703') {
-      if (_usageHasLanguage) {
-        _usageHasLanguage = false;
-        console.warn(`⚠️  api_usage has no 'language' column — recording without it. Run in Supabase:\n  ALTER TABLE api_usage ADD COLUMN IF NOT EXISTS language text DEFAULT 'en';`);
-      }
-      const { language, ...rest } = row;
-      write(rest).then(({ error: e2 }) => { if (e2) console.warn('Could not track API usage:', e2.message); },
-                       e2 => console.warn('Could not track API usage:', e2.message));
-      return;
-    }
-    console.warn('Could not track API usage:', error.message);
-  }, err => console.warn('Could not track API usage:', err.message));
-}
+// Every provider response is accounted for at the transport, before validation can fail.
+const trackUsage = createUsageWriter(supabaseAdmin);
+const fetchAnthropic = createTrackedAnthropicFetch({ trackUsage });
 
-const CLAUDE_RATES = { input: 1.00 / 1_000_000, output: 5.00 / 1_000_000 };
-const claudeCost = (inTok = 0, outTok = 0, cacheWrite = 0, cacheRead = 0) =>
-  inTok * CLAUDE_RATES.input
-  + outTok * CLAUDE_RATES.output
-  + cacheWrite * CLAUDE_RATES.input * 1.25     // writing to the cache costs a quarter more
-  + cacheRead  * CLAUDE_RATES.input * 0.10;    // reading from it costs a tenth
-
-async function callClaude(prompt, maxTokens = 4000, retries = 3) {
-  return callClaudeMessages([{ role: 'user', content: prompt }], maxTokens, retries);
+async function callClaude(prompt, maxTokens = 4000, retries = 3, details = {}) {
+  return callClaudeMessages([{ role: 'user', content: prompt }], maxTokens, retries, details);
 }
 
 // The digest and the audit read the same article text minutes apart. Sent as two plain
 // prompts that is 470k + 439k input tokens a run, the audit paying full price to re-read what
 // the digest just read. Split into a cached prefix and a per-task tail, the second call reads
 // the cache at a tenth of the rate. The prefix must be byte-identical and is the FIRST block.
-async function callClaudeCached(cachedPrefix, tail, maxTokens = 4000, retries = 3) {
+async function callClaudeCached(cachedPrefix, tail, maxTokens = 4000, retries = 3, details = {}) {
   return callClaudeMessages([{ role: 'user', content: [
     { type: 'text', text: cachedPrefix, cache_control: { type: 'ephemeral' } },
     { type: 'text', text: tail },
-  ] }], maxTokens, retries);
+  ] }], maxTokens, retries, details);
 }
 
-async function callClaudeMessages(messages, maxTokens = 4000, retries = 3) {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+async function callClaudeMessages(messages, maxTokens = 4000, retries = 3, details = {}) {
+  const response = await fetchAnthropic({
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -2670,13 +2626,13 @@ async function callClaudeMessages(messages, maxTokens = 4000, retries = 3) {
       max_tokens: maxTokens,
       messages
     })
-  });
+  }, details);
 
   if (response.status === 429 && retries > 0) {
     const retryAfter = parseInt(response.headers.get('retry-after') || '65', 10);
     console.log(`⏳ Rate limited. Waiting ${retryAfter}s (${retries} retries left)...`);
     await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
-    return callClaudeMessages(messages, maxTokens, retries - 1);
+    return callClaudeMessages(messages, maxTokens, retries - 1, details);
   }
   if (!response.ok) {
     const errData = await response.json();
@@ -2690,7 +2646,7 @@ async function callClaudeMessages(messages, maxTokens = 4000, retries = 3) {
 // nobody read stop_reason: Business published 5 of its 12, Sports was cut mid-tennis-score
 // ("Brandon Nakashima's 6-1, 3-6, 10-"), World News ended on "confidence that they". The
 // retrieval work for the missing stories had already been paid for.
-async function callClaudeComplete(prompt, maxTokens, { maxContinuations = 3, label = '', cachedPrefix = null } = {}) {
+async function callClaudeComplete(prompt, maxTokens, { maxContinuations = 3, label = '', cachedPrefix = null, details = {} } = {}) {
   const first = cachedPrefix
     ? [{ type: 'text', text: cachedPrefix, cache_control: { type: 'ephemeral' } }, { type: 'text', text: prompt }]
     : prompt;
@@ -2698,11 +2654,10 @@ async function callClaudeComplete(prompt, maxTokens, { maxContinuations = 3, lab
   let text = '', usage = { input_tokens: 0, output_tokens: 0 }, continuations = 0;
 
   for (;;) {
-    const data = await callClaudeMessages(messages, maxTokens);
+    const data = await callClaudeMessages(messages, maxTokens, 3, details);
     const part = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
     text += part;
-    usage.input_tokens  += data.usage?.input_tokens  || 0;
-    usage.output_tokens += data.usage?.output_tokens || 0;
+    addAnthropicUsage(usage, data.usage);
 
     if (data.stop_reason !== 'max_tokens' || continuations >= maxContinuations) {
       if (data.stop_reason === 'max_tokens') {
@@ -2863,9 +2818,6 @@ async function generateNews(category, day, timeSlot, retries = 3, searchQuery = 
     searchContext = context;
     sourceArticles = articles;
   }
-  // The real count, not the old flat guess of 5 — URL lookups cost the same as searches.
-  const serper_searches = prebuiltContext ? 0 : (retrievalStats?.serperUsed ?? 5);
-  const serper_cost = serper_searches * 0.001;
 
   const arabicInstruction = language === 'ar'
     ? `\n\nIMPORTANT: Write the entire digest in Modern Standard Arabic (اللغة العربية الفصحى). All headlines and bullet points must be in Arabic. HOWEVER, keep the following structural markers in English exactly as shown — do NOT translate them: **Coverage:**, ## Sources. Keep source outlet names and URLs in their original form.`
@@ -2985,25 +2937,12 @@ No Coverage lines and no Sources section in the cards. The grounding rules apply
   const linkFixes = [];
   const writeBatch = async (ctx, urls, label) => {
     const prefix = `SEARCH RESULTS (ground truth):\n${ctx}`;
-    const { text, usage, truncated } = await callClaudeComplete(prompt + cardsRider, 16000, { label, cachedPrefix: prefix });
+    const { text, truncated } = await callClaudeComplete(prompt + cardsRider, 16000, { label, cachedPrefix: prefix, details: { category, timeSlot, language, contentType: firstBatch ? 'digest' : 'digest_reserve' } });
     const [digestPart, cardsPart = ''] = text.split(/\n?={3,}CARDS={3,}\n?/);
     const digest = filterCoverageTier1(cleanRawSummary(digestPart), isRegional ? category : null);
     const cards = cardsPart.trim() ? cleanRawSummary(cardsPart) : null;
     if (!cards) console.warn(`🃏 ${label}: no cards section returned — they will be written separately`);
     if (truncated) console.warn(`✂️  ${label}: digest still truncated after continuations`);
-    if (usage) {
-      const { input_tokens, output_tokens } = usage;
-      const token_cost_usd = claudeCost(input_tokens, output_tokens, usage.cache_creation_input_tokens || 0, usage.cache_read_input_tokens || 0);
-      const searchCost = firstBatch ? serper_cost : 0;
-      trackUsage({
-        service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-        input_tokens, output_tokens,
-        web_searches: firstBatch ? serper_searches : 0, search_cost_usd: searchCost,
-        token_cost_usd, estimated_cost_usd: token_cost_usd + searchCost,
-        category, time_slot: timeSlot, content_type: firstBatch ? 'digest' : 'digest_reserve', language,
-        created_at: new Date().toISOString()
-      });
-    }
     firstBatch = false;
     const guarded = stripInventedLinks(digest, urls);
     if (guarded.removed.length) {
@@ -3128,17 +3067,6 @@ function removeUnits(story, tag, ids) {
   return { story: { ...story, lines }, headlineFlagged };
 }
 
-function trackClaudeCall(usage, { category, timeSlot, language, contentType }) {
-  if (!usage) return;
-  const cost = claudeCost(usage.input_tokens, usage.output_tokens, usage.cache_creation_input_tokens || 0, usage.cache_read_input_tokens || 0);
-  trackUsage({
-    service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-    input_tokens: usage.input_tokens, output_tokens: usage.output_tokens,
-    web_searches: 0, search_cost_usd: 0, token_cost_usd: cost, estimated_cost_usd: cost,
-    category, time_slot: timeSlot, content_type: contentType, language,
-    created_at: new Date().toISOString(),
-  });
-}
 
 async function checkUnits(prefix, unitLines, { category, timeSlot, language, against = 'the source accounts above' }) {
   if (!unitLines.length) return new Map();
@@ -3154,8 +3082,8 @@ Respond with ONLY JSON, no other text:
 
 STATEMENTS:
 ${unitLines.join('\n')}`;
-  const data = await callClaudeCached(prefix, tail, 2500);
-  trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_check' });
+  const data = await callClaudeCached(prefix, tail, 2500, 3, { category, timeSlot, language, contentType: 'grounding_check' });
+
   const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
   if (data.stop_reason === 'max_tokens') throw new Error('Truncated grounding check');
   const statements = new Map(unitLines.map(line => { const m = line.match(/^\[([^\]]+)\]\s*(.*)$/); return m ? [m[1], m[2]] : null; }).filter(Boolean));
@@ -3211,8 +3139,8 @@ ${GROUNDING_RULES}
 STORIES TO REWRITE:
 ${blocks}`;
 
-  const { text, usage } = await callClaudeComplete(tail, 8000, { label: `${category} repair`, cachedPrefix: prefix });
-  trackClaudeCall(usage, { category, timeSlot, language, contentType: 'grounding_repair' });
+  const { text } = await callClaudeComplete(tail, 8000, { label: `${category} repair`, cachedPrefix: prefix, details: { category, timeSlot, language, contentType: 'grounding_repair' } });
+
   const out = new Map();
   const re = /===(STORY|CARD)\s+(\d+)===\s*\n?([\s\S]*?)(?=\n?===(?:STORY|CARD)\s+\d+===|$)/g;
   for (const m of text.matchAll(re)) {
@@ -3389,8 +3317,8 @@ The recap is given one numbered line per line. Return ONLY JSON:
 "type" is "wrong" (a name, number, title or attribution stated wrongly), "qualifier" (a lost qualification that changes meaning), "added" (a claim the digest does not contain; "digest" may be ""), or "broken" (a broken or dangling sentence; "digest" is ""). Use empty arrays if there are no problems. Missing story IDs must come from the source digest.
 RECAP:
 ${numbered(texts)}`;
-    const data = await callClaudeCached(prefix, prompt, 2500);
-    trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_check' });
+    const data = await callClaudeCached(prefix, prompt, 2500, 3, { category, timeSlot, language, contentType: 'grounding_check' });
+
     if (data.stop_reason === 'max_tokens') throw new Error('Truncated recap audit');
     const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
     return provenRecapIssues(parseAuditJSON(raw), { sentences: texts, digestText, storyIds: ids });
@@ -3421,8 +3349,8 @@ Each line stays one sentence about the same story — two short ones only if one
 Return ONLY JSON: {"lines":[{"n":3,"text":"the corrected line"}],"added":[{"story":"S5","text":"a new line"}]}. Inside the text, escape any double quote as \\" so the JSON stays valid.
 RECAP:
 ${numbered(current.map(l => l.text))}`;
-      const data = await callClaudeCached(prefix, prompt, 1500);
-      trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'grounding_repair' });
+      const data = await callClaudeCached(prefix, prompt, 1500, 3, { category, timeSlot, language, contentType: 'grounding_repair' });
+
       if (data.stop_reason === 'max_tokens') throw new Error('Truncated recap repair');
       const parsed = parseAuditJSON((data.content || []).filter(c => c.type === 'text').map(c => c.text).join(''));
       const okText = t => typeof t === 'string' && t.trim() && !/\n/.test(t.trim());
@@ -3464,8 +3392,8 @@ async function attributeRecap({ category, timeSlot, language, recap, digest }) {
   const prefix = `SOURCE DIGEST:\n${stories.map((st, i) => `[${ids[i]}] ${st.headline}\n${st.lines.join('\n')}`).join('\n\n')}`;
   const prompt = `Below is a recap of the source digest, one numbered sentence per line. For each sentence, list the IDs of the digest stories whose facts it states. A sentence that carries no facts of its own (a pure transition) gets an empty list. Use only the digest. Return ONLY JSON: {"sentences":[{"n":1,"stories":["S1"]}]} with one entry for every sentence.\nRECAP:\n${sentences.map((t, i) => `${i + 1}. ${t}`).join('\n')}`;
   try {
-    const data = await callClaudeCached(prefix, prompt, 1500);
-    trackClaudeCall(data.usage, { category, timeSlot, language, contentType: 'recap_attribution' });
+    const data = await callClaudeCached(prefix, prompt, 1500, 3, { category, timeSlot, language, contentType: 'recap_attribution' });
+
     if (data.stop_reason === 'max_tokens') throw new Error('Truncated attribution');
     const raw = (data.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
     const map = attributionMap(parseAuditJSON(raw), sentences.length, ids);
@@ -3609,22 +3537,8 @@ ${GROUNDING_RULES.replace(/the accounts you were given/g, 'the digest above').re
   // The cards are written from the digest, so the digest's length is inherited here: a
   // truncated digest used to become truncated cards and a story_count that recorded the loss
   // as if it were the real number.
-  const { text: rawSummary, usage } = await callClaudeComplete(prompt, 16000, { label: `${category} cards` });
-  const data = { usage };
+  const { text: rawSummary } = await callClaudeComplete(prompt, 16000, { label: `${category} cards`, details: { category, timeSlot, language, contentType: 'stories' } });
   const summary = cleanRawSummary(rawSummary);
-
-  // Track usage (search cost = 0, context reused from digest)
-  if (data.usage) {
-    const { input_tokens, output_tokens } = data.usage;
-    const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-    trackUsage({
-      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-      input_tokens, output_tokens,
-      web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
-      category, time_slot: timeSlot, content_type: 'stories', language,
-      created_at: new Date().toISOString()
-    });
-  }
 
   return summary;
 }
@@ -3676,7 +3590,7 @@ Use only what the digest says: no significance, background, causes or prediction
 
 Write it as one line per story, in the order it should be read aloud, each line starting with that story's number in square brackets: "[3] In the Middle East, ...". One sentence per line — two short ones only if one would lose an essential qualification — and at most 30 words. Every story number from 1 to ${storyCount} appears exactly once. No other lines: no title, no preamble, no sign-off, no headings, no bullets, no markdown, no source names or URLs. Conversational and clear. Use pronounceable, naturally paced sentences with simple punctuation. Preserve numbers, names and qualifications exactly. Avoid semicolons and dense subordinate clauses; use a short second sentence when needed within the word limit. No performance directions, SSML, mood tags or invented commentary.`;
 
-  const data = await callClaude(prompt, 1400);
+  const data = await callClaude(prompt, 1400, 3, { category, timeSlot, language, day, contentType: 'briefing' });
   if (data.stop_reason === 'max_tokens') throw new Error('Truncated briefing generation');
   // Same strip the period recaps get. The prompt asks for no headings and no bullets, but a
   // title line comes back often enough to be worth removing rather than only asking for —
@@ -3685,16 +3599,6 @@ Write it as one line per story, in the order it should be read aloud, each line 
   // defensively too.)
   const text = stripRecapChrome(data.content.filter(item => item.type === 'text').map(item => item.text).join('\n'));
 
-  if (data.usage) {
-    const { input_tokens, output_tokens } = data.usage;
-    const token_cost_usd = claudeCost(input_tokens, output_tokens, data.usage.cache_creation_input_tokens || 0, data.usage.cache_read_input_tokens || 0);
-    trackUsage({
-      service: 'anthropic', model: 'claude-haiku-4-5-20251001',
-      input_tokens, output_tokens,
-      web_searches: 0, search_cost_usd: 0, token_cost_usd, estimated_cost_usd: token_cost_usd,
-      category, time_slot: timeSlot, content_type: 'briefing', language, created_at: new Date().toISOString()
-    });
-  }
 
   return text;
 }
@@ -3977,7 +3881,8 @@ function trackTTSUsage(chars, { category = null, timeSlot = null, language = 'en
   const cost = chars * TTS_RATE_PER_CHAR;
   trackUsage({
     service: 'unrealspeech', model: process.env.UNREALSPEECH_VOICE_ID || 'Scarlett',
-    input_tokens: chars, output_tokens: 0,
+    input_tokens: 0, output_tokens: 0,
+    usage_metadata: { accounting_version: 2, input_characters: chars, price_per_character: TTS_RATE_PER_CHAR },
     web_searches: 0, search_cost_usd: 0,
     token_cost_usd: cost, estimated_cost_usd: cost,
     category, time_slot: timeSlot, content_type: 'tts', language,
@@ -4158,7 +4063,12 @@ async function pregenerateTTSForContent(content, label, meta = {}) {
 let runRetrievalTally = { headlineOnly: 0, storiesRead: 0, storiesTried: 0, byCategory: [] };
 const resetRetrievalTally = () => { runRetrievalTally = { headlineOnly: 0, storiesRead: 0, storiesTried: 0, byCategory: [] }; };
 
-async function generateAndStoreCategory(category, targetDay, timeSlot, language = 'en', { dryRun = false } = {}) {
+async function generateAndStoreCategory(category, targetDay, timeSlot, language = 'en', options = {}) {
+  return withUsageContext({ category, timeSlot, language, day: targetDay },
+    () => generateAndStoreCategoryWork(category, targetDay, timeSlot, language, options));
+}
+
+async function generateAndStoreCategoryWork(category, targetDay, timeSlot, language = 'en', { dryRun = false } = {}) {
   // Evening adds to Morning (Roy, 2026-10-18). Morning's stories stay exactly as published —
   // their text, cards, check and recorded audio — and Evening writes only what is new since,
   // placed on top and marked New, with no twelve-story limit. It used to have the model copy
@@ -4389,12 +4299,12 @@ async function sendGenerationFailureAlert(timeSlot, day, language, failedList, s
 // unreachable API is left to the run's own retries rather than cancelling a whole morning.
 async function anthropicPreflight() {
   try {
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
+    const r = await fetchAnthropic({
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 1, messages: [{ role: 'user', content: 'ok' }] }),
       signal: AbortSignal.timeout(20000),
-    });
+    }, { contentType: 'preflight' });
     if (r.ok) return { ok: true };
     const body = await r.text().catch(() => '');
     let message = body;
@@ -5474,54 +5384,7 @@ app.get('/admin/api/behavior', async (req, res) => {
 
 app.get('/admin/api/usage', async (req, res) => {
   try {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-
-    const { data: allUsage }    = await supabaseAdmin.from('api_usage').select('*').order('created_at', { ascending: false });
-    const { data: monthUsage }  = await supabaseAdmin.from('api_usage').select('estimated_cost_usd, token_cost_usd, search_cost_usd, input_tokens, output_tokens, web_searches').gte('created_at', monthStart);
-    const { data: recentUsage } = await supabaseAdmin.from('api_usage').select('*').gte('created_at', fourteenDaysAgo).order('created_at', { ascending: false });
-
-    const total_input_tokens   = allUsage?.reduce((s,r) => s + (r.input_tokens||0), 0) || 0;
-    const total_output_tokens  = allUsage?.reduce((s,r) => s + (r.output_tokens||0), 0) || 0;
-    const total_web_searches   = allUsage?.reduce((s,r) => s + (r.web_searches||0), 0) || 0;
-    const cost_all_time        = allUsage?.reduce((s,r) => s + (r.estimated_cost_usd||0), 0) || 0;
-    const cost_this_month      = monthUsage?.reduce((s,r) => s + (r.estimated_cost_usd||0), 0) || 0;
-    const token_cost_this_month  = monthUsage?.reduce((s,r) => s + (r.token_cost_usd||0), 0) || 0;
-    const search_cost_this_month = monthUsage?.reduce((s,r) => s + (r.search_cost_usd||0), 0) || 0;
-    const searches_this_month  = monthUsage?.reduce((s,r) => s + (r.web_searches||0), 0) || 0;
-    const runs_this_month      = monthUsage?.length || 0;
-    const avg_cost_per_run     = runs_this_month ? cost_this_month / runs_this_month : 0;
-    const avg_searches_per_run = runs_this_month ? searches_this_month / runs_this_month : 0;
-
-    // Daily cost buckets (last 14 days) — split token vs search
-    const dayBuckets = {};
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i);
-      dayBuckets[d.toISOString().split('T')[0]] = { total: 0, tokens: 0, search: 0 };
-    }
-    recentUsage?.forEach(r => {
-      const day = r.created_at?.split('T')[0];
-      if (day && dayBuckets[day] !== undefined) {
-        dayBuckets[day].total  += (r.estimated_cost_usd || 0);
-        dayBuckets[day].tokens += (r.token_cost_usd || r.estimated_cost_usd || 0);
-        dayBuckets[day].search += (r.search_cost_usd || 0);
-      }
-    });
-    const by_day = Object.entries(dayBuckets).map(([date, c]) => ({
-      date,
-      cost:   parseFloat(c.total.toFixed(6)),
-      tokens: parseFloat(c.tokens.toFixed(6)),
-      search: parseFloat(c.search.toFixed(6))
-    }));
-
-    res.json({
-      total_input_tokens, total_output_tokens, total_web_searches,
-      cost_all_time, cost_this_month, runs_this_month,
-      token_cost_this_month, search_cost_this_month, searches_this_month,
-      avg_cost_per_run, avg_searches_per_run,
-      by_day, recent_runs: (allUsage || []).slice(0, 100)
-    });
+    res.json(summarizeUsage(await readAllUsage(supabaseAdmin)));
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
@@ -5929,7 +5792,7 @@ app.get('/admin/api/raw-content', async (req, res) => {
 
 app.get('/admin/api/test-claude', async (req, res) => {
   try {
-    const result = await callClaude('Say "ok" and nothing else.', 10, 0);
+    const result = await callClaude('Say "ok" and nothing else.', 10, 0, { contentType: 'diagnostic' });
     res.json({ ok: true, model: 'claude-haiku-4-5-20251001', response: result?.content?.[0]?.text });
   } catch (err) {
     res.json({ ok: false, error: err.message });
@@ -5953,7 +5816,7 @@ app.get('/admin/api/audit-region', async (req, res) => {
     const rosterPrompt = `List the most important tier-1 news outlets for ${country} — national news agencies, major newspapers, and major news websites (include both English and Arabic-primary outlets). For each, give the primary domain, the English-edition domain or subdomain if one exists (else null), whether it is the national news agency, and its primary language.
 Respond with ONLY a JSON array (no markdown, no prose), max 18 items:
 [{"name":"Annahar","domain":"annahar.com","english_domain":"en.annahar.com","is_agency":false,"primary_language":"ar"}]`;
-    const cl = await callClaude(rosterPrompt, 1500, 1);
+    const cl = await callClaude(rosterPrompt, 1500, 1, { category: country, contentType: 'outlet_audit' });
     let txt = (cl.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
     txt = txt.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
     let roster;
@@ -6487,6 +6350,7 @@ app.get('/admin/api/debug-serper', async (req, res) => {
         body: JSON.stringify({ q, num, gl: 'us', hl: 'en', tbs }),
       });
       if (!r.ok) return { httpError: r.status, body: (await r.text().catch(() => '')).slice(0, 300) };
+      await trackUsage(searchUsageRow({ contentType: 'diagnostic_search' }));
       const j = await r.json();
       const items = j.news || j.organic || [];
       const stale = items.filter(it => /week|month|year/i.test(it.date || '')).length;

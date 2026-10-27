@@ -399,34 +399,30 @@
 <!-- ── API & COSTS ── -->
 <div id="page-costs" class="page">
   <div class="alert alert-info">
-    ℹ️ Model: <strong>claude-haiku-4-5</strong> — $0.80/M input · $4.00/M output · $0.01/web search.
-    <strong>Estimated cost includes both token and web search fees.</strong>
-    Verify live balance on <a href="https://console.anthropic.com" target="_blank" style="font-weight:700;">Anthropic Console</a>.
-    Old records (before search tracking) show token cost only.
+    Estimated usage, grouped by UAE date. Claude Haiku 4.5: $1/M input · $5/M output;
+    cache writes: $1.25/M (5 min) or $2/M (1 hour); cache reads: $0.10/M.
+    Claude, narration and Serper are billed separately. <a href="https://console.anthropic.com" target="_blank" rel="noopener">Check Anthropic billing</a> for actual Claude charges and balance.
+    <div id="c-accounting-note" style="margin-top:8px;">Historical records may omit article-fetch calls and cache tokens.</div>
   </div>
-
   <div class="cards">
-    <div class="card"><div class="card-label">Total Cost This Month</div><div class="card-value grad" id="c-month">—</div><div class="card-sub" id="c-month-sub">tokens + searches</div></div>
-    <div class="card"><div class="card-label">Avg Cost / Generation</div><div class="card-value grad" id="c-avg">—</div><div class="card-sub">this month</div></div>
-    <div class="card"><div class="card-label">Generations This Month</div><div class="card-value grad" id="c-runs">—</div><div class="card-sub" id="c-runs-sub"></div></div>
-    <div class="card"><div class="card-label">Avg Searches / Generation</div><div class="card-value grad" id="c-searches">—</div><div class="card-sub">web_search tool calls</div></div>
-    <div class="card"><div class="card-label">Total Cost All Time</div><div class="card-value grad" id="c-total">—</div><div class="card-sub">USD</div></div>
+    <div class="card"><div class="card-label">Claude This Month</div><div class="card-value grad" id="c-claude">—</div><div class="card-sub">Anthropic credit usage estimate</div></div>
+    <div class="card"><div class="card-label">Narration This Month</div><div class="card-value grad" id="c-narration">—</div><div class="card-sub">Unreal Speech · character-based estimate</div></div>
+    <div class="card"><div class="card-label">Serper Search This Month</div><div class="card-value grad" id="c-search-month">—</div><div class="card-sub">$0.001 per successful search</div></div>
+    <div class="card"><div class="card-label">All Providers This Month</div><div class="card-value grad" id="c-month">—</div><div class="card-sub">Combined estimate · separate accounts</div></div>
+    <div class="card"><div class="card-label">All Providers All Time</div><div class="card-value grad" id="c-total">—</div><div class="card-sub">All recorded history</div></div>
   </div>
-
-  <div class="cards" style="margin-top:-0.25rem;">
-    <div class="card"><div class="card-label">Token Cost This Month</div><div class="card-value" style="font-size:1.5rem;font-weight:800;color:#6366f1;" id="c-token-month">—</div><div class="card-sub">$0.80/M in · $4.00/M out</div></div>
-    <div class="card"><div class="card-label">Search Cost This Month</div><div class="card-value" style="font-size:1.5rem;font-weight:800;color:#ec4899;" id="c-search-month">—</div><div class="card-sub" id="c-search-month-sub">$0.01 × searches</div></div>
-    <div class="card"><div class="card-label">Input Tokens (All Time)</div><div class="card-value grad" id="c-in">—</div><div class="card-sub" id="c-in-sub"></div></div>
-    <div class="card"><div class="card-label">Output Tokens (All Time)</div><div class="card-value grad" id="c-out">—</div><div class="card-sub" id="c-out-sub"></div></div>
-    <div class="card"><div class="card-label">Web Searches (All Time)</div><div class="card-value grad" id="c-wsearch">—</div><div class="card-sub" id="c-wsearch-sub"></div></div>
+  <div class="cards">
+    <div class="card"><div class="card-label">Recorded API Calls This Month</div><div class="card-value grad" id="c-calls">—</div><div class="card-sub">Calls, not news-generation runs</div></div>
+    <div class="card"><div class="card-label">Claude Uncached Input Tokens</div><div class="card-value grad" id="c-in">—</div><div class="card-sub">All time · excludes narration characters</div></div>
+    <div class="card"><div class="card-label">Claude Cache Write / Read Tokens</div><div class="card-value grad" style="font-size:1.4rem" id="c-cache">—</div><div class="card-sub">Recorded from the accounting update onward</div></div>
+    <div class="card"><div class="card-label">Claude Output Tokens</div><div class="card-value grad" id="c-out">—</div><div class="card-sub">All time</div></div>
   </div>
-
   <div class="section">
-    <div class="section-title"><span class="dot"></span>Daily Cost — Last 14 Days (Tokens vs Web Searches)</div>
+    <div class="section-title"><span class="dot"></span>Daily Cost — Last 14 Days by Provider (UAE)</div>
     <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
   </div>
   <div class="section">
-    <div class="section-title"><span class="dot"></span>Recent Generation Runs</div>
+    <div class="section-title"><span class="dot"></span>Recent API Calls</div>
     <div class="table-wrap" id="usage-wrap"><div class="loading">Loading…</div></div>
   </div>
   <div class="section">
@@ -1364,27 +1360,22 @@ async function loadCosts() {
   try {
     const d = await api('/usage');
 
-    // Top row cards
-    document.getElementById('c-month').textContent      = '$' + (d.cost_this_month||0).toFixed(4);
-    document.getElementById('c-month-sub').textContent  = `$${(d.token_cost_this_month||0).toFixed(4)} tokens · $${(d.search_cost_this_month||0).toFixed(4)} searches`;
-    document.getElementById('c-avg').textContent        = '$' + (d.avg_cost_per_run||0).toFixed(5);
-    document.getElementById('c-runs').textContent       = d.runs_this_month||0;
-    document.getElementById('c-runs-sub').textContent   = (d.searches_this_month||0).toLocaleString() + ' total searches';
-    document.getElementById('c-searches').textContent   = (d.avg_searches_per_run||0).toFixed(1);
-    document.getElementById('c-total').textContent      = '$' + (d.cost_all_time||0).toFixed(4);
+    const esc = value => String(value ?? '').replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[char]));
+    const money = value => '$' + (value || 0).toFixed(4);
+    document.getElementById('c-claude').textContent = money(d.anthropic_cost_this_month);
+    document.getElementById('c-narration').textContent = money(d.narration_cost_this_month);
+    document.getElementById('c-search-month').textContent = money(d.search_cost_this_month);
+    document.getElementById('c-month').textContent = money(d.cost_this_month);
+    document.getElementById('c-total').textContent = money(d.cost_all_time);
+    document.getElementById('c-calls').textContent = (d.calls_this_month || 0).toLocaleString();
+    document.getElementById('c-in').textContent = fmtNum(d.total_input_tokens || 0);
+    document.getElementById('c-out').textContent = fmtNum(d.total_output_tokens || 0);
+    document.getElementById('c-cache').textContent = fmtNum(d.total_cache_creation_input_tokens || 0) + ' / ' + fmtNum(d.total_cache_read_input_tokens || 0);
+    document.getElementById('c-accounting-note').textContent = d.legacy_anthropic_rows
+      ? `${d.legacy_anthropic_rows.toLocaleString()} older Claude records have incomplete accounting. Historical totals may understate actual charges; missing calls and cache tokens cannot be reconstructed.`
+      : 'Each Claude response is recorded once, including continuations, article-fetch responses, checks and repairs.';
 
-    // Bottom row breakdown cards
-    document.getElementById('c-token-month').textContent  = '$' + (d.token_cost_this_month||0).toFixed(4);
-    document.getElementById('c-search-month').textContent = '$' + (d.search_cost_this_month||0).toFixed(4);
-    document.getElementById('c-search-month-sub').textContent = `$0.01 × ${(d.searches_this_month||0).toLocaleString()} searches`;
-    document.getElementById('c-in').textContent           = fmtNum(d.total_input_tokens||0);
-    document.getElementById('c-in-sub').textContent       = '$' + ((d.total_input_tokens||0)/1e6*0.8).toFixed(4) + ' est.';
-    document.getElementById('c-out').textContent          = fmtNum(d.total_output_tokens||0);
-    document.getElementById('c-out-sub').textContent      = '$' + ((d.total_output_tokens||0)/1e6*4).toFixed(4) + ' est.';
-    document.getElementById('c-wsearch').textContent      = fmtNum(d.total_web_searches||0);
-    document.getElementById('c-wsearch-sub').textContent  = '$' + ((d.total_web_searches||0)*0.01).toFixed(2) + ' est.';
-
-    // Stacked bar chart — tokens vs search cost per day
+    // Stacked provider costs; narration characters are never counted as Claude tokens.
     destroyChart('chart-cost');
     if (d.by_day?.length) {
       new Chart('chart-cost', {
@@ -1392,8 +1383,10 @@ async function loadCosts() {
         data: {
           labels: d.by_day.map(r => r.date),
           datasets: [
-            { label: 'Token cost ($)', data: d.by_day.map(r => r.tokens), backgroundColor: 'rgba(99,102,241,0.75)', borderRadius: 0, borderSkipped: false },
-            { label: 'Search cost ($)', data: d.by_day.map(r => r.search), backgroundColor: 'rgba(236,72,153,0.72)', borderRadius: 5, borderSkipped: 'bottom' }
+            { label: 'Claude ($)', data: d.by_day.map(r => r.anthropic), backgroundColor: 'rgba(99,102,241,0.75)', borderSkipped: false },
+            { label: 'Narration ($)', data: d.by_day.map(r => r.narration), backgroundColor: 'rgba(16,185,129,0.75)', borderSkipped: false },
+            { label: 'Serper ($)', data: d.by_day.map(r => r.search), backgroundColor: 'rgba(236,72,153,0.72)', borderSkipped: false },
+            { label: 'Other ($)', data: d.by_day.map(r => r.other), backgroundColor: 'rgba(148,163,184,0.7)', borderSkipped: false }
           ]
         },
         options: {
@@ -1407,30 +1400,29 @@ async function loadCosts() {
       });
     }
 
-    // Recent runs table
     if (!d.recent_runs?.length) {
-      document.getElementById('usage-wrap').innerHTML = '<div class="empty">No usage tracked yet. Starts automatically with the next generation run.</div>';
+      document.getElementById('usage-wrap').innerHTML = '<div class="empty">No usage tracked yet.</div>';
     } else {
       let h = `<table class="data-table"><thead><tr>
-        <th>Time</th><th>Category</th><th>Slot</th><th>Input Tokens</th><th>Output Tokens</th><th>Searches</th><th>Token Cost</th><th>Search Cost</th><th>Total Cost</th>
+        <th>Time (UAE)</th><th>Provider</th><th>Purpose</th><th>Category / Language</th><th>Input</th><th>Cache Write / Read</th><th>Output Tokens</th><th>Estimated Cost</th>
       </tr></thead><tbody>`;
       d.recent_runs.forEach(r => {
-        const tokenCost  = r.token_cost_usd  ?? r.estimated_cost_usd ?? 0;
-        const searchCost = r.search_cost_usd ?? 0;
-        const totalCost  = r.estimated_cost_usd ?? 0;
+        const meta = r.usage_metadata;
+        const usage = meta?.usage;
+        const input = r.service === 'unrealspeech'
+          ? ((meta?.input_characters ?? r.input_tokens) || 0).toLocaleString() + ' chars'
+          : (r.input_tokens || 0).toLocaleString() + ' tokens';
+        const cache = usage ? `${(usage.cache_creation_input_tokens || 0).toLocaleString()} / ${(usage.cache_read_input_tokens || 0).toLocaleString()}` : '—';
         h += `<tr>
-          <td style="color:#6b7280;font-size:0.78rem;">${r.created_at ? new Date(r.created_at).toLocaleString() : '—'}</td>
-          <td>${r.category||'—'}</td>
-          <td>${r.time_slot ? `<span class="badge bp">${r.time_slot}</span>` : '—'}</td>
-          <td style="font-size:0.8rem;">${(r.input_tokens||0).toLocaleString()}</td>
-          <td style="font-size:0.8rem;">${(r.output_tokens||0).toLocaleString()}</td>
-          <td style="font-size:0.8rem;color:#6b7280;">${r.web_searches != null ? r.web_searches : '—'}</td>
-          <td style="color:#6366f1;">$${tokenCost.toFixed(5)}</td>
-          <td style="color:#ec4899;">$${searchCost.toFixed(5)}</td>
-          <td style="font-weight:800;color:#111827;">$${totalCost.toFixed(5)}</td>
+          <td style="color:#6b7280;font-size:0.78rem;">${r.created_at ? new Date(r.created_at).toLocaleString('en-GB', { timeZone: 'Asia/Dubai' }) : '—'}</td>
+          <td>${esc(r.service || '—')}${!meta ? '<br><small>Historical</small>' : ''}</td>
+          <td>${esc(r.content_type || '—')}</td>
+          <td>${esc(r.category || '—')} · ${esc(r.language || '—')}</td>
+          <td>${input}</td><td>${cache}</td><td>${(r.output_tokens || 0).toLocaleString()}</td>
+          <td style="font-weight:800;">$${(r.estimated_cost_usd || 0).toFixed(5)}</td>
         </tr>`;
       });
-      h += `</tbody></table><div class="tbl-footer">${d.recent_runs.length} recent runs shown · pre-search-tracking rows show token cost only</div>`;
+      h += `</tbody></table><div class="tbl-footer">${d.recent_runs.length} recent calls shown · totals include all recorded history · historical Claude rows can include Serper fees</div>`;
       document.getElementById('usage-wrap').innerHTML = h;
     }
     stamp();

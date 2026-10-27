@@ -158,3 +158,18 @@ Per-user write serialization prevents concurrent device syncs losing intervals o
 The frontend sends batches of 20. Local progress remains usable when sync is unavailable.
 Recap writer instructions now favor clear, naturally paced spoken sentences; grounding,
 qualification and coverage checks remain unchanged. Existing cached recordings are retained.
+
+## API usage accounting (2026-10-27)
+
+`usage-accounting.js` records every Anthropic Messages response at the transport boundary,
+including article fetches that yield no article, preflights, diagnostic calls and each continuation.
+Do not add delayed usage inserts to digest/recap callers: that would double-count them.
+`provider_request_id` is unique; provider response usage is retained in `usage_metadata`,
+including uncached input, output, 5-minute/1-hour cache writes and cache reads. The SQL in
+`usage-accounting.sql` has been applied to production; optional metadata degrades gracefully.
+AsyncLocalStorage attributes concurrent categories/languages without a global mutable context.
+Serper successful requests get their own cost row, even if subsequent generation fails.
+Unreal Speech records characters in metadata, never as Claude tokens. The admin API pages
+through all usage rows, groups dates in Asia/Dubai and reports provider costs separately;
+recorded API calls must not be labelled generation runs. Older records are retained as-is.
+Verify changes with `node --test usage-accounting.test.js` (mocked providers; no paid calls).
