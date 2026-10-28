@@ -159,6 +159,27 @@ export function linesToTighten(lines, maxWords) {
 
 export const recapText = lines => lines.map(l => l.text).join(' ');
 
+// Remove only literally repeated recap lines; similar wording can contain an important
+// new fact or qualification. Preserve all story IDs so coverage and attribution stay
+// correct when two digest entries produced the same sentence.
+export function deduplicateRecapLines(lines) {
+  const kept = [], seen = new Map();
+  let removed = 0;
+  for (const line of lines) {
+    const key = String(line.text || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
+    if (!key) continue;
+    const previous = seen.get(key);
+    if (previous) {
+      previous.ids = previous.ids && line.ids ? [...new Set([...previous.ids, ...line.ids])] : null;
+      removed++;
+    } else {
+      const copy = { ...line, ids: line.ids ? [...line.ids] : line.ids };
+      kept.push(copy); seen.set(key, copy);
+    }
+  }
+  return { lines: kept, removed };
+}
+
 // Check, then mend only what is wrong, up to `repairs` times: each repair rewrites just the lines
 // the check flagged, tightens the longest ones when the recap is over length, and adds a line for
 // a story left out — so fixing one line cannot break another the way rewriting the whole recap
@@ -166,10 +187,13 @@ export const recapText = lines => lines.map(l => l.text).join(' ');
 // A line still flagged after the last repair is taken out; the recap is withheld only if nothing
 // survives, it is still too long, or the check itself cannot run.
 export async function validateRecap({ lines, storyIds = [], maxWords = 170, repairs = 3, audit, repairLines }) {
-  const report = { checked: false, flags: [], dismissed: [], repairs: 0, repairFailures: 0, removed: [], withheld: false };
+  const report = { checked: false, flags: [], dismissed: [], repairs: 0, repairFailures: 0, removed: [], withheld: false, duplicateLinesRemoved: 0 };
   const tagged = lines.length > 0 && lines.every(l => l.ids && l.ids.length);
   try {
     for (let round = 0; ; round++) {
+      const unique = deduplicateRecapLines(lines);
+      lines = unique.lines;
+      report.duplicateLinesRemoved += unique.removed;
       if (!lines.length || !recapText(lines).trim()) throw new Error('Empty recap');
       const { missing: claimed, issues, dismissed } = await audit(lines.map(l => l.text));
       const covered = new Set(lines.flatMap(l => l.ids || []));

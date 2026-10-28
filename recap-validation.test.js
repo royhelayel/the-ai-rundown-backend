@@ -1,6 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseAuditJSON, sentencesOf, provenStoryFindings, provenRecapIssues, parseRecapLines, validateRecap, attributionMap } from './recap-validation.js';
+import { parseAuditJSON, sentencesOf, provenStoryFindings, provenRecapIssues, parseRecapLines, validateRecap, attributionMap, deduplicateRecapLines } from './recap-validation.js';
+
+test('identical recap lines merge their story IDs without changing any facts', () => {
+  const lines = [{ ids: ['S1'], text: 'Apple says it will replace affected devices.' }, { ids: ['S3'], text: 'Apple says it will replace affected devices.' }];
+  const result = deduplicateRecapLines(lines);
+  assert.equal(result.removed, 1);
+  assert.deepEqual(result.lines, [{ ids: ['S1', 'S3'], text: lines[0].text }]);
+  assert.deepEqual(lines[0].ids, ['S1']);
+});
+test('similar recaps with different qualifications or numbers remain separate', () => {
+  const result = deduplicateRecapLines([{ ids: ['S1'], text: 'The launch is confirmed.' }, { ids: ['S2'], text: 'The launch is not confirmed.' },
+    { ids: ['S3'], text: 'The price is $699.' }, { ids: ['S4'], text: 'The price is $799.' }]);
+  assert.equal(result.lines.length, 4);
+});
+test('duplicate recap removal happens before the grounding audit and preserves counted coverage', async () => {
+  const result = await validateRecap({ lines: [{ ids: ['S1'], text: 'One verified announcement.' }, { ids: ['S2'], text: 'One verified announcement.' }], storyIds: ['S1', 'S2'],
+    audit: async texts => { assert.deepEqual(texts, ['One verified announcement.']); return { missing: [], issues: [], dismissed: [] }; }, repairLines: async () => { throw Error('No repair expected'); } });
+  assert.equal(result.report.passed, true);
+  assert.equal(result.report.duplicateLinesRemoved, 1);
+  assert.deepEqual(result.lines[0].ids, ['S1', 'S2']);
+});
 
 test('parses fenced JSON and prose without greedily joining multiple objects', () => {
   assert.deepEqual(parseAuditJSON('```json\n{"unsupported":[]}\n```\nExplanation.'), { unsupported: [] });
@@ -117,14 +137,14 @@ test('withheld only when nothing survives', async () => {
 });
 test('too long is mended by tightening the longest lines, not a whole rewrite', async () => {
   const long = 'This line is deliberately padded with many extra words to push the recap far past its limit today.';
-  const r = await validateRecap({ lines: L(long, long, long, 'Short one.'), storyIds: IDS(4), maxWords: 40, audit: async () => clean,
+  const r = await validateRecap({ lines: L(`First: ${long}`, `Second: ${long}`, `Third: ${long}`, 'Short one.'), storyIds: IDS(4), maxWords: 40, audit: async () => clean,
     repairLines: async (lines, issues) => {
       assert.ok(issues.length && issues.every(i => i.type === 'long'));
       const cut = new Set(issues.map(i => i.s));
       return lines.map((l, i) => (cut.has(i + 1) ? { ...l, text: 'Tight.' } : l));
     } });
-  assert.equal(r.report.passed, true); assert.ok(r.briefing.split(/\s+/).length <= 40);
-  const stuck = await validateRecap({ lines: L(long, long, long), storyIds: IDS(3), maxWords: 40, audit: async () => clean, repairLines: async l => l });
+  assert.equal(r.report.passed, true); assert.ok(r.briefing.split(/\s+/).length <= 40); assert.ok(r.report.repairs > 0);
+  const stuck = await validateRecap({ lines: L(`First: ${long}`, `Second: ${long}`, `Third: ${long}`), storyIds: IDS(3), maxWords: 40, audit: async () => clean, repairLines: async l => l });
   assert.equal(stuck.briefing, '');
 });
 test('a recap that only shortens the source is not "wrong"', () => {

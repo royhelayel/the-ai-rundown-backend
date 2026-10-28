@@ -3572,23 +3572,23 @@ ${scope === 'day'
 
 ${digestContent}
 
-Every one of these ${storyCount} stories must appear in the recap:
+Every distinct development in these ${storyCount} entries must appear in the recap. Entries reporting the same event are covered together once, with all their story numbers:
 ${parseDoc(digestContent).stories.map((st, i) => `${i + 1}. ${st.headline}`).join('\n')}
 
 Write the recap: about ${targetWords} words in total — roughly ${wordsPerStory} words a story — and never more than ${RECAP_MAX_WORDS}. It is read aloud. It is not a shorter copy of the stories: the listener can open any story for its details, so the recap gives only the most important thing in each.
 
 How to build it:
-1. One sentence per story — two short ones only if a single sentence would lose an essential qualification. Keep a name, number or place when it is part of the point.
-2. Each sentence carries one story's facts only. Never merge two stories into one sentence; that is how a fact from one story ends up attached to another.
+1. One sentence per distinct development — two short ones only if a single sentence would lose an essential qualification. Keep a name, number or place when it is part of the point. If several entries cover the same event, give that event ONE recap line tagged with all corresponding numbers, for example "[3,9]". Do not repeat a company announcement or device issue because another outlet covered it under a different headline.
+2. Each sentence carries one development's facts only. Never merge separate events into one sentence; that is how a fact from one story ends up attached to another. A shared company or topic alone does not make two events duplicates. Keep genuinely new developments and different essential facts.
 3. Weight the stories equally. Position in the list is not importance — the first story gets no more than any other.
 4. Put stories about the same country, conflict, company or field next to each other, with a short transition that only names the subject — "In the Middle East," "In crypto," "Elsewhere," — and never describes it. No sentence that characterises a group or the day ("dominated", "escalating", "a busy day for"): that is a claim the digest does not make. When unsure where a story belongs, let it stand alone.
 5. Connect stories only where the digest itself connects them. Sharing a subject is not a cause.
-6. Every story on the list appears.
+6. Every story number on the list is represented, with duplicate coverage sharing the same line. Never repeat a recap sentence to satisfy the list.
 7. Copy every number, name, job title, place, date and status word exactly as the digest gives it: 41.8 percent stays 41.8 percent, "158 years and nine months" is not "158 years", a "political leader" is not a "commander", a "proposed" rule has not been "reversed". Keep "according to", "says", "alleged" and "reportedly" wherever the digest attributes or qualifies a claim. Shorten by leaving things out — never by rounding, relabelling or summing up a figure.
 
 Use only what the digest says: no significance, background, causes or predictions that the digest does not contain. Preserve essential qualifications, uncertainty and attribution; never turn an allegation into a fact or an association into causation. If the stories need fewer words, use fewer — there is no minimum.
 
-Write it as one line per story, in the order it should be read aloud, each line starting with that story's number in square brackets: "[3] In the Middle East, ...". One sentence per line — two short ones only if one would lose an essential qualification — and at most 30 words. Every story number from 1 to ${storyCount} appears exactly once. No other lines: no title, no preamble, no sign-off, no headings, no bullets, no markdown, no source names or URLs. Conversational and clear. Use pronounceable, naturally paced sentences with simple punctuation. Preserve numbers, names and qualifications exactly. Avoid semicolons and dense subordinate clauses; use a short second sentence when needed within the word limit. No performance directions, SSML, mood tags or invented commentary.`;
+Write it as one line per distinct development, in the order it should be read aloud, each line starting with its story number or numbers in square brackets: "[3] In the Middle East, ..." or "[3,9]" for duplicate reports of the same event. One sentence per line — two short ones only if one would lose an essential qualification — and at most 30 words. Every story number from 1 to ${storyCount} appears exactly once, sharing a line when it covers the same development. No other lines: no title, no preamble, no sign-off, no headings, no bullets, no markdown, no source names or URLs. Conversational and clear. Use pronounceable, naturally paced sentences with simple punctuation. Preserve numbers, names and qualifications exactly. Avoid semicolons and dense subordinate clauses; use a short second sentence when needed within the word limit. No performance directions, SSML, mood tags or invented commentary.`;
 
   const data = await callClaude(prompt, 1400, 3, { category, timeSlot, language, day, contentType: 'briefing' });
   if (data.stop_reason === 'max_tokens') throw new Error('Truncated briefing generation');

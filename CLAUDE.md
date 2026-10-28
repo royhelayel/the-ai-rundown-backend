@@ -173,3 +173,12 @@ Unreal Speech records characters in metadata, never as Claude tokens. The admin 
 through all usage rows, groups dates in Asia/Dubai and reports provider costs separately;
 recorded API calls must not be labelled generation runs. Older records are retained as-is.
 Verify changes with `node --test usage-accounting.test.js` (mocked providers; no paid calls).
+
+## Duplicate recap coverage (2026-10-29)
+
+The recap writer covers each distinct development once, tagging duplicate reports together
+(for example `[3,9]`). Separate developments sharing a company remain separate. The existing
+grounding/coverage checks still run. `deduplicateRecapLines` also removes literal repeats
+before each grounding audit, retaining the union of story IDs and every qualification. It
+does not fuzzy-match or merge merely similar claims. This applies before recap storage and
+audio pre-generation; existing recordings are not silently edited or regenerated.
