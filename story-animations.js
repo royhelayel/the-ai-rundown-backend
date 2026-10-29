@@ -3,7 +3,8 @@ import { ANIMATION_BUCKET, ANIMATION_VERSION, animationKey, animationPrompt, cle
 export function createStoryAnimations({ supabase, callModel, parseStories, sentences, logger = console }) {
   const cache = new Map(), pending = new Map(), activeKeys = new Set();
   const stats = { generated: 0, cached: 0, failed: 0, queued: 0, active: 0, blocked: null, complete: false };
-  let bucketReady, draining = false;
+  let bucketReady, draining = false, started = 0;
+  const reviewLimit = 3; // Initial live drawings are inspected before the full backfill rollout.
   const remember = (key, value) => { if (cache.size >= 1600) cache.delete(cache.keys().next().value); cache.set(key, value); return value; };
   const prepareBucket = () => bucketReady ||= (async () => {
     const { error } = await supabase.storage.createBucket(ANIMATION_BUCKET, { public: false, allowedMimeTypes: ['application/json'], fileSizeLimit: 100000 });
@@ -53,7 +54,8 @@ export function createStoryAnimations({ supabase, callModel, parseStories, sente
     try {
       await prepareBucket();
       const worker = async () => {
-        while (pending.size && !stats.blocked) {
+        while (pending.size && !stats.blocked && started < reviewLimit) {
+          started++;
           const [key, item] = pending.entries().next().value; pending.delete(key);
           stats.active++; activeKeys.add(key);
           try { await generate(item); }
@@ -90,9 +92,12 @@ export function createStoryAnimations({ supabase, callModel, parseStories, sente
     // only receives published rows from the server; consumer lookup never generates.
     const ordered = [...rows].filter(r => r.category && !r.category.startsWith('__') && !r.user_id && !r.shared_key)
       .sort((a,b) => String(b.day).localeCompare(String(a.day)));
-    for (const row of ordered) {
-      const meta = { category: row.category, day: row.day, timeSlot: row.time_slot, language: row.language || 'en' };
-      rowUpdates(row).updates.forEach(text => enqueue(text, meta));
+    for (const day of [...new Set(ordered.map(row => row.day))]) {
+      const edition = ordered.filter(row => row.day === day).map(row => ({ row, updates: rowUpdates(row).updates }));
+      const count = Math.max(0, ...edition.map(item => item.updates.length));
+      for (let index = 0; index < count; index++) for (const { row, updates } of edition) {
+        if (updates[index]) enqueue(updates[index], { category: row.category, day: row.day, timeSlot: row.time_slot, language: row.language || 'en' });
+      }
     }
     for (const row of ordered) {
       const meta = { category: row.category, day: row.day, timeSlot: row.time_slot, language: row.language || 'en' };
@@ -134,7 +139,7 @@ export function createStoryAnimations({ supabase, callModel, parseStories, sente
         res.set('Cache-Control','no-store'); res.json({ version: ANIMATION_VERSION, entries });
       } catch { res.status(503).json({ error: 'Animations could not be loaded' }); }
     });
-    app.get('/api/story-animations/status', (req,res) => res.json({ ...stats, pending: pending.size, blocked: !!stats.blocked }));
+    app.get('/api/story-animations/status', (req,res) => res.json({ ...stats, pending: pending.size, reviewPending: started >= reviewLimit && pending.size > 0, blocked: !!stats.blocked }));
   }
   return { register, backfill, queueEdition, queueRows, rowUpdates, read, stats, drain };
 }
