@@ -3868,6 +3868,9 @@ async function storeNews(category, day, timeSlot, content, userId = null, shared
     if (error) throw new Error(`Supabase error: ${error.message}`);
 
     console.log(`✅ Stored news for ${category} on ${day} at ${timeSlot} [${language}]${storiesContent ? ' (+ stories)' : ''}${sourceArticles ? ` (+ ${sourceArticles.length} sources)` : ''}${userId ? ` (user ${userId})` : ''}${sharedKey ? ` (shared_key: ${sharedKey})` : ''}`);
+    if (!userId && !sharedKey && !category.startsWith('__')) {
+      void storyAnimations.queueEdition(category, day, timeSlot, language, { fullOnly: true }).catch(e => console.warn(e.message));
+    }
   } catch (error) {
     console.error(`Error storing news in Supabase:`, error);
     throw error;
