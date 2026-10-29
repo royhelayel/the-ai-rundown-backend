@@ -1,4 +1,5 @@
 import { ANIMATION_BUCKET, ANIMATION_VERSION, animationKey, animationPrompt, cleanAnimationText, validateAnimation } from './story-animation-schema.js';
+import { editorialAnimation, editorialAnimationStatus } from './animation-editorial/index.js';
 
 export function createStoryAnimations({ supabase, callModel, parseStories, sentences, logger = console, enabled = false }) {
   const cache = new Map(), pending = new Map(), activeKeys = new Set();
@@ -11,6 +12,8 @@ export function createStoryAnimations({ supabase, callModel, parseStories, sente
     if (error && !/already exists|duplicate/i.test(error.message || '')) throw new Error(`Animation storage unavailable: ${error.message}`);
   })();
   async function read(text) {
+    const editorial = editorialAnimation(text);
+    if (editorial) return editorial;
     const key = animationKey(text);
     if (cache.has(key)) return cache.get(key);
     const { data } = await supabase.storage.from(ANIMATION_BUCKET).download(key);
@@ -142,7 +145,7 @@ export function createStoryAnimations({ supabase, callModel, parseStories, sente
         res.set('Cache-Control','no-store'); res.json({ version: ANIMATION_VERSION, entries });
       } catch { res.status(503).json({ error: 'Animations could not be loaded' }); }
     });
-    app.get('/api/story-animations/status', (req,res) => res.json({ ...stats, pending: pending.size, reviewPending: started >= reviewLimit && pending.size > 0, blocked: !!stats.blocked }));
+    app.get('/api/story-animations/status', (req,res) => res.json({ ...stats, editorial: editorialAnimationStatus, pending: pending.size, reviewPending: started >= reviewLimit && pending.size > 0, blocked: !!stats.blocked }));
   }
   return { register, backfill, queueEdition, queueRows, rowUpdates, read, stats, drain };
 }

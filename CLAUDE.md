@@ -208,3 +208,13 @@ defaults to disabled, and the production constructor explicitly passes `enabled:
 Startup, publication queues and manual drain cannot make animation provider calls while
 disabled. A top-up or service restart must not enable it. Existing cached plans remain
 readable. Do not re-enable paid Anthropic animation generation without Roy's authorization.
+
+## Editorial basic animation edition (2026-10-29)
+
+Roy chose to continue basic animation without paying a generation provider. The reviewed
+`animation-editorial` bundle covers October 27 English: 162 quick updates and 183 full
+summaries, 344 distinct exact-text records across 16 topics. Lookup serves these bundled
+plans before storage, without model or database calls. Every element is schema-validated
+and retains literal source evidence. This is a manually authored current edition; future
+cycles are not automatically illustrated for free. Anthropic generation stays disabled.
+The status endpoint reports editorial coverage separately from paid generation counters.

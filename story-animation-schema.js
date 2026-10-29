@@ -38,7 +38,7 @@ export function validateAnimation(plan, rawText) {
       if (el.type === 'rect') out.rx = finite(el.rx, 0, 100) ? el.rx : 0;
     }
     if (el.type === 'label') {
-      if (++labels > 3 || typeof el.text !== 'string' || el.text.length > 42 || !quote(text, el.text)) fail('labels must be short literal excerpts');
+      if (++labels > 3 || typeof el.text !== 'string' || el.text.length > 42 || !quote(text, el.text) || !/[\p{L}]/u.test(el.text)) fail('labels must be meaningful short literal excerpts, not isolated numbers');
       const sourceNumbers = numericTokens(text);
       if (numericTokens(el.text).some(n => !sourceNumbers.includes(n))) fail('label changed a reported number');
       out.text = el.text.trim(); out.role = el.role === 'body' ? 'body' : 'ui';
