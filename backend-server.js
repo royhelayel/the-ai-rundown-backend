@@ -2599,6 +2599,7 @@ const GENERATE_STORIES_CONTENT = true;
 const trackUsage = createUsageWriter(supabaseAdmin);
 const fetchAnthropic = createTrackedAnthropicFetch({ trackUsage });
 const storyAnimations = createStoryAnimations({
+  enabled: false, // Roy reserved Anthropic credit for news; illustrated prototypes use image generation + Remotion.
   supabase: supabaseAdmin, callModel: callClaude,
   sentences: text => typeof Intl.Segmenter === 'function'
     ? [...new Intl.Segmenter(/[\u0600-\u06ff]/.test(text) ? 'ar' : 'en', { granularity: 'sentence' }).segment(text)].map(s => s.segment.trim()).filter(Boolean)
@@ -6853,7 +6854,7 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
-  if (process.env.LOCAL_PREVIEW !== '1' && process.env.GENERATE_STORY_ANIMATIONS !== '0') {
+  if (storyAnimations.stats.enabled && process.env.LOCAL_PREVIEW !== '1') {
     void storyAnimations.backfill().catch(e => console.warn(`Animation backfill failed: ${e.message}`));
   }
   console.log(`\n🎉 Server running on port ${PORT}`);

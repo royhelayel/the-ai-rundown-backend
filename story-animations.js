@@ -1,8 +1,8 @@
 import { ANIMATION_BUCKET, ANIMATION_VERSION, animationKey, animationPrompt, cleanAnimationText, validateAnimation } from './story-animation-schema.js';
 
-export function createStoryAnimations({ supabase, callModel, parseStories, sentences, logger = console }) {
+export function createStoryAnimations({ supabase, callModel, parseStories, sentences, logger = console, enabled = false }) {
   const cache = new Map(), pending = new Map(), activeKeys = new Set();
-  const stats = { generated: 0, cached: 0, failed: 0, queued: 0, active: 0, blocked: null, complete: false };
+  const stats = { enabled, generated: 0, cached: 0, failed: 0, queued: 0, active: 0, blocked: null, complete: !enabled };
   let bucketReady, draining = false, started = 0;
   const reviewLimit = 3; // Initial live drawings are inspected before the full backfill rollout.
   const remember = (key, value) => { if (cache.size >= 1600) cache.delete(cache.keys().next().value); cache.set(key, value); return value; };
@@ -49,7 +49,7 @@ export function createStoryAnimations({ supabase, callModel, parseStories, sente
     throw new Error(problem);
   }
   async function drain() {
-    if (draining || !pending.size || stats.blocked) return;
+    if (!enabled || draining || !pending.size || stats.blocked) return;
     draining = true; stats.complete = false;
     try {
       await prepareBucket();
@@ -88,6 +88,7 @@ export function createStoryAnimations({ supabase, callModel, parseStories, sente
     return { updates, stories: stories.map(s => typeof s === 'string' ? s : s.summary).filter(Boolean) };
   }
   function queueRows(rows) {
+    if (!enabled) return;
     // Current daily recaps first, then their full briefs, then older editions. The queue
     // only receives published rows from the server; consumer lookup never generates.
     const ordered = [...rows].filter(r => r.category && !r.category.startsWith('__') && !r.user_id && !r.shared_key)
@@ -106,12 +107,14 @@ export function createStoryAnimations({ supabase, callModel, parseStories, sente
     void drain();
   }
   async function queueEdition(category, day, timeSlot, language) {
+    if (!enabled) return;
     const { data, error } = await supabase.from('news_summaries').select('category,day,time_slot,language,content,stories_content,briefing,briefing_sources')
       .eq('category', category).eq('day', day).eq('time_slot', timeSlot).eq('language', language).is('user_id', null).is('shared_key', null);
     if (error) { logger.warn(`Animation edition lookup failed: ${error.message}`); return; }
     queueRows(data || []);
   }
   async function backfill() {
+    if (!enabled) return;
     // Covers the seven available dates, anchored to the latest completed edition just
     // like the app. Period briefs are separate so last month's date is not filtered out.
     const { data: completed } = await supabase.from('news_summaries').select('day').eq('category','__completed__').order('day',{ascending:false}).limit(1);
@@ -134,7 +137,7 @@ export function createStoryAnimations({ supabase, callModel, parseStories, sente
       try {
         const entries = await Promise.all(texts.map(async text => {
           const stored = await read(text);
-          return { text: cleanAnimationText(text), status: stored?.plan ? 'ready' : stats.blocked || stored?.status === 'unavailable' ? 'unavailable' : 'pending', plan: stored?.plan || null };
+          return { text: cleanAnimationText(text), status: stored?.plan ? 'ready' : !enabled || stats.blocked || stored?.status === 'unavailable' ? 'unavailable' : 'pending', plan: stored?.plan || null };
         }));
         res.set('Cache-Control','no-store'); res.json({ version: ANIMATION_VERSION, entries });
       } catch { res.status(503).json({ error: 'Animations could not be loaded' }); }

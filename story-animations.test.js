@@ -34,7 +34,7 @@ function harness(model = async()=>({content:[{type:'text',text:JSON.stringify(pl
   download:async key=>({data:stored.has(key)?{text:async()=>stored.get(key)}:null}),
   upload:async(key,buf)=>{stored.set(key,buf.toString());return {};},
  })}};
- const service=createStoryAnimations({supabase,callModel:async(...args)=>{calls++;return model(...args);},parseStories:r=>r.paragraphs || [],sentences:t=>[t],logger:{log(){},warn(){}}});
+ const service=createStoryAnimations({enabled:true,supabase,callModel:async(...args)=>{calls++;return model(...args);},parseStories:r=>r.paragraphs || [],sentences:t=>[t],logger:{log(){},warn(){}}});
  return {service,stored,calls:()=>calls};
 }
 test('lookup never generates and repeated queue work reuses stored plans',async()=>{
@@ -60,4 +60,14 @@ test('public lookup is bounded, read-only and never returns a stale plan for cha
  const res={code:200,status(n){this.code=n;return this;},set(){},json(value){this.body=value;return this;}};
  await routes['/api/story-animations/lookup']({body:{texts:[text]}},res);assert.equal(res.body.entries[0].plan,null);assert.equal(h.calls(),0);
  await routes['/api/story-animations/lookup']({body:{texts:Array(17).fill(text)}},res);assert.equal(res.code,400);
+});
+
+
+test('disabled animation generation never calls a provider or reads news, including on startup and publication',async()=>{
+ let spent=0,reads=0;
+ const service=createStoryAnimations({supabase:{from(){reads++;throw new Error('unexpected query');}},callModel:async()=>{spent++;},parseStories:()=>[],sentences:t=>[t]});
+ service.queueRows([{category:'Science',briefing:text}]);
+ await service.queueEdition('Science','2026-10-27','Morning','en');
+ await service.backfill();await service.drain();
+ assert.equal(spent,0);assert.equal(reads,0);assert.equal(service.stats.enabled,false);assert.equal(service.stats.queued,0);
 });

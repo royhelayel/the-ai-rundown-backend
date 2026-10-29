@@ -199,3 +199,12 @@ spend; `/api/story-animations/status` exposes progress counts without provider s
 Provider credit/rate/storage failures stop the queue. `GENERATE_STORY_ANIMATIONS=0` disables
 startup backfill. Missing/invalid plans must be disclosed, never replaced with a preset while
 claiming it is a generated animation. Audio generation and news text are not changed.
+
+## Anthropic animation spending disabled (2026-10-29)
+
+Roy reserved the Anthropic top-up for later news generation. The reference-style animation
+prototype will use the image-generation tool and Remotion instead. `createStoryAnimations`
+defaults to disabled, and the production constructor explicitly passes `enabled:false`.
+Startup, publication queues and manual drain cannot make animation provider calls while
+disabled. A top-up or service restart must not enable it. Existing cached plans remain
+readable. Do not re-enable paid Anthropic animation generation without Roy's authorization.
