@@ -182,3 +182,20 @@ grounding/coverage checks still run. `deduplicateRecapLines` also removes litera
 before each grounding audit, retaining the union of story IDs and every qualification. It
 does not fuzzy-match or merge merely similar claims. This applies before recap storage and
 audio pre-generation; existing recordings are not silently edited or regenerated.
+
+## Per-update generated animations (2026-10-29)
+
+`story-animations.js` generates unique declarative vector drawings from each exact published
+update through the tracked Anthropic transport (`contentType: story_animation`). It does not
+select story/topic templates. The schema permits only bounded numeric SVG primitives and
+literal source-excerpt labels, with normalized audio-progress keyframes. No model HTML, JS,
+CSS, URLs or arbitrary attributes execute in clients. Plans are validated and cached in the
+private `story-animations` storage bucket by version and SHA-256 of the exact normalized text.
+
+Startup backfills the seven accessible edition dates and recent period recaps. New publication
+queues plans after recap attribution is saved. Recap updates are prioritised before full story
+summaries. Consumer POST `/api/story-animations/lookup` is read-only and cannot incur provider
+spend; `/api/story-animations/status` exposes progress counts without provider secrets/errors.
+Provider credit/rate/storage failures stop the queue. `GENERATE_STORY_ANIMATIONS=0` disables
+startup backfill. Missing/invalid plans must be disclosed, never replaced with a preset while
+claiming it is a generated animation. Audio generation and news text are not changed.

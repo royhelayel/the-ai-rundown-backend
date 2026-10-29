@@ -1,3 +1,4 @@
+import { createStoryAnimations } from './story-animations.js';
 import { createUsageWriter, createTrackedAnthropicFetch, addAnthropicUsage, searchUsageRow, readAllUsage, summarizeUsage, withUsageContext } from './usage-accounting.js';
 import { registerAudioProgressRoutes } from './audio-progress.js';
 import { SPOKEN_SUMMARY_STYLE } from './spoken-summary-style.js';
@@ -2597,6 +2598,21 @@ const GENERATE_STORIES_CONTENT = true;
 // Every provider response is accounted for at the transport, before validation can fail.
 const trackUsage = createUsageWriter(supabaseAdmin);
 const fetchAnthropic = createTrackedAnthropicFetch({ trackUsage });
+const storyAnimations = createStoryAnimations({
+  supabase: supabaseAdmin, callModel: callClaude,
+  sentences: text => typeof Intl.Segmenter === 'function'
+    ? [...new Intl.Segmenter(/[\u0600-\u06ff]/.test(text) ? 'ar' : 'en', { granularity: 'sentence' }).segment(text)].map(s => s.segment.trim()).filter(Boolean)
+    : sentencesOf(text),
+  parseStories: row => {
+    const digest = parseStoriesForTTS(row.content || row.stories_content);
+    const cards = parseStoriesForTTS(row.stories_content);
+    const norm = h => h.toLowerCase().replace(/[^a-z0-9؀-ۿ]/g, '').slice(0,40);
+    const byHeadline = new Map(cards.map(st => [norm(st.headline),st]));
+    return digest.map((st,i) => buildStoryScript(byHeadline.get(norm(st.headline)) || (cards.length === digest.length ? cards[i] : st)));
+  },
+});
+storyAnimations.register(app);
+
 
 async function callClaude(prompt, maxTokens = 4000, retries = 3, details = {}) {
   return callClaudeMessages([{ role: 'user', content: prompt }], maxTokens, retries, details);
@@ -3413,7 +3429,7 @@ async function attributeRecap({ category, timeSlot, language, recap, digest }) {
 // Stored beside the recap. A newer column, so a database without it logs the SQL and carries on.
 let briefingSourcesColumn = true;
 async function saveBriefingSources(category, day, timeSlot, language, sources) {
-  if (!briefingSourcesColumn) return;
+  if (!briefingSourcesColumn) { void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message)); return; }
   const { error } = await supabaseAdmin.from('news_summaries').update({ briefing_sources: sources })
     .eq('category', category).eq('day', day).eq('time_slot', timeSlot).eq('language', language)
     .is('user_id', null).is('shared_key', null);
@@ -3421,6 +3437,7 @@ async function saveBriefingSources(category, day, timeSlot, language, sources) {
     briefingSourcesColumn = false;
     console.warn(`⚠️  'briefing_sources' column missing — recaps are stored without their sources. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS briefing_sources jsonb;`);
   } else if (error) console.warn(`Could not save recap sources for ${category}: ${error.message}`);
+  void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message));
 }
 
 // Stories written from the reserves join the feed after the ones already there.
@@ -6836,6 +6853,9 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
+  if (process.env.LOCAL_PREVIEW !== '1' && process.env.GENERATE_STORY_ANIMATIONS !== '0') {
+    void storyAnimations.backfill().catch(e => console.warn(`Animation backfill failed: ${e.message}`));
+  }
   console.log(`\n🎉 Server running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`⏰ Timezone: Asia/Dubai (UAE)`);
