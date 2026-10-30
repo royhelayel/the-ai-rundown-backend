@@ -27,7 +27,7 @@ export function compileMechanics(input,text){const p=structuredClone(input),sour
    if(/(?:clock|minute|hour).?hand/i.test(name)){
     const span=Math.max(...actor.frames.map(f=>Math.abs(f.r-first.r)));if(span>540){actor.frames=actor.frames.map(f=>({...f,r:first.r+(f.r-first.r)*540/span}));notes.push('readable clock-hand speed');}
    }
-   if(/coin|packet|asset.*token|funds.*token/i.test(name)&&/stolen|steal|theft|transfer|travel|launch/i.test(shot.action)&&!/lock|freez/i.test(shot.action)){
+   if(/coin|packet|money.?bag|stolen.?funds|asset.*token|funds.*token/i.test(name)&&/stolen|steal|theft|transfer|travel|launch/i.test(shot.action)&&!/lock|freez/i.test(shot.action)){
     const last=actor.frames.at(-1),b=bounds(o);const from={...first,o:1,sx:Math.max(.8,first.sx),sy:Math.max(.8,first.sy)};
     const end={...last,x:clamp(last.x,80,Math.min(520,575-(b.x+b.width))),y:clamp(last.y,90,240),sx:1,sy:1,o:1};if(Math.hypot(end.x-from.x,end.y-from.y)>55){actor.frames=[frame(0,from),frame(.08,from),frame(.76,end),frame(1,end)];notes.push('visible transfer with held result');}
    }
