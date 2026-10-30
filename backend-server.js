@@ -6872,7 +6872,8 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
-  if(process.env.LOCAL_PREVIEW!=='1')void stagedPilot.start().catch(()=>console.warn('Staged visual pilot stopped; inspect saved report'));
+  // Paid staged experiments are stopped. Reports remain available for review.
+  // Re-enable only for a specifically bounded experiment with a new durable claim.
   // Explicitly requested repaired pilot, protected by a per-wave durable claim.
   // Completed repair pilot: generation is disabled; saved reports stay readable.
   if (storyAnimations.stats.enabled && process.env.LOCAL_PREVIEW !== '1') {
