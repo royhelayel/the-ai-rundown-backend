@@ -354,3 +354,14 @@ prompt states maximum30 label chars and coordinate examples. The $2 cap subtract
 spend; rest subtracts the full sample total including prior attempts. Old failed report is
 retained. A pass requires rendered-image review, visible action and browser QA, not just
 provider JSON conformance. Do not claim success before those happen.
+
+Staged-v3 exposed a false syntactic label gate: concise grammatical rephrasing such as
+"record33 expelled" and "compromised DevOps laptop" was rejected despite the same source
+facts. Staged-v4 reuses those compositions directly; labels must use source vocabulary,
+standard abbreviations/verb forms and source quantities, while independent rendered-image
+source review checks roles/meaning. Missing numerical qualifiers are restored from the
+source (e.g more than3%, not3%). Invented numbers/unsupported vocabulary still fail locally.
+Multi-turn clock rotation1080deg is finite/safe; the image reviewer must still reject a
+rotating whole clock/door frame when the stated action requires a moving hand/leaf. It
+also checks that charts move the intended value rather than scaling all bars together.
+No image pass is silently created. Budget subtracts all staged-v3 costs ($0.511212).
