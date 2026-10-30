@@ -249,3 +249,10 @@ Pass2 preserves last rejected candidate for diagnosis; generated output still re
 an independent model audit and later human visual review. Public read report path is
 /api/storyboard-pilot/world-2026-10-30-v2. Both passes' cost remains visible; do not
 claim pass2 is the first run or hide failed attempts when discussing quality/latency.
+
+Pilot closed: both passes finished, 0/12 drawings passed validation. Pass2 $0.434753,
+342.630s; combined $0.905359, 686.831s batch wall time, 62 tracked API calls. No audits
+were reached because drawing validation failed. Do not label this successful end-to-end
+latency or use it to promise publication timing. Five rejected candidates have bounded
+DIAGNOSTIC previews; these are not accepted/grounded publication assets. The startup
+invocation has been removed. Report is read-only; no new generation occurs on deploy.

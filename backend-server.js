@@ -6859,9 +6859,7 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
-  if (process.env.LOCAL_PREVIEW !== '1') {
-    void worldStoryboardPilot.start().catch(() => console.warn('World storyboard pilot stopped; inspect its saved report.'));
-  }
+  // Completed one-time pilot: no startup generation. Saved report stays readable.
   if (storyAnimations.stats.enabled && process.env.LOCAL_PREVIEW !== '1') {
     void storyAnimations.backfill().catch(e => console.warn(`Animation backfill failed: ${e.message}`));
   }
