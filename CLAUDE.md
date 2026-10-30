@@ -292,3 +292,11 @@ crypto breach/freeze and rail-collision/mourning compositions and movement. No i
 geometry was manually changed. Artwork remains prototype quality; passing audit is not
 editorial/polish approval. WAVE now rest for9 originals, budget$1.648447 remaining of$2.
 Do not re-run sample or its private storage claim. Final startup call must be removed.
+
+Rest wave finished6/9, cumulative repair$1.204223. The remaining3 (indices5,8,11) have
+complete artwork but every object starts with opacity0. Universal opening normalization
+now starts the earliest fully visible source-linked object at its settled pose; all other
+objects and geometry are unchanged. This prevents a blank paused poster without accepting
+an entirely invisible drawing. WAVE recovery reuses only these3 raw candidates, applies
+normalization, then independently audits them. No drawing charges unless a real audit fails;
+remaining budget is $2 minus rest.repairTotalCostUSD. All previous calls remain accounted.

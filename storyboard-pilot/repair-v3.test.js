@@ -29,7 +29,7 @@ test('semantic audit failure stays rejected after one repair and is never relabe
 });
 test('budget cap prevents provider calls and persistent claims prevent repeated paid waves',async()=>{
  let calls=0;await runRepair({stories:[{headline:'Passport',text}],budget:0,save:async()=>{},callStructured:async()=>{calls++;}});assert.equal(calls,0);
- const bucket={download:async()=>({data:{text:async()=>JSON.stringify({status:'complete',records:[{index:0,headline:'Passport',text,status:'failed'}]})}}),upload:async()=>({error:{message:'Duplicate'}})};
+ const bucket={download:async()=>({data:{text:async()=>JSON.stringify({status:'complete',generated:3,costUSD:.1,repairTotalCostUSD:.2,records:[{index:0,headline:'Passport',text,status:'failed'}]})}}),upload:async()=>({error:{message:'Duplicate'}})};
  const pilot=createRepairV3({supabase:{storage:{from:()=>bucket}},callStructured:async()=>{calls++},logger:{log(){}}});await pilot.start();await pilot.start();assert.equal(calls,0);
 });
 test('transport accounting stores Sonnet rates rather than silently charging Haiku prices',async()=>{
@@ -44,4 +44,9 @@ test('a wide platform is valid local geometry and completed drawings can be re-a
  assert.doesNotThrow(()=>drawingV3(wide,text));
  const requests=[];const r=await runRepair({stories:[{index:0,headline:'Passport',text,reuseBoard:boardV3(board,text),reuseCandidate:wide}],save:async()=>{},callStructured:async req=>{requests.push(req);return response({pass:true,issues:[]},req.model);}});
  assert.equal(r.generated,1);assert.equal(requests.length,1);assert.equal(requests[0].details.contentType,'storyboard_repair_v3_audit');assert.equal(r.records[0].reusedDrawing,true);
+});
+test('normal fade-ins get a source-linked opening poster without changing drawing geometry',()=>{
+ const fade=structuredClone(candidate);for(const g of fade.groups){g.frames=[{t:0,x:0,y:0,s:1,r:0,o:0},{t:.1,x:0,y:0,s:1,r:0,o:1},{t:1,x:40,y:0,s:1,r:0,o:1}];}
+ const p=drawingV3(fade,text);assert.equal(p.openingNormalized,true);assert.equal(p.groups[0].frames[0].opacity,1);assert.equal(p.groups[1].frames[0].opacity,0);assert.equal(p.groups[0].shapes[0].x,fade.groups[0].shapes[0].x);
+ const invisible=structuredClone(fade);for(const g of invisible.groups)for(const f of g.frames)f.o=0;assert.throws(()=>drawingV3(invisible,text),/invisible/);
 });

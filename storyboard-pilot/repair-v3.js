@@ -1,6 +1,6 @@
 import{anthropicCost,pricesForModel}from'../usage-accounting.js';
 import{BOARD_SCHEMA,DRAW_SCHEMA,AUDIT_SCHEMA,boardV3,drawingV3,boardV3Prompt,drawV3Prompt,auditV3Prompt}from'./contract-v3.js';
-export const WAVE='rest'; // rest is a separate reviewed wave, never an open-ended queue.
+export const WAVE='recovery'; // rest is a separate reviewed wave, never an open-ended queue.
 export const REPAIR_ID='world-2026-10-30-v4-'+WAVE;
 const HAIKU='claude-haiku-4-5-20251001',DRAW_MODEL='claude-sonnet-4-6';
 const decode=r=>JSON.parse(r.content.filter(c=>c.type==='text').map(c=>c.text).join(''));
@@ -50,8 +50,10 @@ export function createRepairV3({supabase,callStructured,logger=console}){
   const initialRepair=await load('world-2026-10-30-v3-sample');
   if(initialRepair?.status!=='complete')return;
   previousRepairCost=initialRepair.costUSD;
-  if(WAVE==='rest'){const sample=await load('world-2026-10-30-v4-sample');if(sample?.status!=='complete'||sample.generated!==3)throw Error('Sample must pass before remaining wave');previousRepairCost=sample.repairTotalCostUSD;}
-  const stories=source.records.filter(r=>WAVE==='sample'?[0,1,2].includes(r.index):![0,1,2].includes(r.index)).map(r=>{const previous=initialRepair.records.find(s=>s.index===r.index);return{...r,reuseBoard:WAVE==='sample'?previous?.storyboard:null,reuseDrawing:WAVE==='sample'?previous?.drawing:null,reuseCandidate:WAVE==='sample'?previous?.lastCandidate:null};});
+  if(WAVE==='rest'||WAVE==='recovery'){const sample=await load('world-2026-10-30-v4-sample');if(sample?.status!=='complete'||sample.generated!==3)throw Error('Sample must pass before remaining wave');previousRepairCost=sample.repairTotalCostUSD;}
+  const rest= WAVE==='recovery'?await load('world-2026-10-30-v4-rest'):null;
+  if(WAVE==='recovery'){if(rest?.status!=='complete')return;previousRepairCost=rest.repairTotalCostUSD;}
+  const stories=WAVE==='recovery'?rest.records.filter(r=>r.status==='failed').map(r=>({...r,reuseBoard:r.storyboard,reuseCandidate:r.lastCandidate})):source.records.filter(r=>WAVE==='sample'?[0,1,2].includes(r.index):![0,1,2].includes(r.index)).map(r=>{const previous=initialRepair.records.find(s=>s.index===r.index);return{...r,reuseBoard:WAVE==='sample'?previous?.storyboard:null,reuseDrawing:WAVE==='sample'?previous?.drawing:null,reuseCandidate:WAVE==='sample'?previous?.lastCandidate:null};});
   const claim=await bucket.upload(REPAIR_ID+'/claim.json',Buffer.from(JSON.stringify({at:new Date().toISOString(),budgetUSD:2-previousRepairCost,stories:stories.length})),{upsert:false,contentType:'application/json'});
   if(claim.error){logger.log('Repair wave already claimed or storage unavailable; no calls.');return;}
   await runRepair({stories,callStructured,budget:2-previousRepairCost,previousRepairCost,save:async report=>{current=report;const{error}=await bucket.upload(REPAIR_ID+'/report.json',Buffer.from(JSON.stringify(report)),{upsert:true,contentType:'application/json'});if(error)throw Error('Cannot save repair report');}});
