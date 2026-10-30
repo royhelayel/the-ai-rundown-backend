@@ -344,3 +344,13 @@ polymorphic geometry union made the compiled grammar too large. Staged-v2 uses a
 uniform shape record(type, numeric values[], d, paint) instead; local geometry validation
 and renderer produce the identical safe shapes. All visual/motion/source checks remain.
 The failed v1 claim/report remain preserved; do not silently delete/reuse a claim.
+
+Staged-v2 compositions finished but all3 failed label length/placement rules ($0.327204).
+The prompt omitted the numeric character limit and centre-anchor definition; this was a
+contract/instruction defect. Staged-v3 reuses those exact objects and motion, asking only
+for short literal labels and explicit centre-based placement, then runs the actual raster
+and vision gates. Source labels remain grounded; no geometry is manually edited. New
+prompt states maximum30 label chars and coordinate examples. The $2 cap subtracts v2's
+spend; rest subtracts the full sample total including prior attempts. Old failed report is
+retained. A pass requires rendered-image review, visible action and browser QA, not just
+provider JSON conformance. Do not claim success before those happen.

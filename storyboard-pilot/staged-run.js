@@ -1,8 +1,8 @@
 import{anthropicCost,pricesForModel}from'../usage-accounting.js';
-import{STAGED_SCHEMA,validateStaged,stagedPrompt,visualAuditPrompt}from'./staged-contract.js';
+import{STAGED_SCHEMA,LABEL_REPAIR_SCHEMA,labelRepairPrompt,validateStaged,stagedPrompt,visualAuditPrompt}from'./staged-contract.js';
 import{AUDIT_SCHEMA}from'./contract-v3.js';import{renderGate}from'./render-gate.js';
 export const STAGED_WAVE='sample';
-export const STAGED_ID='world-2026-10-30-staged-v2-'+STAGED_WAVE;
+export const STAGED_ID='world-2026-10-30-staged-v3-'+STAGED_WAVE;
 const model='claude-sonnet-4-6';
 export async function runStaged({stories,callStructured,save,saveSheet=async()=>{},budget=2,previousCost=0,now=()=>Date.now()}){
  const start=now();let cursor=0,reserved=0,blocked=false;
@@ -10,9 +10,9 @@ export async function runStaged({stories,callStructured,save,saveSheet=async()=>
  const persist=async()=>{report.elapsedMs=now()-start;report.totalCostUSD=previousCost+report.costUSD;await save(structuredClone(report));};
  async function call(prompt,schema,maxTokens,stage,row,images=[]){if(blocked)throw Error('Provider blocked');const rates=pricesForModel(model),worst=(Buffer.byteLength(prompt)+Buffer.byteLength(JSON.stringify(schema))+images.length*15000+1024)*rates.input+maxTokens*rates.output;if(report.costUSD+reserved+worst>budget)throw Error('Staged pilot budget cap reached');reserved+=worst;const at=now();try{const response=await callStructured({prompt,schema,maxTokens,model,images,details:{category:'World News',day:'2026-10-30',language:'en',contentType:'staged_animation_'+stage}});const cost=anthropicCost(response.usage||{},response.model||model).total;report.costUSD+=cost;row.calls.push({stage,elapsedMs:now()-at,model:response.model,usage:response.usage,costUSD:cost,requestId:response.id});await persist();if(response.stop_reason!=='end_turn')throw Error(stage+' stopped '+response.stop_reason);return JSON.parse(response.content.filter(c=>c.type==='text').map(c=>c.text).join(''));}catch(e){if(/401|403|429|credit balance|not_found|invalid_request/i.test(e.message))blocked=true;throw e;}finally{reserved-=worst;}}
  await persist();
- const worker=async()=>{while(cursor<report.records.length){const row=report.records[cursor++],at=now();row.status='running';await persist();let correction='',previous=null;try{for(let attempt=0;attempt<2;attempt++){row.attempts=attempt+1;try{
+ const worker=async()=>{while(cursor<report.records.length){const row=report.records[cursor++],at=now();row.status='running';await persist();let correction='',previous=null;const reused=stories.find(s=>s.index===row.index)?.reuseComposition;try{for(let attempt=0;attempt<2;attempt++){row.attempts=attempt+1;try{
   const prompt=stagedPrompt(row.text,correction)+(previous?'\nPREVIOUS DRAWING TO REPAIR:\n'+JSON.stringify(previous):'');
-  previous=await call(prompt,STAGED_SCHEMA,10000,attempt?'repair':'composition',row);row.candidate=previous;
+  if(attempt===0&&reused){const fixed=await call(labelRepairPrompt(row.text,reused),LABEL_REPAIR_SCHEMA,2000,'label_repair',row);if(fixed.shotLabels?.length!==reused.shots.length)throw Error('Label repair changed shot count');previous=structuredClone(reused);previous.labels=fixed.labels;previous.shots.forEach((s,i)=>{s.labels=fixed.shotLabels[i];});row.reusedGeometry=true;}else previous=await call(prompt,STAGED_SCHEMA,10000,attempt?'repair':'composition',row);row.candidate=previous;
   const plan=validateStaged(previous,row.text);const rendered=renderGate(plan);row.motion=rendered.metrics;await saveSheet(row.index,rendered.png);row.sheetAvailable=true;await persist();
   const visual=await call(visualAuditPrompt(row.text,plan),AUDIT_SCHEMA,1600,'rendered_visual_audit',row,[{base64:rendered.png.toString('base64'),mediaType:'image/png'}]);row.visualAudit=visual;
   if(visual.pass!==true||!Array.isArray(visual.issues)||visual.issues.length)throw Error((visual.issues||['Visual audit rejected']).join('; '));
@@ -22,8 +22,8 @@ export async function runStaged({stories,callStructured,save,saveSheet=async()=>
 }
 export function createStagedPilot({supabase,callStructured,logger=console}){
  const bucket=supabase.storage.from('storyboard-pilots');let current;const load=async id=>{const{data}=await bucket.download(id+'/report.json');return data?JSON.parse(await data.text()):null;};
- async function start(){const prior=await load('world-2026-10-30-v2');if(prior?.status!=='complete')return;let previousCost=0;if(STAGED_WAVE==='rest'){const sample=await load('world-2026-10-30-staged-v2-sample');if(sample?.generated!==3)throw Error('Sample requires visual review first');previousCost=sample.costUSD;}
- const stories=prior.records.filter(r=>STAGED_WAVE==='sample'?[1,7,11].includes(r.index):![1,7,11].includes(r.index));
+ async function start(){const prior=await load('world-2026-10-30-v2');if(prior?.status!=='complete')return;let previousCost=0;const earlier=await load('world-2026-10-30-staged-v2-sample');if(earlier?.status!=='complete')return;previousCost=earlier.totalCostUSD||earlier.costUSD;if(STAGED_WAVE==='rest'){const sample=await load('world-2026-10-30-staged-v3-sample');if(sample?.generated!==3)throw Error('Sample requires visual review first');previousCost=sample.totalCostUSD;}
+ const stories=prior.records.filter(r=>STAGED_WAVE==='sample'?[1,7,11].includes(r.index):![1,7,11].includes(r.index)).map(r=>({...r,reuseComposition:STAGED_WAVE==='sample'?earlier.records.find(s=>s.index===r.index)?.candidate:null}));
  const{error}=await bucket.upload(STAGED_ID+'/claim.json',Buffer.from(JSON.stringify({at:new Date().toISOString(),stories:stories.length,budgetUSD:2-previousCost})),{contentType:'application/json',upsert:false});if(error){logger.log('Staged wave already claimed or storage unavailable; no model calls.');return;}
  await runStaged({stories,callStructured,previousCost,budget:2-previousCost,save:async r=>{current=r;const{error}=await bucket.upload(STAGED_ID+'/report.json',Buffer.from(JSON.stringify(r)),{contentType:'application/json',upsert:true});if(error)throw Error('Cannot save staged report');},saveSheet:async(index,png)=>{const{error}=await bucket.upload(STAGED_ID+'/sheet-'+index+'.json',Buffer.from(JSON.stringify({base64:png.toString('base64')})),{contentType:'application/json',upsert:true});if(error)throw Error('Cannot save rendered contact sheet');}});
  }
