@@ -1,6 +1,6 @@
 import{anthropicCost,pricesForModel}from'../usage-accounting.js';
 import{BOARD_SCHEMA,DRAW_SCHEMA,AUDIT_SCHEMA,boardV3,drawingV3,boardV3Prompt,drawV3Prompt,auditV3Prompt}from'./contract-v3.js';
-export const WAVE='sample'; // rest is a separate reviewed wave, never an open-ended queue.
+export const WAVE='rest'; // rest is a separate reviewed wave, never an open-ended queue.
 export const REPAIR_ID='world-2026-10-30-v4-'+WAVE;
 const HAIKU='claude-haiku-4-5-20251001',DRAW_MODEL='claude-sonnet-4-6';
 const decode=r=>JSON.parse(r.content.filter(c=>c.type==='text').map(c=>c.text).join(''));

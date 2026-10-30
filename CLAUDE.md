@@ -284,3 +284,11 @@ V4 sample reuses v3 completed raw drawings and storyboards, auditing first and r
 on a concrete failed audit. Its budget subtracts the prior repair sample's spend from $2.
 Rest wave subtracts the whole sample repair total. Original rejected reports remain stored.
 No success is created by ignoring a model rejection; the revised audit must return pass true.
+
+V4 sample3/3 passed format+Sonnet factual audit; completed reusable drawings were re-audited
+rather than redrawn. Re-audit7.497s,$0.037518; cumulative repair sample cost$0.351553
+including the earlier$0.314035 repair sample. Phone preview checked actor/theatre-to-film,
+crypto breach/freeze and rail-collision/mourning compositions and movement. No individual
+geometry was manually changed. Artwork remains prototype quality; passing audit is not
+editorial/polish approval. WAVE now rest for9 originals, budget$1.648447 remaining of$2.
+Do not re-run sample or its private storage claim. Final startup call must be removed.
