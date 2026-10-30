@@ -25,8 +25,17 @@ test('budget is reserved before dispatch and batch is capped at twelve',async()=
  assert.equal(calls,0);assert.equal(result.records.length,12);assert.equal(result.costUSD,0);
 });
 test('persistent claim prevents calls on restart even with provider credentials',async()=>{
- let calls=0,uploaded=0;const storage={download:async()=>({data:null}),upload:async()=>{uploaded++;return{error:{message:'Duplicate'}};}};
+ let calls=0,uploaded=0;const storage={download:async()=>({data:{text:async()=>JSON.stringify({status:'complete',costUSD:.2,records:[{index:0,headline:'Test',text,status:'failed'}]})}}),upload:async()=>{uploaded++;return{error:{message:'Duplicate'}};}};
  const client={storage:{from:()=>storage,createBucket:async()=>({})},from:()=>({select(){return this},eq(){return this},is(){return this},in:async()=>({data:[{stories_content:'source'}]})})};
  const pilot=createWorldPilot({supabase:client,callModel:async()=>{calls++},parseStories:()=>[{headline:'Test',summary:text}],logger:{log(){},warn(){}}});
  await pilot.start();await pilot.start();assert.equal(uploaded,2);assert.equal(calls,0);
+});
+
+test('safe compatibility handling preserves motion without inventing geometry',()=>{
+ const raw=structuredClone(drawing);raw.groups[0].frames=[{t:.1,rotate:0},{t:.9,rotate:360}];
+ raw.groups[0].shapes.push({type:'polygon',points:[30,30,50,60,10,60],fill:'ink',stroke:'none'});
+ raw.groups[0].shapes.push({type:'text',x:30,y:30,text:'invented label',fill:'ink',stroke:'none'});
+ const result=validateDrawing(raw,text);
+ assert.equal(result.groups[0].frames[0].t,0);assert.equal(result.groups[0].frames.at(-1).t,1);assert.equal(result.groups[0].frames.at(-1).rotate,360);
+ assert.equal(result.removedUnsupportedLabels,1);assert.equal(result.groups[0].shapes.at(-1).type,'polygon');
 });

@@ -238,3 +238,14 @@ publication to consumer animation lookup. Read-only /api/storyboard-pilot/world-
 returns only public published summaries and pilot results. Review these before deciding
 on a production rollout. Source paragraphs are not rewritten.
 Run tests: node --test storyboard-pilot/pilot.test.js usage-accounting.test.js story-animations.test.js.
+
+Pilot pass 1 completed with 0/12 valid drawings, $0.470606, 344.201 seconds.
+Pass 2 retries only failed stories using the remaining budget ($1 minus pass1 spend),
+with its own durable claim world-2026-10-30-v2. It will not start until pass1 is complete.
+General schema compatibility supports polygon/polyline, full-turn rotations and held
+endpoint poses; unsupported source labels are removed rather than published. Source
+matching ignores only whitespace/case. No story-specific drawings were manually edited.
+Pass2 preserves last rejected candidate for diagnosis; generated output still requires
+an independent model audit and later human visual review. Public read report path is
+/api/storyboard-pilot/world-2026-10-30-v2. Both passes' cost remains visible; do not
+claim pass2 is the first run or hide failed attempts when discussing quality/latency.
