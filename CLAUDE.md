@@ -300,3 +300,11 @@ objects and geometry are unchanged. This prevents a blank paused poster without 
 an entirely invisible drawing. WAVE recovery reuses only these3 raw candidates, applies
 normalization, then independently audits them. No drawing charges unless a real audit fails;
 remaining budget is $2 minus rest.repairTotalCostUSD. All previous calls remain accounted.
+
+Opening recovery passed2/3, cumulative repair$1.298705. Final original story(index11,
+China expulsions) generated91 individual roster primitives, over the bounded75-shape
+limit. No source audit was bypassed. WAVE final regenerates ONLY that story with the
+universal instruction to explain large-count news using representative objects, rather
+than one primitive per person/item. Shape-limit errors now name the actual count so
+repairs are actionable. $2 cap still includes every prior repair wave; eleven completed
+stories remain untouched. Remove startup invocation after final completion.
