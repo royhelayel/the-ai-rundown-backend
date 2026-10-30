@@ -1,3 +1,4 @@
+import{createStagedPilot}from'./storyboard-pilot/staged-run.js';
 import {createRepairV3} from './storyboard-pilot/repair-v3.js';
 import { createWorldPilot } from './storyboard-pilot/run.js';
 import { createStoryAnimations } from './story-animations.js';
@@ -2619,13 +2620,16 @@ storyAnimations.register(app);
 // no ongoing generation, no live-feed publication; durable claim prevents re-spend.
 const worldStoryboardPilot = createWorldPilot({supabase:supabaseAdmin,callModel:callClaude,parseStories:parseStoriesForTTS});
 worldStoryboardPilot.register(app);
-const repairV3=createRepairV3({supabase:supabaseAdmin,callStructured:async({prompt,schema,maxTokens,model,details})=>{
+async function callPilotStructured({prompt,schema,maxTokens,model,details,images=[]}){
   const response=await fetchAnthropic({method:'POST',headers:{'Content-Type':'application/json','x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01'},
-    body:JSON.stringify({model,max_tokens:maxTokens,messages:[{role:'user',content:prompt}],output_config:{format:{type:'json_schema',schema}}})},details);
+    body:JSON.stringify({model,max_tokens:maxTokens,messages:[{role:'user',content:images.length?[{type:'text',text:prompt},...images.map(i=>({type:'image',source:{type:'base64',media_type:i.mediaType,data:i.base64}}))]:prompt}],output_config:{format:{type:'json_schema',schema}}})},details);
   if(!response.ok)throw Error('Structured model request failed '+response.status+' '+JSON.stringify(await response.json()));
   return response.json();
-}});
+}
+const repairV3=createRepairV3({supabase:supabaseAdmin,callStructured:callPilotStructured});
 repairV3.register(app);
+const stagedPilot=createStagedPilot({supabase:supabaseAdmin,callStructured:callPilotStructured});
+stagedPilot.register(app);
 
 
 
@@ -6868,6 +6872,7 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
+  if(process.env.LOCAL_PREVIEW!=='1')void stagedPilot.start().catch(()=>console.warn('Staged visual pilot stopped; inspect saved report'));
   // Explicitly requested repaired pilot, protected by a per-wave durable claim.
   // Completed repair pilot: generation is disabled; saved reports stay readable.
   if (storyAnimations.stats.enabled && process.env.LOCAL_PREVIEW !== '1') {

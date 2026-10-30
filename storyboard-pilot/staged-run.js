@@ -1,0 +1,31 @@
+import{anthropicCost,pricesForModel}from'../usage-accounting.js';
+import{STAGED_SCHEMA,validateStaged,stagedPrompt,visualAuditPrompt}from'./staged-contract.js';
+import{AUDIT_SCHEMA}from'./contract-v3.js';import{renderGate}from'./render-gate.js';
+export const STAGED_WAVE='sample';
+export const STAGED_ID='world-2026-10-30-staged-v1-'+STAGED_WAVE;
+const model='claude-sonnet-4-6';
+export async function runStaged({stories,callStructured,save,saveSheet=async()=>{},budget=2,previousCost=0,now=()=>Date.now()}){
+ const start=now();let cursor=0,reserved=0,blocked=false;
+ const report={id:STAGED_ID,day:'2026-10-30',status:'running',method:'staged-rendered-visual-review',model,budgetUSD:budget,previousCost,costUSD:0,concurrency:2,records:stories.map(s=>({index:s.index,headline:s.headline,text:s.text,status:'queued',calls:[]}))};
+ const persist=async()=>{report.elapsedMs=now()-start;report.totalCostUSD=previousCost+report.costUSD;await save(structuredClone(report));};
+ async function call(prompt,schema,maxTokens,stage,row,images=[]){if(blocked)throw Error('Provider blocked');const rates=pricesForModel(model),worst=(Buffer.byteLength(prompt)+Buffer.byteLength(JSON.stringify(schema))+images.length*15000+1024)*rates.input+maxTokens*rates.output;if(report.costUSD+reserved+worst>budget)throw Error('Staged pilot budget cap reached');reserved+=worst;const at=now();try{const response=await callStructured({prompt,schema,maxTokens,model,images,details:{category:'World News',day:'2026-10-30',language:'en',contentType:'staged_animation_'+stage}});const cost=anthropicCost(response.usage||{},response.model||model).total;report.costUSD+=cost;row.calls.push({stage,elapsedMs:now()-at,model:response.model,usage:response.usage,costUSD:cost,requestId:response.id});await persist();if(response.stop_reason!=='end_turn')throw Error(stage+' stopped '+response.stop_reason);return JSON.parse(response.content.filter(c=>c.type==='text').map(c=>c.text).join(''));}catch(e){if(/401|403|429|credit balance|not_found|invalid_request/i.test(e.message))blocked=true;throw e;}finally{reserved-=worst;}}
+ await persist();
+ const worker=async()=>{while(cursor<report.records.length){const row=report.records[cursor++],at=now();row.status='running';await persist();let correction='',previous=null;try{for(let attempt=0;attempt<2;attempt++){row.attempts=attempt+1;try{
+  const prompt=stagedPrompt(row.text,correction)+(previous?'\nPREVIOUS DRAWING TO REPAIR:\n'+JSON.stringify(previous):'');
+  previous=await call(prompt,STAGED_SCHEMA,10000,attempt?'repair':'composition',row);row.candidate=previous;
+  const plan=validateStaged(previous,row.text);const rendered=renderGate(plan);row.motion=rendered.metrics;await saveSheet(row.index,rendered.png);row.sheetAvailable=true;await persist();
+  const visual=await call(visualAuditPrompt(row.text,plan),AUDIT_SCHEMA,1600,'rendered_visual_audit',row,[{base64:rendered.png.toString('base64'),mediaType:'image/png'}]);row.visualAudit=visual;
+  if(visual.pass!==true||!Array.isArray(visual.issues)||visual.issues.length)throw Error((visual.issues||['Visual audit rejected']).join('; '));
+  row.plan=plan;row.status='generated';delete row.candidate;break;
+ }catch(e){correction=e.message;row.issues=[...(row.issues||[]),correction];if(attempt===1||blocked||/budget/.test(correction))throw e;}}}catch(e){row.status='failed';row.error=String(e.message).slice(0,1200);}row.elapsedMs=now()-at;await persist();}};
+ await Promise.all([worker(),worker()]);report.status='complete';report.generated=report.records.filter(r=>r.status==='generated').length;report.failed=report.records.length-report.generated;await persist();return report;
+}
+export function createStagedPilot({supabase,callStructured,logger=console}){
+ const bucket=supabase.storage.from('storyboard-pilots');let current;const load=async id=>{const{data}=await bucket.download(id+'/report.json');return data?JSON.parse(await data.text()):null;};
+ async function start(){const prior=await load('world-2026-10-30-v2');if(prior?.status!=='complete')return;let previousCost=0;if(STAGED_WAVE==='rest'){const sample=await load('world-2026-10-30-staged-v1-sample');if(sample?.generated!==3)throw Error('Sample requires visual review first');previousCost=sample.costUSD;}
+ const stories=prior.records.filter(r=>STAGED_WAVE==='sample'?[1,7,11].includes(r.index):![1,7,11].includes(r.index));
+ const{error}=await bucket.upload(STAGED_ID+'/claim.json',Buffer.from(JSON.stringify({at:new Date().toISOString(),stories:stories.length,budgetUSD:2-previousCost})),{contentType:'application/json',upsert:false});if(error){logger.log('Staged wave already claimed or storage unavailable; no model calls.');return;}
+ await runStaged({stories,callStructured,previousCost,budget:2-previousCost,save:async r=>{current=r;const{error}=await bucket.upload(STAGED_ID+'/report.json',Buffer.from(JSON.stringify(r)),{contentType:'application/json',upsert:true});if(error)throw Error('Cannot save staged report');},saveSheet:async(index,png)=>{const{error}=await bucket.upload(STAGED_ID+'/sheet-'+index+'.json',Buffer.from(JSON.stringify({base64:png.toString('base64')})),{contentType:'application/json',upsert:true});if(error)throw Error('Cannot save rendered contact sheet');}});
+ }
+ return{start,register(app){app.get('/api/storyboard-pilot/staged',async(req,res)=>{try{res.set('Cache-Control','no-store');res.json(current||await load(STAGED_ID)||{status:'not_started',id:STAGED_ID});}catch{res.status(503).json({error:'Report unavailable'});}});app.get('/api/storyboard-pilot/staged/sheet/:index',async(req,res)=>{if(! /^\d{1,2}$/.test(req.params.index)||Number(req.params.index)>11)return res.status(400).end();const{data}=await bucket.download(STAGED_ID+'/sheet-'+Number(req.params.index)+'.json');if(!data)return res.status(404).end();const body=JSON.parse(await data.text());res.type('png').send(Buffer.from(body.base64,'base64'));});}};
+}

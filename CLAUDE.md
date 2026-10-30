@@ -317,3 +317,24 @@ pilot$0.905359 remains separate in report history. All startup generation invoca
 removed; durable claims retained. No live consumer artwork publication, news generation
 or TTS generation. Standalone public storyboard-pilot.html is the review surface.
 Do not describe audit success as final visual polish or a guaranteed production SLA.
+
+## Staged visual/motion repair (October31)
+
+Roy rejected the12/12 pilot as barely functional and specifically reported poor motion.
+Those passes certified structure/source audit, NOT visual quality; do not cite them as
+creative acceptance. `staged-contract`, `staged-render`, `render-gate`, `staged-run` replace
+cumulative faded layers with2–4 separate source-timed shots,1–4 large custom actors, short
+literal source labels and meaningful opaque movement/proportion change per shot. No
+story-specific hand drawing or canned category scenes. Renderer is shared between browser
+and backend frame rasterization. @resvg/resvg-js plus bundled Inter(OFL) renders real frames;
+PNG pixel-change gate rejects visually unchanged geometry, and Sonnet vision sees a contact
+sheet of setup/action/result for every shot before a result can pass. JSON/source proofs
+alone are insufficient. Pause/resume/seek/background clock tests cover actual timing bugs.
+
+Fixed bounded sample indices1,7,11 (Binance, Hong Kong, China) from original Oct30 edition;
+staged-v1-sample durable claim prevents re-spend. $2 cap for sample+rest combined,2 workers,
+max1 repair per story. Sample must pass image review AND browser human review before WAVE
+rest. Provider transport includes actual PNG image content and uses model-aware usage.
+All previous pilot startup calls remain off. Remove staged startup call when finished.
+Read-only /api/storyboard-pilot/staged and /staged/sheet/:index expose report/rendered frames.
+No live feed news/audio/artwork publication. Old12/12 is not the new readiness measure.
