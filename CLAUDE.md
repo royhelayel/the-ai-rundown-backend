@@ -256,3 +256,22 @@ were reached because drawing validation failed. Do not label this successful end
 latency or use it to promise publication timing. Five rejected candidates have bounded
 DIAGNOSTIC previews; these are not accepted/grounded publication assets. The startup
 invocation has been removed. Report is read-only; no new generation occurs on deploy.
+
+## Structured repair pilot v3 (2026-10-30)
+
+Roy explicitly asked to fix the failed0/12 pilot. `contract-v3.js` uses provider JSON schema
+via output_config.format, sentence IDs as evidence references, and explicit group-LOCAL
+geometry placed at{x,y}. Negative local coordinates/zero starting scale are legitimate.
+`repair-v3.js` uses Haiku4.5 for storyboard/audit and Sonnet4.6 for drawing, max9000 output
+tokens, one automatic drawing repair, two workers and $2 total across sample/rest waves.
+Sonnet input/output/cache rates are handled by model-aware usage accounting. News generation
+still uses its original model. Semantic audit is independent and cannot be bypassed for a
+successful record. Raw semantic references are not proof; visual review remains separate.
+
+Sample wave is3 varied original World Oct30 stories (indices0,1,2), fixed private Storage
+claim prevents repeated spend. Only after visual review should WAVE change to rest (9).
+Rest requires sample3/3 and subtracts sample cost from $2 budget. Consumer lookups cannot
+start a run. No live-feed publication; separate read-only route is
+/api/storyboard-pilot/world-2026-10-30-v3. Remove startup invocation after completion.
+Tests: node --test storyboard-pilot/*.test.js usage-accounting.test.js story-animations.test.js.
+Provider schema reference: https://platform.claude.com/docs/en/build-with-claude/structured-outputs

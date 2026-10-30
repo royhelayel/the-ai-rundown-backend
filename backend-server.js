@@ -1,3 +1,4 @@
+import {createRepairV3} from './storyboard-pilot/repair-v3.js';
 import { createWorldPilot } from './storyboard-pilot/run.js';
 import { createStoryAnimations } from './story-animations.js';
 import { createUsageWriter, createTrackedAnthropicFetch, addAnthropicUsage, searchUsageRow, readAllUsage, summarizeUsage, withUsageContext } from './usage-accounting.js';
@@ -2618,6 +2619,14 @@ storyAnimations.register(app);
 // no ongoing generation, no live-feed publication; durable claim prevents re-spend.
 const worldStoryboardPilot = createWorldPilot({supabase:supabaseAdmin,callModel:callClaude,parseStories:parseStoriesForTTS});
 worldStoryboardPilot.register(app);
+const repairV3=createRepairV3({supabase:supabaseAdmin,callStructured:async({prompt,schema,maxTokens,model,details})=>{
+  const response=await fetchAnthropic({method:'POST',headers:{'Content-Type':'application/json','x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01'},
+    body:JSON.stringify({model,max_tokens:maxTokens,messages:[{role:'user',content:prompt}],output_config:{format:{type:'json_schema',schema}}})},details);
+  if(!response.ok)throw Error('Structured model request failed '+response.status+' '+JSON.stringify(await response.json()));
+  return response.json();
+}});
+repairV3.register(app);
+
 
 
 async function callClaude(prompt, maxTokens = 4000, retries = 3, details = {}) {
@@ -6859,7 +6868,8 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
-  // Completed one-time pilot: no startup generation. Saved report stays readable.
+  // Explicitly requested repaired pilot, protected by a per-wave durable claim.
+  if(process.env.LOCAL_PREVIEW!=='1')void repairV3.start().catch(()=>console.warn('Structured repair pilot stopped; inspect saved report.'));
   if (storyAnimations.stats.enabled && process.env.LOCAL_PREVIEW !== '1') {
     void storyAnimations.backfill().catch(e => console.warn(`Animation backfill failed: ${e.message}`));
   }

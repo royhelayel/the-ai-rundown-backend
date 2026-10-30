@@ -9,13 +9,16 @@ const context = new AsyncLocalStorage();
 export const withUsageContext = (details, work) => context.run({ ...context.getStore(), ...details }, work);
 const number = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0;
 
-export function anthropicCost(usage = {}) {
+export const pricesForModel = model => /^claude-sonnet-4-[56]/.test(model || '') ? { ...PRICES, input:3/1e6, output:15/1e6, cache5m:3.75/1e6, cache1h:6/1e6, cacheRead:.3/1e6 } : PRICES;
+
+export function anthropicCost(usage = {}, model = CLAUDE_MODEL) {
+  const prices = pricesForModel(model);
   const writes = number(usage.cache_creation_input_tokens);
   const hour = number(usage.cache_creation?.ephemeral_1h_input_tokens);
   const five = Math.max(number(usage.cache_creation?.ephemeral_5m_input_tokens), writes - hour);
-  const tokens = number(usage.input_tokens) * PRICES.input + number(usage.output_tokens) * PRICES.output
-    + five * PRICES.cache5m + hour * PRICES.cache1h + number(usage.cache_read_input_tokens) * PRICES.cacheRead;
-  const search = number(usage.server_tool_use?.web_search_requests) * PRICES.anthropicSearch;
+  const tokens = number(usage.input_tokens) * prices.input + number(usage.output_tokens) * prices.output
+    + five * prices.cache5m + hour * prices.cache1h + number(usage.cache_read_input_tokens) * prices.cacheRead;
+  const search = number(usage.server_tool_use?.web_search_requests) * prices.anthropicSearch;
   return { tokens, search, total: tokens + search };
 }
 
@@ -73,14 +76,14 @@ export function createTrackedAnthropicFetch({ trackUsage, fetchImpl = fetch, log
       if (data.usage) {
         const { category = null, timeSlot = null, language = null, day = null,
           contentType = 'claude_other' } = { ...context.getStore(), ...details };
-        const cost = anthropicCost(data.usage);
+        const cost = anthropicCost(data.usage, data.model);
         await trackUsage({ service: 'anthropic', model: data.model || CLAUDE_MODEL,
           input_tokens: number(data.usage.input_tokens), output_tokens: number(data.usage.output_tokens),
           token_cost_usd: cost.tokens, search_cost_usd: cost.search, estimated_cost_usd: cost.total,
           web_searches: number(data.usage.server_tool_use?.web_search_requests),
           category, time_slot: timeSlot, language, content_type: contentType,
           provider_request_id: data.id || response.headers.get('request-id') || null,
-          usage_metadata: { accounting_version: 2, usage: data.usage, day, prices: PRICES },
+          usage_metadata: { accounting_version: 2, usage: data.usage, day, prices: pricesForModel(data.model) },
           created_at: new Date().toISOString() });
       }
     } catch (error) {
