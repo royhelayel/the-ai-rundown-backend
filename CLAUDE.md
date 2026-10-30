@@ -275,3 +275,12 @@ start a run. No live-feed publication; separate read-only route is
 /api/storyboard-pilot/world-2026-10-30-v3. Remove startup invocation after completion.
 Tests: node --test storyboard-pilot/*.test.js usage-accounting.test.js story-animations.test.js.
 Provider schema reference: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
+
+Repair sample v3 completed at $0.314035. Format was fixed, but a mistaken dimension bound
+rejected540px platforms, and Haiku audit incorrectly demanded death depiction, all quantities
+encoded and decorative layout verified. Corrected bounds retain finite/safe numeric geometry;
+source auditor now Sonnet4.6 with explicit factual-error-only criteria (not coverage/style).
+V4 sample reuses v3 completed raw drawings and storyboards, auditing first and redrawing only
+on a concrete failed audit. Its budget subtracts the prior repair sample's spend from $2.
+Rest wave subtracts the whole sample repair total. Original rejected reports remain stored.
+No success is created by ignoring a model rejection; the revised audit must return pass true.

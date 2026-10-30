@@ -20,7 +20,7 @@ test('schema only uses provider-supported features, closed objects and finite sh
 });
 test('real workflow sends schemas at every stage and uses model-specific accounting',async()=>{
  const calls=[];const r=await runRepair({stories:[{headline:'Passport',text}],save:async()=>{},callStructured:async req=>{calls.push(req);return response(calls.length===1?board:calls.length===2?candidate:{pass:true,issues:[]},req.model);}});
- assert.equal(r.generated,1);assert.equal(calls.length,3);assert.ok(calls.every(c=>c.schema?.additionalProperties===false));assert.equal(calls[1].model,'claude-sonnet-4-6');assert.ok(Math.abs(r.costUSD-.003)<1e-10);
+ assert.equal(r.generated,1);assert.equal(calls.length,3);assert.ok(calls.every(c=>c.schema?.additionalProperties===false));assert.equal(calls[1].model,'claude-sonnet-4-6');assert.ok(Math.abs(r.costUSD-.0042)<1e-10);
  assert.equal(anthropicCost({input_tokens:1000000,output_tokens:1000000},'claude-sonnet-4-6').total,18);
 });
 test('semantic audit failure stays rejected after one repair and is never relabeled passed',async()=>{
@@ -36,5 +36,12 @@ test('transport accounting stores Sonnet rates rather than silently charging Hai
  const{createTrackedAnthropicFetch}=await import('../usage-accounting.js');let stored;
  const tracked=createTrackedAnthropicFetch({trackUsage:async row=>{stored=row;},fetchImpl:async()=>new Response(JSON.stringify({id:'sonnet-test',model:'claude-sonnet-4-6',usage:{input_tokens:1000,output_tokens:1000}}))});
  await tracked({method:'POST'},{contentType:'storyboard_repair_v3_drawing'});
- assert.equal(stored.model,'claude-sonnet-4-6');assert.equal(stored.estimated_cost_usd,.018);assert.equal(stored.usage_metadata.prices.input,3e-6);
+ assert.equal(stored.model,'claude-sonnet-4-6');assert.ok(Math.abs(stored.estimated_cost_usd-.018)<1e-10);assert.equal(stored.usage_metadata.prices.input,3e-6);
+});
+
+test('a wide platform is valid local geometry and completed drawings can be re-audited without paid redraw',async()=>{
+ const wide=structuredClone(candidate);wide.groups[0].shapes[0]={type:'rect',x:-270,y:-10,width:540,height:20,rx:0,fill:'ink',stroke:'none',sw:0};
+ assert.doesNotThrow(()=>drawingV3(wide,text));
+ const requests=[];const r=await runRepair({stories:[{index:0,headline:'Passport',text,reuseBoard:boardV3(board,text),reuseCandidate:wide}],save:async()=>{},callStructured:async req=>{requests.push(req);return response({pass:true,issues:[]},req.model);}});
+ assert.equal(r.generated,1);assert.equal(requests.length,1);assert.equal(requests[0].details.contentType,'storyboard_repair_v3_audit');assert.equal(r.records[0].reusedDrawing,true);
 });
