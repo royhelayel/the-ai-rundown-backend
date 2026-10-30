@@ -365,3 +365,15 @@ Multi-turn clock rotation1080deg is finite/safe; the image reviewer must still r
 rotating whole clock/door frame when the stated action requires a moving hand/leaf. It
 also checks that charts move the intended value rather than scaling all bars together.
 No image pass is silently created. Budget subtracts all staged-v3 costs ($0.511212).
+
+The first real rendered vision audit rejected the crypto sample for genuinely weak motion:
+static coin stream, blank setup, a generic ice rectangle, both chart bars shrinking, and
+unsourced relative bar heights. These were exactly the defects the earlier JSON/source
+checks missed. The automatic repair generated revised assets, but a qualified percentage
+label needed more wrapping room. Canvas/labels now allow a420px-high scene and up to3
+readable26px lines; artwork region remains unchanged. Written source quantities(e.g seven)
+match digit labels(7). Concise label semantics are verified by the rendered source reviewer,
+not an inadequate word-membership heuristic; invented numbers still fail locally, numerical
+qualifiers are restored. Native SVG line weight remains bounded0..16. Staged-v5 reuses latest
+complete candidates and renders/audits them before any success. Budget includes all previous
+staged attempts ($0.692940); no old twelve-story quality claim is carried forward.
