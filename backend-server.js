@@ -6869,7 +6869,7 @@ if (process.env.LOCAL_PREVIEW === '1') {
 
 app.listen(PORT, () => {
   // Explicitly requested repaired pilot, protected by a per-wave durable claim.
-  if(process.env.LOCAL_PREVIEW!=='1')void repairV3.start().catch(()=>console.warn('Structured repair pilot stopped; inspect saved report.'));
+  // Completed repair pilot: generation is disabled; saved reports stay readable.
   if (storyAnimations.stats.enabled && process.env.LOCAL_PREVIEW !== '1') {
     void storyAnimations.backfill().catch(e => console.warn(`Animation backfill failed: ${e.message}`));
   }

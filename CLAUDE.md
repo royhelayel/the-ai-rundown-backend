@@ -308,3 +308,12 @@ universal instruction to explain large-count news using representative objects, 
 than one primitive per person/item. Shape-limit errors now name the actual count so
 repairs are actionable. $2 cap still includes every prior repair wave; eleven completed
 stories remain untouched. Remove startup invocation after final completion.
+
+Repair pilot closed on October31: original October30 World edition now12/12 passes
+format validation and independent Sonnet factual audit. Total repair$1.438460,51 API
+calls,572.107s summed generation-wave wall time (9m32s); includes every failed repair
+sample/retry/re-audit, excludes human development/deployment/review. Original failed
+pilot$0.905359 remains separate in report history. All startup generation invocations
+removed; durable claims retained. No live consumer artwork publication, news generation
+or TTS generation. Standalone public storyboard-pilot.html is the review surface.
+Do not describe audit success as final visual polish or a guaranteed production SLA.
