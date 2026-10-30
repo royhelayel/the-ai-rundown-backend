@@ -1,3 +1,4 @@
+import { createWorldPilot } from './storyboard-pilot/run.js';
 import { createStoryAnimations } from './story-animations.js';
 import { createUsageWriter, createTrackedAnthropicFetch, addAnthropicUsage, searchUsageRow, readAllUsage, summarizeUsage, withUsageContext } from './usage-accounting.js';
 import { registerAudioProgressRoutes } from './audio-progress.js';
@@ -2613,6 +2614,10 @@ const storyAnimations = createStoryAnimations({
   },
 });
 storyAnimations.register(app);
+// One fixed World edition pilot, explicitly requested by Roy. No consumer trigger,
+// no ongoing generation, no live-feed publication; durable claim prevents re-spend.
+const worldStoryboardPilot = createWorldPilot({supabase:supabaseAdmin,callModel:callClaude,parseStories:parseStoriesForTTS});
+worldStoryboardPilot.register(app);
 
 
 async function callClaude(prompt, maxTokens = 4000, retries = 3, details = {}) {
@@ -6854,6 +6859,9 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
+  if (process.env.LOCAL_PREVIEW !== '1') {
+    void worldStoryboardPilot.start().catch(() => console.warn('World storyboard pilot stopped; inspect its saved report.'));
+  }
   if (storyAnimations.stats.enabled && process.env.LOCAL_PREVIEW !== '1') {
     void storyAnimations.backfill().catch(e => console.warn(`Animation backfill failed: ${e.message}`));
   }

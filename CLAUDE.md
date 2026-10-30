@@ -218,3 +218,23 @@ plans before storage, without model or database calls. Every element is schema-v
 and retains literal source evidence. This is a manually authored current edition; future
 cycles are not automatically illustrated for free. Anthropic generation stays disabled.
 The status endpoint reports editorial coverage separately from paid generation counters.
+
+## Isolated World automation pilot (2026-10-30)
+
+Roy explicitly requested a simulation of automatic storyboards/drawings for today's World
+stories. `storyboard-pilot/` runs one fixed World News English edition (2026-10-30),
+max12 full summaries, two workers, $1 conservative reserved budget, max one automatic
+drawing repair. Separate tracked calls: storyboard, drawing, model audit. No manual
+geometry edits counted as automation; generated is NOT equivalent to visually approved.
+New bounded grouped SVG schema honors time-based movements rather than the live renderer's
+generic entrance choreography. Model text/code/URLs never execute.
+
+The pilot uses the configured backend Anthropic transport and accounting. A private
+Supabase Storage claim at storyboard-pilots/world-2026-10-30-v1/claim.json is atomic and
+permanent: restarts/deploys cannot re-spend. Never delete the claim or silently resume.
+Local preview does not launch. This is a one-time isolated run, not a global generator
+enablement. Existing storyAnimations remains disabled. No TTS/news generation and no
+publication to consumer animation lookup. Read-only /api/storyboard-pilot/world-2026-10-30-v1
+returns only public published summaries and pilot results. Review these before deciding
+on a production rollout. Source paragraphs are not rewritten.
+Run tests: node --test storyboard-pilot/pilot.test.js usage-accounting.test.js story-animations.test.js.
