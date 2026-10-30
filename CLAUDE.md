@@ -338,3 +338,9 @@ rest. Provider transport includes actual PNG image content and uses model-aware 
 All previous pilot startup calls remain off. Remove staged startup call when finished.
 Read-only /api/storyboard-pilot/staged and /staged/sheet/:index expose report/rendered frames.
 No live feed news/audio/artwork publication. Old12/12 is not the new readiness measure.
+
+Staged-v1 sample provider schema compilation was rejected before generation ($0). The
+polymorphic geometry union made the compiled grammar too large. Staged-v2 uses a compact
+uniform shape record(type, numeric values[], d, paint) instead; local geometry validation
+and renderer produce the identical safe shapes. All visual/motion/source checks remain.
+The failed v1 claim/report remain preserved; do not silently delete/reuse a claim.
