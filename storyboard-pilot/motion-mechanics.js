@@ -20,8 +20,8 @@ export function compileMechanics(input,text){const p=structuredClone(input),sour
   if(doorFrame&&leaf&&/shut|clos|open/i.test(shot.action)){
    const outer=bounds(objects[doorFrame.object]),panel=bounds(objects[leaf.object]),base=doorFrame.frames[0];const innerW=Math.max(30,outer.width-14),innerH=Math.max(40,outer.height-14),closing=/shut|clos/i.test(shot.action);
    leaf.contentTransform={sx:innerW/Math.max(1,panel.width),sy:innerH/Math.max(1,panel.height),tx:-panel.x,ty:-(panel.y+panel.height/2)};
-   const pose={x:base.x+(outer.x+7)*base.sx,y:base.y+(outer.y+outer.height/2)*base.sy,sx:closing?.08:1,sy:1,r:0,o:1};
-   leaf.frames=[frame(0,pose),frame(.12,pose),frame(.75,{...pose,sx:closing?1:.08}),frame(1,{...pose,sx:closing?1:.08})];notes.push(closing?'hinged door closes':'hinged door opens');
+   const pose={x:base.x+(outer.x+7)*base.sx,y:base.y+(outer.y+outer.height/2)*base.sy,sx:(closing?.08:1)*base.sx,sy:base.sy,r:0,o:1};
+   leaf.frames=[frame(0,pose),frame(.12,pose),frame(.75,{...pose,sx:(closing?1:.08)*base.sx}),frame(1,{...pose,sx:(closing?1:.08)*base.sx})];notes.push(closing?'hinged door closes':'hinged door opens');
   }
   for(const actor of shot.actors){const o=objects[actor.object],name=actor.object+' '+o.description,first=actor.frames[0];
    if(/(?:clock|minute|hour).?hand/i.test(name)){
