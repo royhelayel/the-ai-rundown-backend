@@ -428,3 +428,10 @@ uses small literal arrays for repeated objects. A bounded recovery of the two fo
 sample keys reuses persisted plans/latest code and re-audits; compilation or real source
 rejection can request one code repair. No repeated planning/redraw for valid candidates.
 Costs/failed claims remain. Remove recoverFocusedMotion startup after integration QA.
+
+Focus-normalized-v3 fixes complete repair feedback (all literal font/time/loop failures,
+not only the first) and per-request source/code ID enums in the provider schema. Enum
+item schema objects must be replaced, not mutated in place: schema shorthand strings
+share references even after structuredClone. Regression test covers distinct F/Q and
+S/C enum sets. Two v3 checks reuse v2 last candidates; they do not repeat planning.
+Remove verifyEnumReview startup after QA. All previous costs/claims stay visible.

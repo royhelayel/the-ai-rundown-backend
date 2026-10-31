@@ -113,3 +113,9 @@ focused-policy candidates and plans, compiling/re-auditing before any redraw. Al
 records/reservations remain. A code repair is allowed only for a real rejection; no
 public viewer can request it. The current temporary recovery startup must be removed
 once this fixed integration check completes.
+
+Review contract v3 constrains source/code reference strings with per-request JSON-schema
+enums, not just prompt instructions. Layout/time validation reports all detected small
+fonts and timeline/loop-bound problems together, so one repair receives the complete
+list. Focus-normalized-v3 sample tasks explicitly reuse latest v2 candidates; original
+artifacts/costs are unchanged. Temporary verifyEnumReview must be removed after QA.
