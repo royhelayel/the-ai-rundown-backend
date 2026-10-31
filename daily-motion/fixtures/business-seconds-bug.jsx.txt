@@ -1,0 +1,221 @@
+import React from 'react';
+import { useCurrentFrame, useVideoConfig, interpolate, Easing } from 'remotion';
+
+const C = {
+  ink: '#1b2319',
+  muted: '#626a5b',
+  paper: '#f5f5ed',
+  accent: '#d4a574',
+  pale: '#e8e3d8',
+  line: '#d6ddd2'
+};
+
+const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' };
+const ease = t => 1 - Math.pow(1 - t, 3);
+const tween = (t, a, b, from = 0, to = 1) =>
+  interpolate(t, [a, b], [from, to], { ...clamp, easing: Easing.cubic });
+
+function BitcoinCircle({ cx, cy, opacity, scale }) {
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      r={8 * scale}
+      fill={C.accent}
+      opacity={opacity}
+    />
+  );
+}
+
+export default function Story() {
+  const frame = useCurrentFrame();
+  const { durationInFrames, fps } = useVideoConfig();
+  const t = frame / fps;
+  const totalDuration = durationInFrames / fps;
+
+  const phase1End = 0.5;
+  const phase2Start = 0.5;
+
+  // Phase 1: coins flow into left vault
+  const flowProgress = Math.min(1, t / phase1End);
+  
+  // Phase 2: glow and settle
+  const glowProgress = Math.max(0, Math.min(1, (t - phase2Start) / (totalDuration - phase2Start)));
+  const glowIntensity = Math.sin(glowProgress * Math.PI * 2) * 0.3 + 0.5;
+
+  const leftVaultX = 240;
+  const rightVaultX = 500;
+  const vaultCenterY = 360;
+  const leftVaultWidth = 220;
+  const rightVaultWidth = 140;
+  const vaultHeight = 280;
+
+  // Generate Bitcoin circles flowing into left vault
+  const bitcoinCircles = [];
+  const circlesPerWave = 18;
+  for (let i = 0; i < circlesPerWave; i++) {
+    const delay = (i / circlesPerWave) * phase1End;
+    const circleProgress = Math.max(0, Math.min(1, (t - delay) / 0.4));
+    
+    const startX = 360;
+    const startY = 200;
+    const endX = leftVaultX;
+    const endY = vaultCenterY - 40 + (i % 5) * 45;
+    
+    const easeProgress = ease(circleProgress);
+    const currentX = startX + (endX - startX) * easeProgress;
+    const currentY = startY + (endY - startY) * easeProgress;
+    const opacity = circleProgress > 0 && circleProgress < 1 ? 1 : (circleProgress >= 1 ? 1 : 0);
+    const scale = circleProgress < 0.2 ? 1 : 1;
+
+    bitcoinCircles.push({
+      cx: currentX,
+      cy: currentY,
+      opacity,
+      scale,
+      settled: circleProgress >= 1
+    });
+  }
+
+  const settledCircles = bitcoinCircles.filter(c => c.settled).length;
+
+  return (
+    <svg
+      width="720"
+      height="720"
+      viewBox="0 0 720 720"
+      style={{
+        overflow: 'visible',
+        fontFamily: 'Arial, Helvetica, sans-serif',
+        background: C.paper
+      }}
+    >
+      {/* Left vault container - Stolen BTC */}
+      <g>
+        <defs>
+          <linearGradient id="leftGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor={C.ink} stopOpacity="0.1" />
+            <stop offset="100%" stopColor={C.ink} stopOpacity="0.25" />
+          </linearGradient>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation={glowIntensity * 3} result="coloredBlur" />
+            <feMerge>
+              <feMergeNode in="coloredBlur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        
+        <rect
+          x={leftVaultX - leftVaultWidth / 2}
+          y={vaultCenterY - vaultHeight / 2}
+          width={leftVaultWidth}
+          height={vaultHeight}
+          rx="8"
+          fill="url(#leftGradient)"
+          stroke={C.ink}
+          strokeWidth="2.5"
+          filter={flowProgress > 0.3 ? 'url(#glow)' : 'none'}
+          opacity={0.9 + glowIntensity * 0.1}
+        />
+        
+        <text
+          x={leftVaultX}
+          y={vaultCenterY + vaultHeight / 2 + 45}
+          textAnchor="middle"
+          fontSize="36"
+          fontWeight="bold"
+          fill={C.ink}
+        >
+          Stolen BTC
+        </text>
+      </g>
+
+      {/* Right vault container - Coinbase reserves */}
+      <g opacity={0.7}>
+        <rect
+          x={rightVaultX - rightVaultWidth / 2}
+          y={vaultCenterY - vaultHeight / 2}
+          width={rightVaultWidth}
+          height={vaultHeight}
+          rx="8"
+          fill="none"
+          stroke={C.muted}
+          strokeWidth="2"
+          strokeDasharray="4 4"
+        />
+        
+        {/* Minimal coins in right vault to show reserve */}
+        {[0, 1, 2].map((i) => (
+          <circle
+            key={`reserve-${i}`}
+            cx={rightVaultX}
+            cy={vaultCenterY + 60 - i * 35}
+            r="7"
+            fill={C.accent}
+            opacity={0.4}
+          />
+        ))}
+        
+        <text
+          x={rightVaultX}
+          y={vaultCenterY + vaultHeight / 2 + 45}
+          textAnchor="middle"
+          fontSize="36"
+          fontWeight="bold"
+          fill={C.muted}
+          opacity={0.6}
+        >
+          Coinbase
+        </text>
+        <text
+          x={rightVaultX}
+          y={vaultCenterY + vaultHeight / 2 + 75}
+          textAnchor="middle"
+          fontSize="28"
+          fill={C.muted}
+          opacity={0.5}
+        >
+          reserves
+        </text>
+      </g>
+
+      {/* Moving Bitcoin circles */}
+      {bitcoinCircles.map((coin, i) => (
+        <BitcoinCircle
+          key={`bitcoin-${i}`}
+          cx={coin.cx}
+          cy={coin.cy}
+          opacity={coin.opacity}
+          scale={coin.scale}
+        />
+      ))}
+
+      {/* Settled coins glow in phase 2 */}
+      {t >= phase2Start && bitcoinCircles.filter(c => c.settled).map((coin, i) => (
+        <circle
+          key={`glow-${i}`}
+          cx={leftVaultX}
+          cy={vaultCenterY - 40 + (i % 5) * 45}
+          r={8 * 1.3}
+          fill={C.accent}
+          opacity={glowIntensity * 0.4}
+        />
+      ))}
+
+      {/* Scale indicator label */}
+      <text
+        x="360"
+        y="90"
+        textAnchor="middle"
+        fontSize="30"
+        fill={C.ink}
+        opacity={tween(t, 0, 0.3, 0, 1)}
+      >
+        Breach comparison
+      </text>
+    </svg>
+  );
+}
+
+config = {"width":720,"height":720,"fps":24,"durationInFrames":120}

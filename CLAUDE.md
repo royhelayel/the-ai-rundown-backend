@@ -405,3 +405,18 @@ and remain withheld, not rubber-stamped. Private failures need inspection before
 both categories fully verified. Mutable storage uses cacheNonce/no-store downloads and
 cacheControl0 uploads; assets/runtime remain immutable/cacheable. Re-publication must not
 reset terminal unavailable/budget aliases to pending. Never silently clear old costs.
+
+## Uploaded daily-motion failure diagnosis
+
+Roy supplied private Business claim325380...-0.json. Reviewer confused18 representative
+circles with17 wallet addresses and demanded Ether coverage outside the selected Bitcoin
+sentence, causing repair scope drift. Review must evaluate the SELECTED short-script
+coverage, with full source for contradictions/qualifications; it must still reject real
+false labels, invented quantitative ratios or missing qualifications affecting that claim.
+Do not waive model rejection; revised candidates require explicit new approval.
+Real timing defect: frame/fps seconds were compared with normalized0..1 beat times, rushing
+all action into the first second. validateScene rejects this pattern and literal fonts<30px.
+Artist prompt now mandates normalized frame/(durationInFrames-1) through the useful timeline.
+Generation policy focus-normalized-v2 participates in cache keys; old assets remain readable.
+One durable check queues one original World/Business source under revised policy. Remove
+startup check after QA; do not delete previous claims or silently reset spending.

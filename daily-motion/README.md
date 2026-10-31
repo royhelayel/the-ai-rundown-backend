@@ -11,9 +11,9 @@ One code repair/recheck is allowed. This is not a guarantee of creative quality.
   private/shared-user rows, weekly/monthly jobs or history backfill.
 - Trigger: non-blocking `saveBriefingSources` hook after publication. Startup resumes
   only today's already queued tasks; a background minute tick retries interrupted work.
-- Existing attributed short script is reused exactly. If it is missing, the planning
-  call derives a concise visual script from the full checked source; factual audit
-  checks the derived script too. This does not rewrite or publish the news/audio.
+- Existing attributed short script is reused exactly. If it is missing, an exact first published sentence is used as the focus
+  (max65words); a model does not write another summary. The full source remains
+  available to check contradictions and qualifications. This does not rewrite or publish the news/audio.
 - One cached code asset serves exact Full and unambiguous single-story Quick aliases.
   A multi-story recap sentence is not attached to a guessed single-story scene.
 - All input text corrections affect content signatures. Ready assets are reused.
@@ -94,3 +94,14 @@ or verification calls remain. Only publication and already-queued-today work can
 Mutable aliases/claims use cacheNonce plus no-store reads and zero-cache writes; immutable
 assets/runtime retain caching. Re-publication preserves terminal unavailable/budget aliases
 for the same key rather than presenting a failed job as pending indefinitely.
+
+Uploaded Business failure diagnosed: review mistook representative circles for literal
+wallet counts and required Ether coverage outside a Bitcoin-only selected focus. That
+misdirected the automatic repair. Reviewer instructions now distinguish focus coverage
+from context, retain real fact/status/ratio checks and require explicit new approval.
+The candidate also used frame/fps with 0..1 beat times, rushing animation into the first
+second. Static validation now rejects this known pattern and literal label sizes below
+30px; prompts use normalized progress throughout. Cache signatures include generation
+policy focus-normalized-v2 so revised scenes do not collide with old artifacts.
+A durable, one-time check queues one original World and Business saved source only;
+remove its startup invocation after actual rendered QA. Old claims and costs remain.
