@@ -1,4 +1,5 @@
 import {createDailyMotion} from './daily-motion/service.js';
+import {storyEvidence} from './daily-motion/evidence.js';
 import {createShortComparison} from './remotion-compare/short/experiment.js';
 import {createComparisonRepair} from './remotion-compare/repair.js';
 import {createRemotionComparison} from './remotion-compare/experiment.js';
@@ -2622,7 +2623,7 @@ const storyAnimations = createStoryAnimations({
 storyAnimations.register(app);
 const dailyMotion=createDailyMotion({supabase:supabaseAdmin,callStructured:callPilotStructured,
   enabled:process.env.LOCAL_PREVIEW!=='1'&&process.env.DAILY_MOTION_ENABLED!=='false',
-  parseStories:row=>{const full=parseStoriesForTTS(row.content||row.stories_content),cards=parseStoriesForTTS(row.stories_content);const norm=s=>s.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');const byHeadline=new Map(cards.map(st=>[norm(st.headline),st]));return full.map(st=>{const card=byHeadline.get(norm(st.headline))||st;return{headline:st.headline,summary:buildStoryScript(card)};});},
+  parseStories:row=>{const full=parseStoriesForTTS(row.content||row.stories_content),cards=parseStoriesForTTS(row.stories_content);const norm=s=>s.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');const byHeadline=new Map(cards.map(st=>[norm(st.headline),st]));return full.map(st=>{const card=byHeadline.get(norm(st.headline))||st;const summary=buildStoryScript(card);return{headline:st.headline,summary,sourceText:storyEvidence(row.content||row.stories_content,st.headline,summary)};});},
   publicOrigin:process.env.DAILY_MOTION_PUBLIC_ORIGIN||'https://the-ai-rundown-backend.onrender.com'});
 dailyMotion.register(app);
 
@@ -6890,7 +6891,7 @@ if (process.env.LOCAL_PREVIEW === '1') {
 app.listen(PORT, () => {
   // Resume only today's already queued jobs; no historical backfill or consumer generation.
   dailyMotion.start();
-  if(process.env.LOCAL_PREVIEW!=='1')void dailyMotion.verifyCardCanvas().catch(e=>console.warn('Focused motion check:',e.message));
+  if(process.env.LOCAL_PREVIEW!=='1')void dailyMotion.recoverCardTypography().catch(e=>console.warn('Focused motion check:',e.message));
   // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
   // Short-script comparison is complete. Paid starts are disabled; reports remain readable.
   // One explicitly requested comparison. Durable claim prevents deploy/restart repeats.

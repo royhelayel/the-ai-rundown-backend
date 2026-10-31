@@ -450,3 +450,16 @@ participates in keys, and old assets remain readable. One bounded check reuses B
 anime plan/code for landscape recomposition and tests the next mapped World brief,
 skipping the script-rejected crypto text. Do not pretend those original rejections
 passed. Remove verifyCardCanvas startup after actual app/screenshot QA.
+
+Private diagnostics obtained via authenticated Supabase download. World crypto Q really
+misattributes the general40% weapons-funding estimate to the specific Binance theft;
+keep that source rejection. Business reviewer also nitpicked capitalization/plan timings
+and equivalent 'exceeds/more than' wording; factual review now excludes those preferences
+and does not treat illustrative counts as measured quantities without a declared scale.
+The original art evidence was only the reading paragraph: storyEvidence now supplies all
+checked digest bullets, including beyond the narrator parser's three-bullet preview, plus
+the published paragraph. Source changes invalidate cache keys without changing narration.
+Shared AST typography normalization clamps only literal fontSize<30px before validation
+and grounding; source text/numbers/geometry stay intact and adjustments are recorded.
+One readability-only landscape World recovery is temporary. Remove its startup invocation.
+Core news/recap generation and existing narration are untouched (other work may own them).

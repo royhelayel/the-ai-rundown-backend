@@ -140,3 +140,13 @@ actual canvas. Policy card-landscape-v4 invalidates generation keys while old ar
 remain readable. The bounded card-canvas-v4 check reuses the mapped Business plan/drawing
 for recomposition, and selects the next actual mapped World item without retrying a
 script-grounding rejection. Remove its startup invocation after app-level QA.
+
+Final reliability rules: source review sees every checked digest bullet plus the
+published reading paragraph, not only the narration parser's first-three-bullet preview.
+Evidence changes participate in cache keys. Review ignores harmless paraphrase/case and
+storyboard wording/layout preferences; real false claims/statuses remain blocking.
+A shared AST typography pass raises only literal font sizes below30px, preserving text,
+quantities and geometry; adjusted source is revalidated and fact-checked, with changes
+recorded privately. This replaces paid retries for mechanical style normalization.
+One readability-only landscape World recovery reuses the last drawing; no script-rejected
+crypto job is retried. Remove recoverCardTypography startup when the bounded check ends.

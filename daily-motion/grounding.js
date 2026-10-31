@@ -2,7 +2,7 @@ import {normalize} from './source.js';
 // IDs bind model evidence to immutable input; models never have to retype source prose.
 export function sourceSentences(job) {
   const rows=[];
-  for(const [prefix,text] of [['F',job.fullText],['Q',job.shortText]]) {
+  for(const [prefix,text] of [['F',job.sourceText||job.fullText],['Q',job.shortText]]) {
     const sentences=normalize(text||'').split(/(?<=[.!?])\s+(?=[\p{Lu}\p{N}])/u).filter(Boolean);
     sentences.forEach((text,i)=>rows.push({id:prefix+(i+1),text}));
   }
