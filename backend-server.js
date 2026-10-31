@@ -6879,7 +6879,8 @@ if (process.env.LOCAL_PREVIEW === '1') {
 
 app.listen(PORT, () => {
   // One explicitly requested comparison. Durable claim prevents deploy/restart repeats.
-  if(process.env.LOCAL_PREVIEW!=='1')void comparisonRepair.start().catch(e=>console.warn('Comparison repair stopped:',e.message));
+  // Haiku/Sonnet comparison and the single technical repair are complete.
+  // Paid starts are disabled; saved reports remain available.
   // Paid staged experiments are stopped. Reports remain available for review.
   // Re-enable only for a specifically bounded experiment with a new durable claim.
   // Explicitly requested repaired pilot, protected by a per-wave durable claim.
