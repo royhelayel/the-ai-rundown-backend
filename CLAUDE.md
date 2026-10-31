@@ -420,3 +420,11 @@ Artist prompt now mandates normalized frame/(durationInFrames-1) through the use
 Generation policy focus-normalized-v2 participates in cache keys; old assets remain readable.
 One durable check queues one original World/Business source under revised policy. Remove
 startup check after QA; do not delete previous claims or silently reset spending.
+
+Focused sample verification exposed brittle retyped JSX excerpts and a non-provable
+loop bound. Audits now cite numbered S1/Cn source-code lines; no exact-code copying is
+required, unknown IDs still fail, and explicit model approval is mandatory. Code prompt
+uses small literal arrays for repeated objects. A bounded recovery of the two focused
+sample keys reuses persisted plans/latest code and re-audits; compilation or real source
+rejection can request one code repair. No repeated planning/redraw for valid candidates.
+Costs/failed claims remain. Remove recoverFocusedMotion startup after integration QA.

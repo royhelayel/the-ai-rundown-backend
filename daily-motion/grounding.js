@@ -17,11 +17,12 @@ export function validatePlan(raw,job) {
   if(plan.beats.some(b=>!Number.isFinite(b.start)||!Number.isFinite(b.end)||b.start<0||b.end>1||b.end<=b.start))throw Error('Invalid beat timing');
   return plan;
 }
+export function sceneLines(plan,code){return[{id:'S1',text:plan.script},...code.split('\n').map((text,i)=>({id:'C'+(i+1),text})).filter(r=>r.text.trim())];}
 export function reviewAudit(audit,job,plan,code) {
-  const sources=new Set(sourceSentences(job).map(s=>s.id));
+  const sources=new Set(sourceSentences(job).map(s=>s.id)),scenes=new Set(sceneLines(plan,code).map(s=>s.id));
   if(!audit||!Array.isArray(audit.issues)||typeof audit.pass!=='boolean')return {invalid:true,reason:'Invalid grounding audit'};
   if(audit.pass===true&&!audit.issues.length)return {pass:true};
-  if(!audit.issues.length||audit.issues.some(i=>!['script','code'].includes(i.scope)||!refsValid(i.sourceIds,sources)||typeof i.issue!=='string'||!i.issue.trim()||typeof i.sceneQuote!=='string'||normalize(i.sceneQuote).length<3||!normalize(plan.script+' '+code).includes(normalize(i.sceneQuote))))return {invalid:true,reason:'Grounding review could not substantiate approval'};
+  if(!audit.issues.length||audit.issues.some(i=>!['script','code'].includes(i.scope)||!refsValid(i.sourceIds,sources)||!refsValid(i.sceneIds,scenes)||typeof i.issue!=='string'||!i.issue.trim()))return {invalid:true,reason:'Grounding review could not substantiate approval'};
   if(audit.issues.some(i=>i.scope==='script'))return {scriptRejected:true,reason:'Short script failed source grounding'};
   return {reason:audit.issues.map(i=>i.issue).join('; ').slice(0,2000)};
 }

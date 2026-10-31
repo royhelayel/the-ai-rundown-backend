@@ -105,3 +105,11 @@ second. Static validation now rejects this known pattern and literal label sizes
 policy focus-normalized-v2 so revised scenes do not collide with old artifacts.
 A durable, one-time check queues one original World and Business saved source only;
 remove its startup invocation after actual rendered QA. Old claims and costs remain.
+
+Code-review evidence now uses numbered S1/Cn references instead of retyped JSX excerpts,
+so a valid rejection is not lost to a copying/ellipsis mismatch. Unknown source/code IDs
+still fail and approval must be explicit. One bounded recovery reuses the two saved
+focused-policy candidates and plans, compiling/re-auditing before any redraw. All original
+records/reservations remain. A code repair is allowed only for a real rejection; no
+public viewer can request it. The current temporary recovery startup must be removed
+once this fixed integration check completes.
