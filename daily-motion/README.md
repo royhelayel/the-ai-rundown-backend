@@ -150,3 +150,12 @@ quantities and geometry; adjusted source is revalidated and fact-checked, with c
 recorded privately. This replaces paid retries for mechanical style normalization.
 One readability-only landscape World recovery reuses the last drawing; no script-rejected
 crypto job is retried. Remove recoverCardTypography startup when the bounded check ends.
+
+Release cleanup: all one-time startup checks/recovery helpers and hardcoded sample IDs
+are removed. Only publication queues and today's durable worker queue remain. An actual
+mapped Business anime update and a World Poland court update completed automatically;
+Quick/Full share the asset on their exact aliases. Failed crypto recaps remain withheld.
+Frame HTML revalidates after60seconds; immutable runtime JS stays content-hashed/cacheable.
+Presentation epoch v=2 refreshes shared label contrast without paid regeneration. Light/
+dark blending uses the host topic background. Corrected evidence replaces the old alias
+with pending rather than serving ready art for a changed evidence signature.

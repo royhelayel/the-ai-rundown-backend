@@ -463,3 +463,12 @@ Shared AST typography normalization clamps only literal fontSize<30px before val
 and grounding; source text/numbers/geometry stay intact and adjustments are recorded.
 One readability-only landscape World recovery is temporary. Remove its startup invocation.
 Core news/recap generation and existing narration are untouched (other work may own them).
+
+Daily-motion release cleanup: all one-off startup generation/recovery helpers and sample
+IDs removed. Normal saveBriefingSources publication hook and today's durable worker remain.
+Mapped Business anime and World Poland court completed; earlier source-rejected crypto
+examples were not approved. Frame HTML revalidates rather than staying immutable for7days;
+front presentation epochv2 allows shared neutral-text/readability updates. Runtime JS remains
+content-hashed/immutable. Pending alias with a changed evidence key replaces old ready art.
+Stats expose only policy, short Render commit revision, counts and fixed failure enums;
+private diagnostics/claims and usage history remain in Storage.

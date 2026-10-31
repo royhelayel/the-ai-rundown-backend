@@ -6891,7 +6891,6 @@ if (process.env.LOCAL_PREVIEW === '1') {
 app.listen(PORT, () => {
   // Resume only today's already queued jobs; no historical backfill or consumer generation.
   dailyMotion.start();
-  if(process.env.LOCAL_PREVIEW!=='1')void dailyMotion.recoverCardTypography().catch(e=>console.warn('Focused motion check:',e.message));
   // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
   // Short-script comparison is complete. Paid starts are disabled; reports remain readable.
   // One explicitly requested comparison. Durable claim prevents deploy/restart repeats.
