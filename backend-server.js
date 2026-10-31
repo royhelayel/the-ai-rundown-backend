@@ -6891,7 +6891,7 @@ app.listen(PORT, () => {
   // Resume only today's already queued jobs; no historical backfill or consumer generation.
   dailyMotion.start();
   // One bounded integration check; no archive-wide generation.
-  if(process.env.LOCAL_PREVIEW!=='1')void dailyMotion.verifyRollout().catch(e=>console.warn('Daily motion rollout check:',e.message));
+  if(process.env.LOCAL_PREVIEW!=='1')void dailyMotion.recoverValidationFailures().catch(e=>console.warn('Daily motion rollout check:',e.message));
   // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
   // Short-script comparison is complete. Paid starts are disabled; reports remain readable.
   // One explicitly requested comparison. Durable claim prevents deploy/restart repeats.

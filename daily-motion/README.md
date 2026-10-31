@@ -69,3 +69,11 @@ budget/restarts, duplicate workers, recovery, grounding/credit failures, compila
 and CSP. Frontend tests cover lifecycle, parent/iframe message verification, Read/Off,
 source access and excluded categories/period recaps. Browser QA uses a prior approved
 Haiku scene as a technical fixture, never presented as a new World/Business story.
+
+Source validation repair (October 31): plans now cite deterministic F/Q sentence IDs,
+rather than having to retype quotations. Existing checked Quick text is bound directly
+by application code. Unknown references and unsupported factual reviews still fail.
+A malformed audit gets one fresh contract-correct review; only explicit pass with no
+issues publishes. Raw plans/audits stay private. One durable validation-contract-v2
+check allows only the original two failed rollout keys one recovery attempt, retaining
+all original claims and cost reservations. Remove that startup call after verification.

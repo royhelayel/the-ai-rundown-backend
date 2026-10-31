@@ -377,3 +377,16 @@ not an inadequate word-membership heuristic; invented numbers still fail locally
 qualifiers are restored. Native SVG line weight remains bounded0..16. Staged-v5 reuses latest
 complete candidates and renders/audits them before any success. Budget includes all previous
 staged attempts ($0.692940); no old twelve-story quality claim is carried forward.
+
+## Daily Remotion generation validation (October 31)
+
+World News/Business daily generation queues Haiku scene planning, JSX compilation and
+independent grounding review in `daily-motion/`; other categories remain disabled.
+The approved short script is bound directly, and plans/audits use deterministic source
+sentence IDs to avoid false failures from retyping quotes. No malformed/failed review
+is silently accepted. Invalid reviewer output gets one fresh review within the same
+per-job cap. Consumer lookups never start generation. Public diagnostics are fixed
+failure enums only; raw provider errors, plans and code stay in private storage.
+One explicit durable validation-contract-v2 recovery may retry ONLY the original two
+failed rollout samples once, retaining old claims/reservations. Remove its startup
+invocation after verification. Never delete claims or reset accounting to retry.
