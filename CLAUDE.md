@@ -390,3 +390,9 @@ failure enums only; raw provider errors, plans and code stay in private storage.
 One explicit durable validation-contract-v2 recovery may retry ONLY the original two
 failed rollout samples once, retaining old claims/reservations. Remove its startup
 invocation after verification. Never delete claims or reset accounting to retry.
+
+The validation recovery produced one ready World asset; the original Business condensed
+script failed factual review. No rejection was bypassed. Unmapped stories now bind the
+exact first published sentence as illustration focus (max65words), not a model rewrite.
+A one-time business-source-binding-v1 check tests only that original Business story with
+the changed focus/key. Original claims/spend remain. Remove startup check after completion.

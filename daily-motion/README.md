@@ -77,3 +77,10 @@ A malformed audit gets one fresh contract-correct review; only explicit pass wit
 issues publishes. Raw plans/audits stay private. One durable validation-contract-v2
 check allows only the original two failed rollout keys one recovery attempt, retaining
 all original claims and cost reservations. Remove that startup call after verification.
+
+When no unambiguous mapped Quick summary exists, the illustration focus is now an
+exact first sentence of the published story (at most 65 words), rather than a new
+AI-written condensed script. The entire full story still goes to the factual reviewer.
+This changes the cache key for that genuinely changed focus; old claims/costs remain.
+The one-time Business source-binding check queues only the original Business story,
+with its newly source-bound focus. It does not regenerate news/audio or scan history.
