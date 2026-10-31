@@ -6882,7 +6882,7 @@ if (process.env.LOCAL_PREVIEW === '1') {
 
 app.listen(PORT, () => {
   // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
-  if(process.env.LOCAL_PREVIEW!=='1')void shortComparison.start().catch(e=>console.warn('Short comparison stopped:',e.message));
+  // Short-script comparison is complete. Paid starts are disabled; reports remain readable.
   // One explicitly requested comparison. Durable claim prevents deploy/restart repeats.
   // Haiku/Sonnet comparison and the single technical repair are complete.
   // Paid starts are disabled; saved reports remain available.
