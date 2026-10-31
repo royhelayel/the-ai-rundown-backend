@@ -2,7 +2,7 @@
 
 The new pipeline is separate from the disabled legacy shape/JSON generator. It uses
 Haiku to design a brief scene, write React/Remotion source, and check factual grounding.
-One code repair/recheck is allowed. This is not a guarantee of creative quality.
+At most one technical repair and one factual code repair are allowed, with at most three code attempts total and the same per-job spending cap. This is not a guarantee of creative quality.
 
 ## Scope and controls
 
@@ -119,3 +119,11 @@ enums, not just prompt instructions. Layout/time validation reports all detected
 fonts and timeline/loop-bound problems together, so one repair receives the complete
 list. Focus-normalized-v3 sample tasks explicitly reuse latest v2 candidates; original
 artifacts/costs are unchanged. Temporary verifyEnumReview must be removed after QA.
+
+Technical and factual repair allowances are tracked separately: a font/loop correction
+must not consume the only semantic correction before grounding has run. Script rejection
+still stops immediately; malformed reviews never approve. The bounded Business stage
+check reuses its saved code and does not retry the World script rejection. Private
+checks/focused-validation-diagnostics.json gathers these two focused jobs/claims for
+inspection in the authenticated storage dashboard; it has no public diagnostics route.
+Remove verifyStageRepairs startup after completion.

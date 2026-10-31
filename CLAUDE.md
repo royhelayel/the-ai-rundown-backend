@@ -435,3 +435,10 @@ item schema objects must be replaced, not mutated in place: schema shorthand str
 share references even after structuredClone. Regression test covers distinct F/Q and
 S/C enum sets. Two v3 checks reuse v2 last candidates; they do not repeat planning.
 Remove verifyEnumReview startup after QA. All previous costs/claims stay visible.
+
+Stage-specific repair limits: max1 technical correction plus max1 factual-code correction,
+max3 code attempts total, same$0.125 per-job budget. A font/loop repair must not exhaust the
+semantic repair before audit. Script rejection and malformed approvals still stop. Final
+bounded Business check reuses its v3 last code; World v3 script rejection is NOT retried.
+Private checks/focused-validation-diagnostics.json aggregates the two focused jobs/claims
+for authenticated inspection, never exposed publicly. Remove verifyStageRepairs startup.
