@@ -1,0 +1,229 @@
+import React from 'react';
+import { useCurrentFrame, useVideoConfig, interpolate, interpolateColors } from 'remotion';
+
+const C = {
+  ink: '#1b2319',
+  muted: '#626a5b',
+  paper: '#f5f5ed',
+  accent: '#d4783a',
+  pale: '#e8e3d8',
+  line: '#d6ddd2',
+  copper: '#d4783a'
+};
+
+const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' };
+const ease = t => 1 - Math.pow(1 - t, 3);
+const tween = (t, a, b, from = 0, to = 1) =>
+  interpolate(t, [a, b], [from, to], { ...clamp, easing: ease });
+
+function Beaker({ opacity, y }) {
+  return (
+    <g opacity={opacity} transform={`translate(0 ${y})`}>
+      <path
+        d="M 220 180 L 240 240 Q 240 280 260 300 L 460 300 Q 480 280 480 240 L 500 180 Z"
+        fill="none"
+        stroke={C.muted}
+        strokeWidth="3"
+        opacity="0.6"
+      />
+      <line x1="240" y1="180" x2="500" y2="180" stroke={C.muted} strokeWidth="2" opacity="0.5" />
+    </g>
+  );
+}
+
+function PristinePlastic({ x, cupperBindings }) {
+  return (
+    <g>
+      {/* Three smooth, rounded microplastic particles */}
+      <circle cx={x} cy="240" r="18" fill={C.ink} opacity="0.8" />
+      <circle cx={x - 12} cy="270" r="16" fill={C.ink} opacity="0.75" />
+      <circle cx={x + 10} cy="295" r="14" fill={C.ink} opacity="0.7" />
+      {/* Copper bindings */}
+      {cupperBindings.map((binding, i) => (
+        <circle
+          key={`pristine-copper-${i}`}
+          cx={binding.x}
+          cy={binding.y}
+          r="6"
+          fill={binding.attached ? C.copper : 'none'}
+          opacity={binding.opacity}
+        />
+      ))}
+      <text x={x} y="340" textAnchor="middle" fontSize="20" fill={C.muted} opacity="0.8">
+        pristine
+      </text>
+    </g>
+  );
+}
+
+function DegradedPlastic({ x, cupperBindings }) {
+  return (
+    <g>
+      {/* Three jagged, fractured microplastic particles */}
+      <path
+        d="M 400 220 L 410 235 L 405 250 L 420 245 L 415 260 L 400 255 Z"
+        fill={C.ink}
+        opacity="0.8"
+      />
+      <path
+        d="M 380 265 L 395 275 L 390 290 L 405 285 L 400 305 L 375 295 Z"
+        fill={C.ink}
+        opacity="0.75"
+      />
+      <path
+        d="M 410 295 L 425 305 L 418 320 L 430 315 L 420 335 L 405 325 Z"
+        fill={C.ink}
+        opacity="0.7"
+      />
+      {/* Copper bindings */}
+      {cupperBindings.map((binding, i) => (
+        <circle
+          key={`degraded-copper-${i}`}
+          cx={binding.x}
+          cy={binding.y}
+          r="6"
+          fill={binding.attached ? C.copper : 'none'}
+          opacity={binding.opacity}
+        />
+      ))}
+      <text x={x} y="340" textAnchor="middle" fontSize="20" fill={C.muted} opacity="0.8">
+        degraded
+      </text>
+    </g>
+  );
+}
+
+function CopperElement({ index, startFrame, pristineX, degradedX, isPhase2 }) {
+  const arrivalTime = startFrame / 24;
+  const fallDuration = 3.5;
+  const fallStart = arrivalTime;
+  const fallEnd = fallStart + fallDuration;
+  
+  const fallProgress = tween(
+    useCurrentFrame() / 24,
+    fallStart,
+    fallEnd,
+    0,
+    1
+  );
+
+  const targetX = index % 2 === 0 ? pristineX : degradedX;
+  const startY = 120;
+  const endY = index % 2 === 0 ? 240 + (index % 3) * 30 : 265 + (index % 3) * 35;
+
+  const currentY = startY + (endY - startY) * fallProgress;
+  const attached = fallProgress >= 0.95;
+  const opacity = tween(
+    useCurrentFrame() / 24,
+    fallStart - 0.2,
+    fallStart + 0.3,
+    0,
+    1
+  );
+
+  return {
+    x: targetX,
+    y: currentY,
+    attached,
+    opacity: opacity * (isPhase2 ? 1 : 1)
+  };
+}
+
+export default function Story() {
+  const frame = useCurrentFrame();
+  const { durationInFrames, fps } = useVideoConfig();
+  const t = frame / fps;
+
+  const phase1End = 5.8;
+  const phase2Start = 5.8;
+  const totalDuration = durationInFrames / fps;
+
+  const isPhase1 = t < phase1End;
+  const isPhase2 = t >= phase2Start;
+
+  const beakerOpacity = tween(t, 0.1, 1.2, 0, 1);
+  const beakerY = tween(t, 0.1, 1.2, 20, 0);
+
+  const phase2Transition = tween(t, phase2Start, phase2Start + 2, 0, 1);
+  const backgroundPulse = Math.sin((t - phase2Start) * Math.PI * 0.7) * 0.15;
+  const backgroundOpacity = phase2Transition * (0.3 + backgroundPulse);
+
+  const pristineX = 300;
+  const degradedX = 480;
+
+  // Generate copper elements at staggered times
+  const copperElements = [];
+  for (let i = 0; i < 8; i++) {
+    const startFrame = 24 + i * 18;
+    copperElements.push(
+      CopperElement({
+        index: i,
+        startFrame,
+        pristineX,
+        degradedX,
+        isPhase2
+      })
+    );
+  }
+
+  const pristineBindings = copperElements
+    .filter((_, i) => i % 2 === 0)
+    .slice(0, 3);
+  const degradedBindings = copperElements
+    .filter((_, i) => i % 2 === 1)
+    .slice(0, 3);
+
+  return (
+    <svg
+      width="720"
+      height="720"
+      viewBox="0 0 720 720"
+      style={{
+        overflow: 'visible',
+        fontFamily: 'Arial, Helvetica, sans-serif',
+        background: C.paper
+      }}
+    >
+      {/* Background lab indicator (faint, becomes visible in phase 2) */}
+      <g opacity={backgroundOpacity}>
+        <rect x="140" y="100" width="440" height="380" rx="12" fill="none" stroke={C.muted} strokeWidth="2" />
+        <circle cx="360" cy="130" r="8" fill="none" stroke={C.muted} strokeWidth="1.5" opacity="0.5" />
+      </g>
+
+      {/* Beaker */}
+      <Beaker opacity={beakerOpacity} y={beakerY} />
+
+      {/* Pristine plastic column */}
+      <PristinePlastic x={pristineX} cupperBindings={pristineBindings} />
+
+      {/* Degraded plastic column */}
+      <DegradedPlastic x={degradedX} cupperBindings={degradedBindings} />
+
+      {/* Copper elements in motion */}
+      {copperElements.map((binding, i) => (
+        <circle
+          key={`copper-${i}`}
+          cx={binding.x}
+          cy={binding.y}
+          r="7"
+          fill={binding.attached ? C.copper : 'none'}
+          stroke={binding.attached ? C.copper : C.copper}
+          strokeWidth={binding.attached ? 0 : 2}
+          opacity={binding.opacity}
+        />
+      ))}
+
+      {/* Copper label */}
+      <text x="360" y="110" textAnchor="middle" fontSize="18" fill={C.muted} opacity="0.7">
+        copper
+      </text>
+
+      {/* Lab indicator text (subtle, appears in phase 2) */}
+      <g opacity={tween(t, phase2Start + 1.5, phase2Start + 2.5, 0, 1)}>
+        <text x="360" y="520" textAnchor="middle" fontSize="16" fill={C.muted} opacity="0.6">
+          laboratory conditions
+        </text>
+      </g>
+    </svg>
+  );
+}

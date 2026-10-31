@@ -1,3 +1,4 @@
+import {createDailyMotion} from './daily-motion/service.js';
 import {createShortComparison} from './remotion-compare/short/experiment.js';
 import {createComparisonRepair} from './remotion-compare/repair.js';
 import {createRemotionComparison} from './remotion-compare/experiment.js';
@@ -2619,6 +2620,12 @@ const storyAnimations = createStoryAnimations({
   },
 });
 storyAnimations.register(app);
+const dailyMotion=createDailyMotion({supabase:supabaseAdmin,callStructured:callPilotStructured,
+  enabled:process.env.LOCAL_PREVIEW!=='1'&&process.env.DAILY_MOTION_ENABLED!=='false',
+  parseStories:row=>{const full=parseStoriesForTTS(row.content||row.stories_content),cards=parseStoriesForTTS(row.stories_content);const norm=s=>s.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');const byHeadline=new Map(cards.map(st=>[norm(st.headline),st]));return full.map(st=>{const card=byHeadline.get(norm(st.headline))||st;return{headline:st.headline,summary:buildStoryScript(card)};});},
+  publicOrigin:process.env.DAILY_MOTION_PUBLIC_ORIGIN||'https://the-ai-rundown-backend.onrender.com'});
+dailyMotion.register(app);
+
 // One fixed World edition pilot, explicitly requested by Roy. No consumer trigger,
 // no ongoing generation, no live-feed publication; durable claim prevents re-spend.
 const worldStoryboardPilot = createWorldPilot({supabase:supabaseAdmin,callModel:callClaude,parseStories:parseStoriesForTTS});
@@ -3457,7 +3464,7 @@ async function attributeRecap({ category, timeSlot, language, recap, digest }) {
 // Stored beside the recap. A newer column, so a database without it logs the SQL and carries on.
 let briefingSourcesColumn = true;
 async function saveBriefingSources(category, day, timeSlot, language, sources) {
-  if (!briefingSourcesColumn) { void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message)); return; }
+  if (!briefingSourcesColumn) { void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message)); void dailyMotion.queueEdition(category,day,timeSlot,language).catch(e=>console.warn(e.message)); return; }
   const { error } = await supabaseAdmin.from('news_summaries').update({ briefing_sources: sources })
     .eq('category', category).eq('day', day).eq('time_slot', timeSlot).eq('language', language)
     .is('user_id', null).is('shared_key', null);
@@ -3465,7 +3472,7 @@ async function saveBriefingSources(category, day, timeSlot, language, sources) {
     briefingSourcesColumn = false;
     console.warn(`⚠️  'briefing_sources' column missing — recaps are stored without their sources. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS briefing_sources jsonb;`);
   } else if (error) console.warn(`Could not save recap sources for ${category}: ${error.message}`);
-  void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message));
+  void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message)); void dailyMotion.queueEdition(category,day,timeSlot,language).catch(e=>console.warn(e.message));
 }
 
 // Stories written from the reserves join the feed after the ones already there.
@@ -6881,6 +6888,10 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
+  // Resume only today's already queued jobs; no historical backfill or consumer generation.
+  dailyMotion.start();
+  // One bounded integration check; no archive-wide generation.
+  if(process.env.LOCAL_PREVIEW!=='1')void dailyMotion.verifyRollout().catch(e=>console.warn('Daily motion rollout check:',e.message));
   // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
   // Short-script comparison is complete. Paid starts are disabled; reports remain readable.
   // One explicitly requested comparison. Durable claim prevents deploy/restart repeats.
