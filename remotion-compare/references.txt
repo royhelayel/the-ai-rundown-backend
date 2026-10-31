@@ -1,0 +1,77 @@
+import React from 'react';
+import {interpolate, interpolateColors} from 'remotion';
+
+const C={ink:'#1b2319',muted:'#626a5b',paper:'#f5f5ed',accent:'#17a1cf',pale:'#d9eef3',line:'#d6ddd2'};
+const clamp={extrapolateLeft:'clamp',extrapolateRight:'clamp'};
+const ease=t=>1-Math.pow(1-t,3);
+const tween=(t,a,b,from=0,to=1)=>interpolate(t,[a,b],[from,to],{...clamp,easing:ease});
+
+function Stage({children}) {
+ return <svg width="900" height="480" viewBox="0 0 900 480" style={{overflow:'visible',fontFamily:'Arial, Helvetica, sans-serif'}}>{children}</svg>;
+}
+
+export function EmployeeGrid({frame}) {
+ const t=frame/24;
+ const percentReveal=tween(t,4.42,5.0);
+ return <Stage>
+  <line x1="440" y1="43" x2="440" y2="397" stroke={C.line} strokeWidth="2"/>
+  {Array.from({length:100},(_,i)=>{
+   const x=24+(i%10)*39;
+   const y=43+Math.floor(i/10)*35;
+   const arrival=tween(t,.25+Math.floor(i/10)*.045,.7+Math.floor(i/10)*.045);
+   const reveal=i<27?tween(t,4.42+i*.067,4.72+i*.067):0;
+   const pop=1+Math.sin(reveal*Math.PI)*.20;
+   const fill=interpolateColors(reveal,[0,1],['#cbd2c7',C.accent]);
+   return <g key={i} opacity={arrival} transform={`translate(${x+11} ${y+15}) scale(${pop*arrival}) translate(-11 -15)`}>
+    <circle cx="11" cy="5" r="5" fill={fill}/>
+    <path d="M11 14c-8 0-10 4-10 9v7h20v-7c0-5-2-9-10-9Z" fill={fill}/>
+   </g>;
+  })}
+  <g opacity={tween(t,.5,1.2)} transform={`translate(0 ${tween(t,.5,1.2,18,0)})`}>
+   <text x="478" y="160" fontSize="111" fontWeight="900" letterSpacing="-7" fill={C.ink}>60,000</text>
+   <text x="480" y="206" fontSize="28" fill={C.muted}>employees offered buyouts</text>
+  </g>
+  <g opacity={percentReveal} transform={`translate(0 ${(1-percentReveal)*18})`}>
+   <text x="480" y="325" fontSize="78" fontWeight="900" letterSpacing="-3" fill={C.ink}>≈27<tspan fontSize="48">%</tspan></text>
+   <text x="482" y="367" fontSize="27" fill={C.muted}>of its workforce</text>
+  </g>
+  <text x="24" y="445" fontSize="23" fill={C.muted} opacity={tween(t,1.1,1.7)}>100 symbols represent the whole workforce</text>
+ </Stage>;
+}
+
+export function VideoToTV({frame}) {
+ const t=frame/24;
+ const wide=tween(t,3.65,5.45);
+ const width=210+590*wide;
+ const height=355-30*wide;
+ const x=(900-width)/2;
+ const y=45;
+ const figure=tween(t,6.45,7.1);
+ const stand=tween(t,8.1,8.75);
+ const timeline=tween(t,5.45,8.0);
+ const arrival=tween(t,.2,.8);
+ return <Stage>
+  <g opacity={arrival} transform={`translate(0 ${(1-arrival)*24})`}>
+   <rect x={x} y={y} width={width} height={height} rx={30-8*wide} fill={C.ink}/>
+   <rect x={x+14} y={y+14} width={width-28} height={height-28} rx={20-6*wide} fill={C.pale}/>
+   <g opacity={1-figure}>
+    <path d={`M${450-21} ${y+height/2-35}l60 35-60 35Z`} fill={C.ink}/>
+   </g>
+   <g opacity={figure}>
+    <text x="450" y="135" textAnchor="middle" fontSize="22" fontWeight="700" letterSpacing="4" fill={C.muted}>UP TO</text>
+    <text x="450" y="258" textAnchor="middle" fontSize="132" fontWeight="900" letterSpacing="-6" fill={C.ink}>90<tspan fontSize="47" letterSpacing="0"> MIN</tspan></text>
+   </g>
+   <g opacity={wide}>
+    <rect x={x+32} y={y+height-38} width={width-64} height="5" rx="3" fill="#b6d6dd"/>
+    <rect x={x+32} y={y+height-38} width={(width-64)*timeline} height="5" rx="3" fill={C.accent}/>
+    <circle cx={x+32+(width-64)*timeline} cy={y+height-35.5} r="6" fill={C.accent}/>
+   </g>
+   <g opacity={stand} transform={`translate(0 ${(1-stand)*-10})`}>
+    <path d="M417 370l-14 34h94l-14-34" fill={C.ink}/>
+    <rect x="360" y="402" width="180" height="11" rx="5" fill={C.ink}/>
+   </g>
+  </g>
+  <text x="450" y="450" textAnchor="middle" fontSize="27" fill={C.muted} opacity={tween(t,8.1,8.65)}>Horizontal video · TV + Instagram</text>
+ </Stage>;
+}
+
