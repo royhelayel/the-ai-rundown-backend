@@ -1,3 +1,4 @@
+import {createShortComparison} from './remotion-compare/short/experiment.js';
 import {createComparisonRepair} from './remotion-compare/repair.js';
 import {createRemotionComparison} from './remotion-compare/experiment.js';
 import{createStagedPilot}from'./storyboard-pilot/staged-run.js';
@@ -2636,6 +2637,8 @@ const remotionComparison=createRemotionComparison({supabase:supabaseAdmin,callSt
 remotionComparison.register(app);
 const comparisonRepair=createComparisonRepair({supabase:supabaseAdmin,callStructured:callPilotStructured});
 comparisonRepair.register(app);
+const shortComparison=createShortComparison({supabase:supabaseAdmin,callStructured:callPilotStructured});
+shortComparison.register(app);
 
 
 
@@ -6878,6 +6881,8 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
+  // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
+  if(process.env.LOCAL_PREVIEW!=='1')void shortComparison.start().catch(e=>console.warn('Short comparison stopped:',e.message));
   // One explicitly requested comparison. Durable claim prevents deploy/restart repeats.
   // Haiku/Sonnet comparison and the single technical repair are complete.
   // Paid starts are disabled; saved reports remain available.
