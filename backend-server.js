@@ -1,3 +1,4 @@
+import {createComparisonRepair} from './remotion-compare/repair.js';
 import {createRemotionComparison} from './remotion-compare/experiment.js';
 import{createStagedPilot}from'./storyboard-pilot/staged-run.js';
 import {createRepairV3} from './storyboard-pilot/repair-v3.js';
@@ -2633,6 +2634,8 @@ const stagedPilot=createStagedPilot({supabase:supabaseAdmin,callStructured:callP
 stagedPilot.register(app);
 const remotionComparison=createRemotionComparison({supabase:supabaseAdmin,callStructured:callPilotStructured});
 remotionComparison.register(app);
+const comparisonRepair=createComparisonRepair({supabase:supabaseAdmin,callStructured:callPilotStructured});
+comparisonRepair.register(app);
 
 
 
@@ -6876,7 +6879,7 @@ if (process.env.LOCAL_PREVIEW === '1') {
 
 app.listen(PORT, () => {
   // One explicitly requested comparison. Durable claim prevents deploy/restart repeats.
-  if(process.env.LOCAL_PREVIEW!=='1')void remotionComparison.start().catch(e=>console.warn('Remotion comparison stopped:',e.message));
+  if(process.env.LOCAL_PREVIEW!=='1')void comparisonRepair.start().catch(e=>console.warn('Comparison repair stopped:',e.message));
   // Paid staged experiments are stopped. Reports remain available for review.
   // Re-enable only for a specifically bounded experiment with a new durable claim.
   // Explicitly requested repaired pilot, protected by a per-wave durable claim.
