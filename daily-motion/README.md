@@ -132,3 +132,11 @@ The original Business crypto candidate was not present in the current Quick reca
 A bounded mapped-business-brief-v1 integration check selects the first real attributed
 Quick/Full Business update (Japan anime) instead; this is an additional real-path test,
 not an approval or deletion of failed crypto candidates. All failures/costs are retained.
+
+Live app QA found a delivery mismatch: the illustration region is348x225px, while
+720x720 compositions were shrinking to225x225px with blank side margins. New scenes
+use720x420 and the compiler checks literal root SVG width/height/viewBox against that
+actual canvas. Policy card-landscape-v4 invalidates generation keys while old artifacts
+remain readable. The bounded card-canvas-v4 check reuses the mapped Business plan/drawing
+for recomposition, and selects the next actual mapped World item without retrying a
+script-grounding rejection. Remove its startup invocation after app-level QA.

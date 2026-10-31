@@ -442,3 +442,11 @@ semantic repair before audit. Script rejection and malformed approvals still sto
 bounded Business check reuses its v3 last code; World v3 script rejection is NOT retried.
 Private checks/focused-validation-diagnostics.json aggregates the two focused jobs/claims
 for authenticated inspection, never exposed publicly. Remove verifyStageRepairs startup.
+
+App-level sizing QA: the live illustration viewport is348x225, so square720x720 scenes
+were visibly shrinking. New canvas is720x420; static root SVG dimensions/viewBox must
+match CONFIG. Creative/time/readability requirements still apply. card-landscape-v4
+participates in keys, and old assets remain readable. One bounded check reuses Business
+anime plan/code for landscape recomposition and tests the next mapped World brief,
+skipping the script-rejected crypto text. Do not pretend those original rejections
+passed. Remove verifyCardCanvas startup after actual app/screenshot QA.

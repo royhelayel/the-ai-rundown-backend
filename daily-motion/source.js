@@ -2,7 +2,7 @@ import crypto from'node:crypto';
 import{cleanAnimationText}from'../story-animation-schema.js';
 export const VERSION='remotion-haiku-v1';
 // Source-focus review + normalized timing/readability policy; old artifacts remain readable.
-export const GENERATION_POLICY='focus-normalized-v3';
+export const GENERATION_POLICY='card-landscape-v4';
 export const normalize=cleanAnimationText;
 export const hash=s=>crypto.createHash('sha256').update(s).digest('hex');
 export const DEFAULT_CATEGORIES=['World News','Business'];
