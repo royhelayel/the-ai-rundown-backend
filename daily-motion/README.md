@@ -84,3 +84,13 @@ AI-written condensed script. The entire full story still goes to the factual rev
 This changes the cache key for that genuinely changed focus; old claims/costs remain.
 The one-time Business source-binding check queues only the original Business story,
 with its newly source-bound focus. It does not regenerate news/audio or scan history.
+
+Rollout verification outcome: World sample generated and Quick/Full aliases resolve to
+one deployed Remotion Player; four rendered seek positions were checked. This verifies
+runtime delivery/movement, NOT final visual quality (secondary labels need improvement).
+The original Business condensation and the subsequent exact-source-focus sample were
+withheld after review. All attempts remain accounted. No one-time startup generation
+or verification calls remain. Only publication and already-queued-today work can run.
+Mutable aliases/claims use cacheNonce plus no-store reads and zero-cache writes; immutable
+assets/runtime retain caching. Re-publication preserves terminal unavailable/budget aliases
+for the same key rather than presenting a failed job as pending indefinitely.

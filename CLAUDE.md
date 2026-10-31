@@ -396,3 +396,12 @@ script failed factual review. No rejection was bypassed. Unmapped stories now bi
 exact first published sentence as illustration focus (max65words), not a model rewrite.
 A one-time business-source-binding-v1 check tests only that original Business story with
 the changed focus/key. Original claims/spend remain. Remove startup check after completion.
+
+Daily-motion verification cleanup: all one-time rollout/recovery startup helpers removed.
+World successfully generated; actual deployed sandboxed Remotion Player checked at four
+seek positions, with Quick/Full sharing one artifact. This is a technical pass only;
+small secondary labels remain a visual-quality concern. Business samples failed review
+and remain withheld, not rubber-stamped. Private failures need inspection before claiming
+both categories fully verified. Mutable storage uses cacheNonce/no-store downloads and
+cacheControl0 uploads; assets/runtime remain immutable/cacheable. Re-publication must not
+reset terminal unavailable/budget aliases to pending. Never silently clear old costs.
