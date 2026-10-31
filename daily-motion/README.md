@@ -127,3 +127,8 @@ check reuses its saved code and does not retry the World script rejection. Priva
 checks/focused-validation-diagnostics.json gathers these two focused jobs/claims for
 inspection in the authenticated storage dashboard; it has no public diagnostics route.
 Remove verifyStageRepairs startup after completion.
+
+The original Business crypto candidate was not present in the current Quick recap.
+A bounded mapped-business-brief-v1 integration check selects the first real attributed
+Quick/Full Business update (Japan anime) instead; this is an additional real-path test,
+not an approval or deletion of failed crypto candidates. All failures/costs are retained.
