@@ -6889,8 +6889,10 @@ if (process.env.LOCAL_PREVIEW === '1') {
 }
 
 app.listen(PORT, () => {
-  // Resume only today's already queued jobs; no historical backfill or consumer generation.
+  // Resume durable jobs, then catch up only the latest published World edition.
+  // This is a bounded owner-requested rollout; viewers never trigger paid generation.
   dailyMotion.start();
+  void dailyMotion.reconcileLatest({scope:['World News']}).catch(e=>console.warn(e.message));
   // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
   // Short-script comparison is complete. Paid starts are disabled; reports remain readable.
   // One explicitly requested comparison. Durable claim prevents deploy/restart repeats.
