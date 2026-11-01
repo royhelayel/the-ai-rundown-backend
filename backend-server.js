@@ -1,3 +1,4 @@
+import {createHaikuRefinement} from './remotion-compare/haiku-refinement.js';
 import {createDirectTest} from './remotion-compare/direct-test.js';
 import {createDailyMotion} from './daily-motion/service.js';
 import {storyEvidence} from './daily-motion/evidence.js';
@@ -2650,6 +2651,8 @@ const shortComparison=createShortComparison({supabase:supabaseAdmin,callStructur
 shortComparison.register(app);
 const directTest=createDirectTest({supabase:supabaseAdmin,callStructured:callPilotStructured});
 directTest.register(app);
+const haikuRefinement=createHaikuRefinement({supabase:supabaseAdmin,callStructured:callPilotStructured});
+haikuRefinement.register(app);
 
 
 
@@ -6895,6 +6898,7 @@ app.listen(PORT, () => {
   // Resume durable jobs, then catch up only the latest published World edition.
   // This is a bounded owner-requested rollout; viewers never trigger paid generation.
   dailyMotion.start();
+  void haikuRefinement.start().catch(e=>console.warn('Refinement experiment failed: '+e.message));
   void directTest.start().catch(e=>console.warn('Direct comparison failed: '+e.message));
   void dailyMotion.reconcileLatest({scope:['World News']}).catch(e=>console.warn(e.message));
   // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
