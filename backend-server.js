@@ -1,3 +1,4 @@
+import {createSonnetFirstPass} from './remotion-compare/sonnet-first-pass.js';
 import {createHaikuRefinement} from './remotion-compare/haiku-refinement.js';
 import {createDirectTest} from './remotion-compare/direct-test.js';
 import {createDailyMotion} from './daily-motion/service.js';
@@ -2653,6 +2654,8 @@ const directTest=createDirectTest({supabase:supabaseAdmin,callStructured:callPil
 directTest.register(app);
 const haikuRefinement=createHaikuRefinement({supabase:supabaseAdmin,callStructured:callPilotStructured});
 haikuRefinement.register(app);
+const sonnetFirstPass=createSonnetFirstPass({supabase:supabaseAdmin,callStructured:callPilotStructured});
+sonnetFirstPass.register(app);
 
 
 
@@ -6898,6 +6901,7 @@ app.listen(PORT, () => {
   // Resume durable jobs, then catch up only the latest published World edition.
   // This is a bounded owner-requested rollout; viewers never trigger paid generation.
   dailyMotion.start();
+  void sonnetFirstPass.start().catch(e=>console.warn('Sonnet first-pass test failed: '+e.message));
   void haikuRefinement.start().catch(e=>console.warn('Refinement experiment failed: '+e.message));
   void directTest.start().catch(e=>console.warn('Direct comparison failed: '+e.message));
   void dailyMotion.reconcileLatest({scope:['World News']}).catch(e=>console.warn(e.message));
