@@ -12,3 +12,13 @@ test('material visual concerns withhold public image and never auto-repair or re
 test('ambiguous network failure never repeats a paid image request',async()=>{let n=0;const f=fixture({fetchImpl:async()=>{n++;throw Error('timeout');}});await f.service.queueRows([row]);await f.service.drain();await f.service.queueRows([row]);await f.service.drain();assert.equal(n,1);assert.equal((await f.service.status()).counts.failed,1);});
 test('zero daily quota prevents API calls and reports budget status',async()=>{const f=fixture({maxJobs:0});await f.service.queueRows([row]);await f.service.drain();assert.equal(f.calls.length,0);assert.equal(f.store.data.get(`claims/${artworkKey(short)}.json`).status,'budget');});
 test('price estimates retain image and vision usage separately',()=>{assert.equal(tokenCost('image',{input_tokens:278,output_tokens:139}),.00556);assert.equal(tokenCost('vision',{input_tokens:1000,output_tokens:200}),.002);});
+test('authorized regeneration retries only withheld stories once, preserves accepted images, and keeps new aliases on catch-up',async()=>{
+ const concerns=['Invented transport'];const f=fixture({concerns});const edition={...row,day:'2026-10-31'};
+ await f.service.queueRows([edition]);await f.service.drain();const parent=artworkKey(short);assert.equal(f.calls.length,2);concerns.length=0;
+ const result=await f.service.regenerateWithheld([parent]);assert.equal(result.queued,1);assert.equal(f.calls.length,4);
+ assert.match(f.calls[2].prompt,/Invented transport/);
+ const ready=await f.service.lookup(edition,short);assert.equal(ready.status,'ready');assert.notEqual(ready.artifact.id,parent);
+ await f.service.regenerateWithheld([parent]);await f.service.queueRows([edition]);await f.service.drain();assert.equal(f.calls.length,4);assert.equal((await f.service.lookup(edition,full)).artifact.id,ready.artifact.id);
+ const fresh=fixture({store:f.store});await fresh.service.regenerateWithheld([parent]);await fresh.service.queueRows([edition]);await fresh.service.drain();assert.equal(fresh.calls.length,0);
+ const accepted=fixture();await accepted.service.queueRows([edition]);await accepted.service.drain();await accepted.service.regenerateWithheld([parent]);assert.equal(accepted.calls.length,2);assert.equal((await accepted.service.lookup(edition,short)).artifact.id,parent);
+});

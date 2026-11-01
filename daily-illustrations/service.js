@@ -1,7 +1,9 @@
+import fs from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import {hash,normalize,prepareJobs,spendDay,verified} from '../daily-motion/source.js';
 import {validatePlan} from '../illustration-pilot/pilot.js';
 const VERSION='world-illustration-low-v1',BUCKET='daily-news-illustrations';
+const regeneration=JSON.parse(fs.readFileSync(new URL('./regeneration-2026-11-02.json',import.meta.url),'utf8'));
 const columns='category,day,time_slot,language,content,stories_content,briefing,briefing_sources,audit_result,user_id,shared_key';
 export const artworkKey=text=>hash(JSON.stringify([VERSION,'gpt-image-2','low','896x736',normalize(text)]));
 const aliasPath=(meta,text)=>'aliases/'+hash(JSON.stringify([meta.category,meta.day,meta.language||'en',normalize(text)]))+'.json';
@@ -29,7 +31,7 @@ export function createDailyIllustrations({supabase,parseStories,store=illustrati
   if(!await store.put(`claims/${job.key}.json`,record,{exclusive:true}))return;
   try{
    if(!await reserve(spendDay(now()),job.key)){record.status='budget';return;}
-   const image=await paid('image',{model:'gpt-image-2',prompt:imagePrompt(job.shortText),n:1,size:'896x736',quality:'low',output_format:'png'},record,job);
+   const image=await paid('image',{model:'gpt-image-2',prompt:imagePrompt(job.shortText)+(job.reviewCorrections?.length?' Previous rejected illustration issues to avoid: '+job.reviewCorrections.join(' '):''),n:1,size:'896x736',quality:'low',output_format:'png'},record,job);
    const encoded=image.data?.[0]?.b64_json;if(!encoded)throw Error('image_missing');
    await store.image(job.key,Buffer.from(encoded,'base64'));
    const result=await paid('vision',{model:'gpt-6.1-terra',store:false,max_output_tokens:1800,input:[{role:'user',content:[{type:'input_text',text:`Inspect the actual illustration against this sole factual source: ${JSON.stringify(job.shortText)}. Return JSON only: {"regions":[{"top":0,"bottom":0.5,"trigger":"exact phrase from summary","label":"short description"}],"visualConcerns":[]}. Choose 2–4 full-width horizontal bands, partitioning the entire image 0..1 without gaps or overlaps. Put boundaries in empty gutters; do not cut labels or objects. Order the bands by narrative reveal order. Every trigger is a verbatim phrase from the summary. Flag materially unsupported facts (including invented transport/geography/numbers or treating future events as completed), misleading visual claims, unreadable text, overlaps, or unavoidable cuts in visualConcerns. Conventional symbolic props are not themselves factual claims. Do not approve just because the image is attractive.`},{type:'input_image',image_url:'data:image/png;base64,'+encoded}]}]},record,job);
@@ -45,15 +47,32 @@ export function createDailyIllustrations({supabase,parseStories,store=illustrati
  }
  async function drain(){if(!enabled||!hasKey()||blocked)return;if(draining)return draining;draining=(async()=>{await store.prepare();const paths=await store.list('queue/'+spendDay(now()));let index=0;const worker=async()=>{while(index<paths.length&&!blocked){const job=await store.get(paths[index++]);if(job)await generate(job);}};await Promise.all([worker(),worker()]);})().catch(()=>logger.warn('World illustration worker paused')).finally(()=>{draining=null;});return draining;}
  async function queueRows(rows){if(!enabled||!hasKey())return;await store.prepare();for(const row of rows){if(row.language!=='en')continue;for(const source of prepareJobs(row,parseStories,{allowed:['World News']})){
-   const job={...source,key:artworkKey(source.shortText)};
+   const baseKey=artworkKey(source.shortText),recovery=await store.get(`recoveries/${baseKey}.json`);
+   const job={...source,key:recovery?.key||baseKey,...(recovery?{parentKey:baseKey,reviewCorrections:recovery.concerns}: {})};
    for(const a of [...job.aliases,{text:job.shortText}])await store.put(aliasPath(job.meta,a.text),{key:job.key,text:normalize(a.text)});
    if(!await asset(job.key))await store.put(`queue/${spendDay(now())}/${job.key}.json`,job,{exclusive:true});
   }}void drain();}
  async function queueEdition(category,day,timeSlot,language){if(!enabled||!hasKey()||category!=='World News'||language!=='en')return;const {data,error}=await supabase.from('news_summaries').select(columns).eq('category',category).eq('day',day).eq('time_slot',timeSlot).eq('language',language).is('user_id',null).is('shared_key',null);if(error)throw Error('Artwork edition unavailable');await queueRows(data||[]);}
  async function reconcileLatest(){if(!enabled||!hasKey())return;const {data,error}=await supabase.from('news_summaries').select(columns).eq('category','World News').eq('language','en').in('time_slot',['Morning','Evening','Daily']).gte('day',new Date(now()-7*864e5).toISOString().slice(0,10)).lte('day',spendDay(now())).is('user_id',null).is('shared_key',null).order('day',{ascending:false}).limit(48);if(error)throw Error('Artwork catch-up unavailable');const rows=(data||[]).filter(verified);const day=rows[0]?.day;await queueRows(rows.filter(r=>r.day===day));}
- async function lookup(meta,text){if(!enabled||meta.category!=='World News'||meta.language!=='en')return null;const row=await store.get(aliasPath(meta,text));if(!row||row.text!==normalize(text))return null;const value=await asset(row.key);return value?{text:normalize(text),status:'ready',artifact:{type:'illustration',id:value.key,from:0,to:1,regions:value.regions,script:value.summary}}:null;}
+ async function lookup(meta,text){if(!enabled||meta.category!=='World News'||meta.language!=='en')return null;const row=await store.get(aliasPath(meta,text));if(!row||row.text!==normalize(text))return null;const recovery=await store.get(`recoveries/${row.key}.json`);const value=await asset(recovery?.key||row.key);return value?{text:normalize(text),status:'ready',artifact:{type:'illustration',id:value.key,from:0,to:1,regions:value.regions,script:value.summary}}:null;}
+ async function regenerateWithheld(keys=regeneration.keys){
+  if(!enabled||!hasKey())return {queued:0};
+  await store.prepare();let queued=0;
+  const paths=await store.list('queue/'+spendDay(now()));
+  for(const path of paths){const source=await store.get(path);if(!source||!keys.includes(source.key)||source.meta?.day!==regeneration.day)continue;
+   const prior=await store.get(`claims/${source.key}.json`);
+   if(prior?.status!=='withheld'||await asset(source.key))continue;
+   const key=hash(source.key+'owner-approved-regeneration-2026-11-02');
+   const mapping={key,parentKey:source.key,concerns:prior.plan?.visualConcerns||[],at:now()};
+   await store.put(`recoveries/${source.key}.json`,mapping,{exclusive:true});
+   const job={...source,key,parentKey:source.key,reviewCorrections:mapping.concerns};
+   for(const alias of [...job.aliases,{text:job.shortText}])await store.put(aliasPath(job.meta,alias.text),{key,text:normalize(alias.text)});
+   if(await store.put(`queue/${spendDay(now())}/${key}.json`,job,{exclusive:true}))queued++;
+  }
+  await drain();await drain();return {queued};
+ }
  async function status(){await store.prepare();const slots=await store.list('budget/'+spendDay(now()));const entries=await Promise.all(slots.map(async path=>{const slot=await store.get(path);return slot?store.get(`claims/${slot.key}.json`):null;}));return{enabled:enabled&&hasKey(),category:'World News',quality:'low',size:'896x736',maxDailyJobs:maxJobs,reviewFindings:entries.filter(r=>r?.status==='withheld').map(r=>({id:r.key,day:r.meta.day,concerns:(r.plan?.visualConcerns||[]).map(x=>String(x).slice(0,400))})),reservedUSD:slots.length*.03,estimatedActualUSD:entries.reduce((n,r)=>n+(r?.costUSD||0),0),counts:entries.filter(Boolean).reduce((out,r)=>({...out,[r.status]:(out[r.status]||0)+1}),{}),blocked};}
- return{queueRows,queueEdition,reconcileLatest,drain,lookup,status,start(){if(!enabled)return;void drain();timer=setInterval(()=>void drain(),60000);timer.unref?.();return()=>clearInterval(timer);},register(app){
+ return{queueRows,queueEdition,reconcileLatest,regenerateWithheld,drain,lookup,status,start(){if(!enabled)return;void drain();timer=setInterval(()=>void drain(),60000);timer.unref?.();return()=>clearInterval(timer);},register(app){
   app.get('/api/world-illustrations/status',async(_req,res)=>{try{res.set('Cache-Control','no-store').json(await status());}catch{res.status(503).json({error:'Artwork status unavailable'});}});
   app.get('/api/world-illustrations/image/:id',async(req,res)=>{if(!/^[a-f0-9]{64}$/.test(req.params.id))return res.sendStatus(400);try{if(!await asset(req.params.id))return res.sendStatus(404);const bytes=await store.bytes(req.params.id);if(!bytes)return res.sendStatus(404);res.type('png').set({'Cache-Control':'public,max-age=31536000,immutable','X-Content-Type-Options':'nosniff'}).send(bytes);}catch{res.sendStatus(503);}});
  }};
