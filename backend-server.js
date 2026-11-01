@@ -1,3 +1,4 @@
+import {createIllustrationPilot} from './illustration-pilot/pilot.js';
 import {createTerraFirstPass} from './remotion-compare/terra-first-pass.js';
 import {createSonnetFirstPass} from './remotion-compare/sonnet-first-pass.js';
 import {createHaikuRefinement} from './remotion-compare/haiku-refinement.js';
@@ -2659,6 +2660,8 @@ const sonnetFirstPass=createSonnetFirstPass({supabase:supabaseAdmin,callStructur
 sonnetFirstPass.register(app);
 const terraFirstPass=createTerraFirstPass({supabase:supabaseAdmin});
 terraFirstPass.register(app);
+const illustrationPilot=createIllustrationPilot({supabase:supabaseAdmin});
+illustrationPilot.register(app);
 
 
 
@@ -6904,7 +6907,7 @@ app.listen(PORT, () => {
   // Resume durable jobs, then catch up only the latest published World edition.
   // This is a bounded owner-requested rollout; viewers never trigger paid generation.
   dailyMotion.start();
-  void terraFirstPass.start().catch(e=>console.warn('Terra experiment failed: '+e.message));
+  void illustrationPilot.start().catch(()=>console.warn('Illustration pilot stopped; inspect persisted report'));
   void sonnetFirstPass.start().catch(e=>console.warn('Sonnet first-pass test failed: '+e.message));
   void haikuRefinement.start().catch(e=>console.warn('Refinement experiment failed: '+e.message));
   void directTest.start().catch(e=>console.warn('Direct comparison failed: '+e.message));

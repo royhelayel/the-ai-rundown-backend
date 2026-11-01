@@ -1,0 +1,23 @@
+[
+  {
+    "id": "newspaper",
+    "headline": "Russia's leading independent newspaper Novaya Gazeta to permanently close",
+    "summary": "Novaya Gazeta, Russia's leading independent newspaper, announced it will permanently close next month after three decades of investigative journalism, citing intolerable pressure including eviction and blocked donation platforms.",
+    "sourceEdition": "2026-10-31",
+    "sourceCategory": "World News"
+  },
+  {
+    "id": "evacuation",
+    "headline": "Hundreds evacuated from Russian-occupied Oleshky during ceasefire brokered by Melania Trump and Pope Leo",
+    "summary": "Hundreds were evacuated from Russian-occupied Oleshky during a localized ceasefire brokered by first lady Melania Trump and Pope Leo XIV; the truce, the longest since Russia's 2022 invasion, expires Sunday evening.",
+    "sourceEdition": "2026-10-31",
+    "sourceCategory": "World News"
+  },
+  {
+    "id": "inquiry",
+    "headline": "US federal judge orders ethics inquiry into Trump administration lawyers over golf course case",
+    "summary": "A US federal judge ordered an ethics inquiry into Trump administration lawyers over the East Potomac Golf Links case after they failed to disclose redevelopment plans that President Trump announced on social media.",
+    "sourceEdition": "2026-10-31",
+    "sourceCategory": "World News"
+  }
+]
