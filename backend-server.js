@@ -2662,6 +2662,8 @@ const terraFirstPass=createTerraFirstPass({supabase:supabaseAdmin});
 terraFirstPass.register(app);
 const illustrationPilot=createIllustrationPilot({supabase:supabaseAdmin});
 illustrationPilot.register(app);
+const illustrationLow=createIllustrationPilot({supabase:supabaseAdmin,profile:'low'});
+illustrationLow.register(app);
 
 
 
@@ -6907,6 +6909,7 @@ app.listen(PORT, () => {
   // Resume durable jobs, then catch up only the latest published World edition.
   // This is a bounded owner-requested rollout; viewers never trigger paid generation.
   dailyMotion.start();
+  void illustrationLow.start().catch(()=>console.warn('Low image test stopped; inspect persisted report'));
   void illustrationPilot.start().catch(()=>console.warn('Illustration pilot stopped; inspect persisted report'));
   void sonnetFirstPass.start().catch(e=>console.warn('Sonnet first-pass test failed: '+e.message));
   void haikuRefinement.start().catch(e=>console.warn('Refinement experiment failed: '+e.message));
