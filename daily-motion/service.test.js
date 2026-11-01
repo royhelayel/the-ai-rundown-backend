@@ -41,3 +41,11 @@ test('startup catch-up is scoped to the latest World edition and does not backfi
  assert.deepEqual((await f.service.status()).catchup.editions,[{category:'World News',day:'2026-10-30'}]);
  await f.service.reconcileLatest();await f.service.drain();assert.equal(f.calls.length,3);
 });
+test('World image lookup has priority while old World paid generation is skipped',async()=>{
+ const image={text:full,status:'ready',artifact:{type:'illustration',id:'image'}};
+ const f=fixture({skipGenerationCategories:['World News'],externalLookup:async()=>image});
+ await f.service.queueRows([row]);await f.service.drain();assert.equal(f.calls.length,0);assert.equal(await f.service.lookup(row,full),image);
+});
+test('image storage outage does not prevent legacy lookup or narration',async()=>{
+ const f=fixture({externalLookup:async()=>{throw Error('offline');}});assert.equal((await f.service.lookup(row,full)).status,'not_ready');assert.equal(f.calls.length,0);
+});

@@ -1,3 +1,4 @@
+import {createDailyIllustrations} from './daily-illustrations/service.js';
 import {createIllustrationPilot} from './illustration-pilot/pilot.js';
 import {createTerraFirstPass} from './remotion-compare/terra-first-pass.js';
 import {createSonnetFirstPass} from './remotion-compare/sonnet-first-pass.js';
@@ -2626,7 +2627,10 @@ const storyAnimations = createStoryAnimations({
   },
 });
 storyAnimations.register(app);
-const dailyMotion=createDailyMotion({supabase:supabaseAdmin,callStructured:callPilotStructured,
+const illustrationParser=row=>{const full=parseStoriesForTTS(row.content||row.stories_content),cards=parseStoriesForTTS(row.stories_content);const norm=s=>s.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');const byHeadline=new Map(cards.map(st=>[norm(st.headline),st]));return full.map(st=>{const card=byHeadline.get(norm(st.headline))||st;const summary=buildStoryScript(card);return{headline:st.headline,summary,sourceText:storyEvidence(row.content||row.stories_content,st.headline,summary)};});};
+const worldIllustrations=createDailyIllustrations({supabase:supabaseAdmin,parseStories:illustrationParser,trackUsage});
+worldIllustrations.register(app);
+const dailyMotion=createDailyMotion({supabase:supabaseAdmin,callStructured:callPilotStructured,externalLookup:worldIllustrations.lookup,skipGenerationCategories:['World News'],
   enabled:process.env.LOCAL_PREVIEW!=='1'&&process.env.DAILY_MOTION_ENABLED!=='false',
   parseStories:row=>{const full=parseStoriesForTTS(row.content||row.stories_content),cards=parseStoriesForTTS(row.stories_content);const norm=s=>s.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');const byHeadline=new Map(cards.map(st=>[norm(st.headline),st]));return full.map(st=>{const card=byHeadline.get(norm(st.headline))||st;const summary=buildStoryScript(card);return{headline:st.headline,summary,sourceText:storyEvidence(row.content||row.stories_content,st.headline,summary)};});},
   publicOrigin:process.env.DAILY_MOTION_PUBLIC_ORIGIN||'https://the-ai-rundown-backend.onrender.com'});
@@ -3482,7 +3486,7 @@ async function attributeRecap({ category, timeSlot, language, recap, digest }) {
 // Stored beside the recap. A newer column, so a database without it logs the SQL and carries on.
 let briefingSourcesColumn = true;
 async function saveBriefingSources(category, day, timeSlot, language, sources) {
-  if (!briefingSourcesColumn) { void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message)); void dailyMotion.queueEdition(category,day,timeSlot,language).catch(e=>console.warn(e.message)); return; }
+  if (!briefingSourcesColumn) { void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message)); void worldIllustrations.queueEdition(category,day,timeSlot,language).catch(e=>console.warn(e.message)); void dailyMotion.queueEdition(category,day,timeSlot,language).catch(e=>console.warn(e.message)); return; }
   const { error } = await supabaseAdmin.from('news_summaries').update({ briefing_sources: sources })
     .eq('category', category).eq('day', day).eq('time_slot', timeSlot).eq('language', language)
     .is('user_id', null).is('shared_key', null);
@@ -3490,7 +3494,7 @@ async function saveBriefingSources(category, day, timeSlot, language, sources) {
     briefingSourcesColumn = false;
     console.warn(`⚠️  'briefing_sources' column missing — recaps are stored without their sources. Run in Supabase:\n  ALTER TABLE news_summaries ADD COLUMN IF NOT EXISTS briefing_sources jsonb;`);
   } else if (error) console.warn(`Could not save recap sources for ${category}: ${error.message}`);
-  void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message)); void dailyMotion.queueEdition(category,day,timeSlot,language).catch(e=>console.warn(e.message));
+  void storyAnimations.queueEdition(category, day, timeSlot, language).catch(e => console.warn(e.message)); void worldIllustrations.queueEdition(category,day,timeSlot,language).catch(e=>console.warn(e.message)); void dailyMotion.queueEdition(category,day,timeSlot,language).catch(e=>console.warn(e.message));
 }
 
 // Stories written from the reserves join the feed after the ones already there.
@@ -6909,11 +6913,8 @@ app.listen(PORT, () => {
   // Resume durable jobs, then catch up only the latest published World edition.
   // This is a bounded owner-requested rollout; viewers never trigger paid generation.
   dailyMotion.start();
-  void illustrationLow.start().catch(()=>console.warn('Low image test stopped; inspect persisted report'));
-  void illustrationPilot.start().catch(()=>console.warn('Illustration pilot stopped; inspect persisted report'));
-  void sonnetFirstPass.start().catch(e=>console.warn('Sonnet first-pass test failed: '+e.message));
-  void haikuRefinement.start().catch(e=>console.warn('Refinement experiment failed: '+e.message));
-  void directTest.start().catch(e=>console.warn('Direct comparison failed: '+e.message));
+  worldIllustrations.start();
+  void worldIllustrations.reconcileLatest().catch(e=>console.warn(e.message));
   void dailyMotion.reconcileLatest({scope:['World News']}).catch(e=>console.warn(e.message));
   // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
   // Short-script comparison is complete. Paid starts are disabled; reports remain readable.
