@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {randomUUID} from 'node:crypto';
 export const PILOT_ID='illustrated-reveals-2026-11-02-v1';
 const stories=JSON.parse(fs.readFileSync(new URL('./stories.json',import.meta.url),'utf8'));
 export function validatePlan(plan,summary){
@@ -15,7 +16,7 @@ export function validatePlan(plan,summary){
 }
 export function createIllustrationPilot({supabase,fetchImpl=fetch}){
  const bucket=supabase.storage.from('illustrated-reveal-pilots');
- const read=async()=>{const {data}=await bucket.download(PILOT_ID+'/report.json');return data?JSON.parse(await data.text()):null;};
+ const read=async()=>{const {data}=await bucket.download(PILOT_ID+'/report.json',{cacheNonce:randomUUID()},{cache:'no-store'});return data?JSON.parse(await data.text()):null;};
  const save=async value=>{const {error}=await bucket.upload(PILOT_ID+'/report.json',Buffer.from(JSON.stringify(value)),{contentType:'application/json',upsert:true});if(error)throw Error('Cannot save illustration pilot');};
  const api=async(endpoint,body)=>{
   const response=await fetchImpl('https://api.openai.com/v1/'+endpoint,{method:'POST',headers:{Authorization:'Bearer '+process.env.OPENAI_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(300000)});
@@ -55,7 +56,7 @@ export function createIllustrationPilot({supabase,fetchImpl=fetch}){
   if(report.status==='running')report.status='complete';report.finishedAt=new Date().toISOString();await save(report);
  },
  register(app){
-  app.get('/api/illustration-pilot',async(req,res)=>{try{res.set('Cache-Control','no-store').json(await read()||{id:PILOT_ID,status:'not_started'});}catch{res.status(503).json({error:'Pilot report unavailable'});}});
+  app.get('/api/illustration-pilot',async(req,res)=>{try{const report=await read(); if(report){report.estimatedCostUSD=(report.stories||[]).flatMap(s=>s.calls||[]).reduce((sum,c)=>{const u=c.usage||{};return sum+(c.stage==='image'?((u.input_tokens||0)*5+(u.output_tokens||0)*30):((u.input_tokens||0)+(u.output_tokens||0)*5))/1e6;},0);report.costNote='Estimate from recorded usage and published standard token rates; confirm against provider billing.';} res.set('Cache-Control','no-store').json(report||{id:PILOT_ID,status:'not_started'});}catch{res.status(503).json({error:'Pilot report unavailable'});}});
   app.get('/api/illustration-pilot/image/:id',async(req,res)=>{
    if(!stories.some(s=>s.id===req.params.id))return res.sendStatus(404);
    const {data}=await bucket.download(`${PILOT_ID}/${req.params.id}.png`);if(!data)return res.sendStatus(404);
