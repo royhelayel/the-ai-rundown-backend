@@ -1,1 +1,24 @@
-[{"id":"evacuation-plan","story":0,"stage":"plan"},{"id":"court-plan","story":1,"stage":"plan"}]
+[
+  {
+    "id": "evacuation-plan",
+    "story": 0,
+    "stage": "plan"
+  },
+  {
+    "id": "court-plan",
+    "story": 1,
+    "stage": "plan"
+  },
+  {
+    "id": "evacuation-code",
+    "story": 0,
+    "stage": "code",
+    "feedback": "PLAN REVIEW: reject the fortified/walled settlement, 40\u201350 tiny people, a claimed remainder of 20\u201325 people, ceasefire perimeter/barrier, figures disappearing off canvas, and sub-30px labels. None of those facts/outcomes is supported. REPLACE with one conceptual ordinary building/city silhouette in x64..300,y100..300 (not a fortress or accurate location). A small group of LARGE 55\u201370px human figures moves from the building entrance toward open space x330..620,y220..320, in a coordinated staggered evacuation; the few figures are representative, not a literal count or fraction. Keep every figure inside the safe area; use clean fades rather than exiting screen. No leftover-population inference. Layer people intentionally in front of doorway, never across text. One label box x64..656,y342..386, centered 32px: initially 'Temporary ceasefire', replace with 'Until Sunday evening' at second beat; never both simultaneously. The building should be a recognizable carefully drawn substantial silhouette, people have matching consistent proportions. Use the full width with a balanced central drawing. No ornamental border, bird, broker portraits, map, vehicles/counts or extra subplots. Timings are normalized fractions, not literal seconds. The movement should explain evacuation, not simply fade whole icons. This review overrides conflicting storyboard details."
+  },
+  {
+    "id": "court-code",
+    "story": 1,
+    "stage": "code",
+    "feedback": "PLAN REVIEW: reject all offscreen starts, expanding document to x720, and tiny phone inside a crowded folded document. Need a deliberate large scene explaining undisclosed plans versus public announcement and an inquiry, not a verdict. Use a restrained substantial official folder/document on left x64..290,y110..300 and a recognizable social-media post/document panel on right x405..655,y110..300. A redevelopment-plan drawing starts partially concealed by the folder and a matching simple plan motif is revealed on the public post (conceptual, no exact real layout). Keep these drawings substantial, not generic blank boxes. Use only a small golf flag/green motif if it supports identification of Golf Links, not invented geography. Show a judicial inquiry cue by a clearly recognizable well-proportioned gavel lowering gently in the reserved central gap x305..390,y120..240, not striking anyone or implying guilt/verdict. At most two labels: 'Not disclosed' in x64..290,y70..105 and 'Public announcement' in x395..660,y70..105, explicitly wrapped if needed; remove both before the final single 'Ethics inquiry ordered' in x80..640,y340..386. No title/duplicate paragraph, no arbitrary dates. All objects stay inside 32px safe edges throughout; never hide drawing behind labels. Use coordinated disclosure/reveal motion and a clean final state. Treat this review as an override of conflicting storyboard geometry."
+  }
+]
