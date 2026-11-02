@@ -6914,7 +6914,7 @@ app.listen(PORT, () => {
   // This is a bounded owner-requested rollout; viewers never trigger paid generation.
   dailyMotion.start();
   worldIllustrations.start();
-  void (async()=>{await worldIllustrations.reconcileLatest();await worldIllustrations.regenerateWithheld();})().catch(e=>console.warn(e.message));
+  void worldIllustrations.reconcileLatest().catch(e=>console.warn(e.message));
   void dailyMotion.reconcileLatest({scope:['World News']}).catch(e=>console.warn(e.message));
   // Explicitly requested shorter two-model comparison; durable claim prevents repeats.
   // Short-script comparison is complete. Paid starts are disabled; reports remain readable.

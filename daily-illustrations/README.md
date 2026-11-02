@@ -1,14 +1,23 @@
-# World editorial artwork
+# World illustration families
 
-English World News only. Hooks run after checked briefing sources are saved; startup queues only the latest checked shared edition within seven days. Consumer lookups never create paid work.
+English World News only. Generation starts after checked shared daily summaries/source links are saved. Startup catches up only the latest checked edition within seven days. Read-only viewer requests never create paid work.
 
-- GPT Image 2, low, 896×736; exact short story summary as sole source.
-- GPT-6.1 Terra inspects image, reports material unsupported claims and proposes reveal bands. Any flagged concern withholds publication; no automatic paid repair.
-- Quick and Full text aliases share content-hashed artwork, including across unchanged editions. Narration remains the existing audio engine; reveals follow its progress (approximate for Full, rather than forced word-level alignment).
-- Two workers, 24 attempted images/day, $0.03 reserved per job ($0.72/day maximum reservation). Actual token-based estimates and usage are recorded separately. This is a conservative application reservation, not a provider-enforced billing limit.
-- Global exclusive claims prevent re-spend after restarts and ambiguous timeouts. Failed/withheld requests need explicit review before a new policy/version can retry.
-- `WORLD_ILLUSTRATIONS_ENABLED=false` stops queueing and serving the new art. LOCAL_PREVIEW=1 disables generation.
-- Non-World generation behavior remains unchanged. Old World React/SVG paid generation is skipped; existing artifacts remain readable as fallback.
-- Private Supabase bucket daily-news-illustrations stores image, asset manifests, queue/claims, token usage and estimated cost. Only approved public-news images are served.
+## Approved art direction
 
-Read-only status: /api/world-illustrations/status. Artwork manifests are returned through /api/daily-motion/lookup with type illustration.
+Three reference images under references/ are the user's approved simplified examples: editorial-cartoon, character-led, data-process. Runtime reference PNGs are resized non-destructively to 512px to reduce image-input cost; full originals remain in the local visual-families preview.
+
+A small GPT-6.1 Terra direction call chooses treatment from story meaning, not category or a number alone. It produces one central concept, at most 3 source-anchored elements/labels, and a tone. Sensitive death/violence/suffering stories cannot use character-led or playful treatment. Quotes must occur in the source summary. The image editor receives only the selected reference as visual style, plus the short summary and validated direction.
+
+GPT Image 2 edits API: low, 896x736. Quality/model never auto-escalate. Reference-input cost is additional and recorded separately using image/text token rates. These settings do not guarantee identical output quality to the built-in preview generator.
+
+A separate vision call sees output + style reference. It checks facts AND style, composition, clutter, label readability and source qualifiers. Any factual or material visual-quality finding withholds publication. No automatic paid repairs. Single-scene artwork stays whole; safe section reveals are optional rather than forcing cuts through subjects. Existing narration/seek drives reveal progress; Full timing remains approximate, not exact phrase alignment.
+
+## Reuse, limits and deployment
+
+Quick and Full share artwork. Keys include policy/model/quality/size and reference hashes; unchanged editions reuse images. Prior accepted v1 artwork remains fallback while v2 is pending or withheld. Status reports policy, treatment, review findings, counts and actual token-based cost estimates.
+
+Two workers; maximum 24 reservations/day, $0.03 reserved per job (application reservation, not provider billing enforcement). Quota-only jobs with no paid calls may resume the next day. A paid or ambiguous failed request never auto-retries. One-time historical regeneration is no longer called at startup. Dubai-day rollover reconciles latest pending edition.
+
+WORLD_ILLUSTRATIONS_ENABLED=false disables serving and generation; LOCAL_PREVIEW=1 disables generation. Other topics unchanged.
+
+Private bucket daily-news-illustrations holds images, manifests, aliases, queues, claims and usage. Only approved public-news images are served at /api/world-illustrations/image/:id. Lookups remain /api/daily-motion/lookup; diagnostics /api/world-illustrations/status.
