@@ -30,6 +30,6 @@ test('legacy accepted artwork survives a withheld new-style replacement',async()
 });
 test('quota-only deferrals resume next day; paid failures still never retry',async()=>{
  const first=fixture({maxJobs:0});await first.service.queueRows([row]);await first.service.drain();assert.equal(first.calls.length,0);
- const next=fixture({store:first.store,now:()=>now()+864e5});await next.service.queueRows([row]);await next.service.drain();assert.equal(next.calls.length,3);assert.equal((await next.service.lookup(row,short)).status,'ready');
+ const next=fixture({store:first.store,now:()=>now()+864e5});await next.service.carryDeferred();await next.service.drain();assert.equal(next.calls.length,3);assert.equal((await next.service.lookup(row,short)).status,'ready');
 });
 test('reference input tokens are accounted at image-input rate',()=>{assert.equal(tokenCost('image',{input_tokens:1200,input_tokens_details:{text_tokens:200,image_tokens:1000},output_tokens:139}),.01317);});
