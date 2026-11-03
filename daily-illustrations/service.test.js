@@ -33,3 +33,14 @@ test('quota-only deferrals resume next day; paid failures still never retry',asy
  const next=fixture({store:first.store,now:()=>now()+864e5});await next.service.carryDeferred();await next.service.drain();assert.equal(next.calls.length,3);assert.equal((await next.service.lookup(row,short)).status,'ready');
 });
 test('reference input tokens are accounted at image-input rate',()=>{assert.equal(tokenCost('image',{input_tokens:1200,input_tokens_details:{text_tokens:200,image_tokens:1000},output_tokens:139}),.01317);});
+
+test('transparent image delivery is opt-in, cached, and never modifies the stored original',async()=>{
+ const {PNG}=await import('pngjs');const png=new PNG({width:10,height:10});for(let i=0;i<100;i++)png.data.set([252,247,232,255],i*4);png.data.set([20,20,20,255],(5*10+5)*4);
+ const original=PNG.sync.write(png),f=fixture();await f.service.queueRows([row]);await f.service.drain();const id=(await f.service.lookup(row,short)).artifact.id;f.store.images.set(id,original);
+ let downloads=0;const read=f.store.bytes;f.store.bytes=async key=>{downloads++;return read(key);};
+ const routes=new Map();f.service.register({get:(path,handler)=>routes.set(path,handler)});const route=routes.get('/api/world-illustrations/image/:id');
+ const response=()=>({headers:{},set(k,v){if(typeof k==='object')Object.assign(this.headers,k);else this.headers[k]=v;return this;},type(){return this;},send(bytes){this.body=bytes;return this;},sendStatus(code){this.code=code;return this;}});
+ const first=response();await route({params:{id},query:{paper:'transparent-v1'}},first);assert.equal(first.headers['X-Illustration-Paper'],'transparent-v1');assert.equal(PNG.sync.read(first.body).data[3],0);
+ const second=response();await route({params:{id},query:{paper:'transparent-v1'}},second);assert.equal(downloads,1);assert.equal(second.body,first.body);
+ const raw=response();await route({params:{id},query:{}},raw);assert.equal(raw.body,original);assert.equal(PNG.sync.read(raw.body).data[3],255);
+});

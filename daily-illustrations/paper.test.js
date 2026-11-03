@@ -1,0 +1,10 @@
+import test from 'node:test';import assert from 'node:assert/strict';import{PNG}from'pngjs';
+import{transparentPaper,createPaperCache}from'./paper.js';
+function picture(paper=[255,255,255]){const p=new PNG({width:12,height:12});for(let i=0;i<144;i++){p.data.set([...paper,255],i*4);}for(let y=3;y<9;y++)for(let x=3;x<9;x++){const edge=x===3||x===8||y===3||y===8;p.data.set(edge?[20,25,20,255]:[255,255,255,255],(y*12+x)*4);}return PNG.sync.write(p);}
+test('white and warm edge paper become transparent while enclosed white artwork stays opaque',()=>{
+ for(const color of [[255,255,255],[250,244,228]]){const result=transparentPaper(picture(color));assert.equal(result.processed,true);const p=PNG.sync.read(result.bytes);assert.equal(p.data[3],0);assert.equal(p.data[(5*12+5)*4+3],255);assert.equal(p.data[(3*12+3)*4+3],255);assert.deepEqual([...p.data.slice((5*12+5)*4,(5*12+5)*4+3)],[255,255,255]);}
+});
+test('dark or colored canvases are not guessed away',()=>{const input=picture([40,70,120]);const output=transparentPaper(input);assert.equal(output.processed,false);assert.equal(output.bytes,input);});
+test('a processed image shows exactly the frame color through its paper on either theme',()=>{const p=PNG.sync.read(transparentPaper(picture()).bytes);for(const frame of [[247,246,235],[16,17,19]]){const alpha=p.data[3]/255;assert.deepEqual(frame.map((v,c)=>Math.round(p.data[c]*alpha+v*(1-alpha))),frame);}});
+test('concurrent reads share processing and failures can retry',async()=>{let calls=0,fail=true;const load=createPaperCache(async()=>{calls++;if(fail)throw Error('offline');return picture();});await assert.rejects(load('a'));fail=false;const [a,b]=await Promise.all([load('a'),load('a')]);assert.equal(a,b);assert.equal(calls,2);assert.equal(await load('a'),a);assert.equal(calls,2);});
+test('bounded cache evicts old decoded derivatives',async()=>{let calls=0;const size=transparentPaper(picture()).bytes.length;const load=createPaperCache(async()=>{calls++;return picture();},{maxBytes:size});await load('a');await load('b');await load('a');assert.equal(calls,3);});
