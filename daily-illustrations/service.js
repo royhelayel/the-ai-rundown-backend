@@ -26,7 +26,7 @@ export function createDailyIllustrations({supabase,parseStories,store=illustrati
  const asset=async key=>cache.get(key)||await store.get(`assets/${key}.json`).then(a=>[VERSION,'world-illustration-low-v1'].includes(a?.version)?remember(key,a):null);
  async function paid(stage,body,record,job){const at=now();const response=await fetchImpl('https://api.openai.com/v1/'+(stage==='image'?'images/edits':'responses'),{method:'POST',headers:{Authorization:'Bearer '+process.env.OPENAI_API_KEY,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(300000)});const data=await response.json();
   if(data.usage){const cost=tokenCost(stage,data.usage);const call={stage,usage:data.usage,costUSD:cost,elapsedMs:now()-at,requestId:response.headers.get('x-request-id')||data.id};record.calls.push(call);record.costUSD+=cost;await store.put(`claims/${job.key}.json`,record);await trackUsage({service:'openai',model:body.model,category:'World News',time_slot:job.meta.timeSlot,language:'en',content_type:'world_illustration_'+stage,input_tokens:data.usage.input_tokens||0,output_tokens:data.usage.output_tokens||0,token_cost_usd:cost,search_cost_usd:0,estimated_cost_usd:cost,web_searches:0,provider_request_id:call.requestId,usage_metadata:{usage:data.usage,day:job.meta.day,artworkKey:job.key,quality:'low',size:'896x736',policy:VERSION,family:record.direction?.family},created_at:new Date(now()).toISOString()});}
-  if(!response.ok)throw Error('provider_'+response.status);return data;
+  if(!response.ok){record.providerFailure={stage,code:/^[a-z0-9_]+$/i.test(data.error?.code||'')?data.error.code:'unspecified',type:/^[a-z0-9_]+$/i.test(data.error?.type||'')?data.error.type:'unspecified'};throw Error('provider_'+response.status);}return data;
  }
  async function reserve(day,key){for(let i=0;i<maxJobs;i++)if(await store.put(`budget/${day}/${String(i).padStart(3,'0')}.json`,{key,reservedUSD:.03,at:now()},{exclusive:true}))return true;return false;}
  async function queueReviewRepair(job,record){
@@ -42,15 +42,20 @@ export function createDailyIllustrations({supabase,parseStories,store=illustrati
    const prior=await store.get(`claims/${job.key}.json`);
    if(prior?.status==='withheld'){await queueReviewRepair(job,prior);return;}
    const retryDirection=prior?.status==='failed'&&prior.error==='generation_failed'&&!prior.direction&&!prior.directionRetryUsed&&prior.calls?.length&&prior.calls.every(c=>c.stage==='direction')&&job.meta.day===spendDay(now())&&spendDay(prior.startedAt)===spendDay(now());
-   if(retryDirection){if(!await store.put(`direction-retries/${job.key}.json`,{at:now()},{exclusive:true}))return;record={...prior,status:'running',directionRetryUsed:true};reuseReservation=true;}
+   const retryRejectedInput=prior?.status==='failed'&&prior.error==='provider_400'&&prior.direction&&!prior.imageRetryUsed&&prior.calls?.length&&prior.calls.every(c=>c.stage==='direction')&&job.meta.day===spendDay(now())&&spendDay(prior.startedAt)===spendDay(now());
+   if(retryRejectedInput){if(!await store.put(`image-input-retries/${job.key}.json`,{at:now()},{exclusive:true}))return;record={...prior,status:'running',imageRetryUsed:true};reuseReservation=true;}
+   else if(retryDirection){if(!await store.put(`direction-retries/${job.key}.json`,{at:now()},{exclusive:true}))return;record={...prior,status:'running',directionRetryUsed:true};reuseReservation=true;}
    else if(prior?.status!=='budget'||prior.calls?.length||spendDay(prior.startedAt)===spendDay(now())||!await store.put(`budget-retries/${job.key}-${spendDay(now())}.json`,{at:now()},{exclusive:true}))return;
    await store.put(`claims/${job.key}.json`,record);
   }
   try{
    if(!reuseReservation&&!await reserve(spendDay(now()),job.key)){record.status='budget';return;}
-   record.stage='direction';
-   const directed=await paid('direction',{model:'gpt-6.1-terra',store:false,max_output_tokens:1400,input:directionPrompt(job.shortText)+(job.reviewCorrections?.length?'\nAddress these previous review findings using ONLY the source facts: '+JSON.stringify(job.reviewCorrections):'')},record,job);
-   const direction=validateDirection(responseJSON(directed),job.shortText);record.direction=direction;record.policy=VERSION;await store.put(`claims/${job.key}.json`,record);
+   let direction=record.imageRetryUsed?validateDirection(record.direction,job.shortText):null;
+   if(!direction){record.stage='direction';
+    const directed=await paid('direction',{model:'gpt-6.1-terra',store:false,max_output_tokens:1400,input:directionPrompt(job.shortText)+(job.reviewCorrections?.length?'\nAddress these previous review findings using ONLY the source facts: '+JSON.stringify(job.reviewCorrections):'')},record,job);
+    direction=validateDirection(responseJSON(directed),job.shortText);
+   }
+   record.direction=direction;record.policy=VERSION;record.error=null;record.failureReason=null;record.providerFailure=null;await store.put(`claims/${job.key}.json`,record);
    const reference='data:image/png;base64,'+referenceFor(direction.family).toString('base64');
    record.stage='image';
    const image=await paid('image',{model:'gpt-image-2',images:[{image_url:reference}],prompt:imagePrompt(job.shortText,direction)+(job.reviewCorrections?.length?'\nCorrect the previous image issues without adding unsupported facts: '+JSON.stringify(job.reviewCorrections):''),n:1,size:'896x736',quality:'low',output_format:'png'},record,job);
@@ -104,7 +109,7 @@ export function createDailyIllustrations({supabase,parseStories,store=illustrati
   const stories=[];for(const row of data||[]){const jobs=prepareJobs(row,parseStories,{allowed:['World News'],fallbackToHeadline:true});for(const [index,story]of parseStories(row).entries()){
    const job=jobs.find(j=>j.headline===story.headline);if(!job){stories.push({index:index+1,headline:story.headline,status:'not_queued'});continue;}
    const key=artworkKey(job.shortText),recovery=await store.get(`recoveries/${key}.json`),parent=await store.get(`claims/${key}.json`),claim=recovery?await store.get(`claims/${recovery.key}.json`):parent,ready=await asset(recovery?.key||key);
-   stories.push({index:index+1,headline:story.headline,status:ready?'ready':claim?.status||'pending',stage:claim?.failureStage||claim?.stage||claim?.calls?.at(-1)?.stage,error:claim?.error||null,reason:claim?.failureReason||null,review:[...(claim?.plan?.visualConcerns||[]),...(claim?.plan?.qualityConcerns||[])],repair:!!recovery,costUSD:(parent?.costUSD||0)+(recovery?claim?.costUSD||0:0)});
+   stories.push({index:index+1,headline:story.headline,status:ready?'ready':claim?.status||'pending',stage:claim?.failureStage||claim?.stage||claim?.calls?.at(-1)?.stage,error:claim?.error||null,reason:claim?.failureReason||null,providerCode:claim?.providerFailure?.code||null,review:[...(claim?.plan?.visualConcerns||[]),...(claim?.plan?.qualityConcerns||[])],repair:!!recovery,costUSD:(parent?.costUSD||0)+(recovery?claim?.costUSD||0:0)});
   }}return{day,slot,expected:stories.length,ready:stories.filter(s=>s.status==='ready').length,stories};
  }
  async function status(){await store.prepare();const slots=await store.list('budget/'+spendDay(now()));const entries=await Promise.all(slots.map(async path=>{const slot=await store.get(path);return slot?store.get(`claims/${slot.key}.json`):null;}));return{enabled:enabled&&hasKey(),category:'World News',policy:VERSION,families:FAMILIES,quality:'low',size:'896x736',maxDailyJobs:maxJobs,reviewFindings:entries.filter(r=>r?.status==='withheld').map(r=>({id:r.key,day:r.meta.day,policy:r.policy||'world-illustration-low-v1',family:r.direction?.family,qualityConcerns:r.plan?.qualityConcerns||[],concerns:(r.plan?.visualConcerns||[]).map(x=>String(x).slice(0,400))})),reservedUSD:slots.length*.03,estimatedActualUSD:entries.reduce((n,r)=>n+(r?.costUSD||0),0),currentPolicyCounts:entries.filter(r=>r?.policy===VERSION).reduce((out,r)=>({...out,[r.status]:(out[r.status]||0)+1}),{}),counts:entries.filter(Boolean).reduce((out,r)=>({...out,[r.status]:(out[r.status]||0)+1}),{}),blocked};}

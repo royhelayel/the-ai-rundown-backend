@@ -2633,7 +2633,7 @@ const illustrationParser=row=>{const full=parseStoriesForTTS(row.content||row.st
 const worldIllustrations=createDailyIllustrations({supabase:supabaseAdmin,parseStories:illustrationParser,trackUsage});
 worldIllustrations.register(app);
 const dailyMotion=createDailyMotion({supabase:supabaseAdmin,callStructured:callPilotStructured,externalLookup:worldIllustrations.lookup,skipGenerationCategories:['World News'],
-  enabled:process.env.LOCAL_PREVIEW!=='1'&&process.env.DAILY_MOTION_ENABLED!=='false',
+  enabled:false, // Superseded paid pipeline: only World image generation is enabled during testing. Existing lookups remain available.
   parseStories:row=>{const full=parseStoriesForTTS(row.content||row.stories_content),cards=parseStoriesForTTS(row.stories_content);const norm=s=>s.toLowerCase().replace(/[^\p{L}\p{N}]/gu,'');const byHeadline=new Map(cards.map(st=>[norm(st.headline),st]));return full.map(st=>{const card=byHeadline.get(norm(st.headline))||st;const summary=buildStoryScript(card);return{headline:st.headline,summary,sourceText:storyEvidence(row.content||row.stories_content,st.headline,summary)};});},
   publicOrigin:process.env.DAILY_MOTION_PUBLIC_ORIGIN||'https://the-ai-rundown-backend.onrender.com'});
 dailyMotion.register(app);

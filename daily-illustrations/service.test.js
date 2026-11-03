@@ -59,3 +59,8 @@ test('an invalid completed direction may retry once before any image call; ambig
 test('a checked story without a usable recap or short first sentence still queues from its headline',async()=>{
  const r={...row,content:Array(80).fill('Long quoted reporting').join(' '),briefing:null,briefing_sources:[]};const f=fixture({parseStories:x=>[{headline:'Officials proposed a trade deal that is not final.',summary:x.content}]});await f.service.queueRows([r]);await f.service.drain();assert.equal(f.calls.length,3);assert.ok(f.calls[0].input.includes('Officials proposed a trade deal that is not final.'));
 });
+
+test('a confirmed HTTP 400 before image output can retry once using its existing direction and reservation',async()=>{
+ const first=fixture();await first.service.queueRows([row]);await first.service.drain();const key=artworkKey(short),prior=first.store.data.get(`claims/${key}.json`);first.store.data.delete(`assets/${key}.json`);first.store.images.delete(key);first.store.data.set(`claims/${key}.json`,{...prior,status:'failed',error:'provider_400',calls:prior.calls.slice(0,1)});
+ const next=fixture({store:first.store});await next.service.queueRows([row]);await next.service.drain();assert.equal(next.calls.length,2);assert.ok(next.calls[0].images);assert.equal((await next.service.status()).reservedUSD,.03);assert.equal((await next.service.lookup(row,short)).status,'ready');
+});
