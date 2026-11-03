@@ -11,7 +11,9 @@ export function currencySpeech(input){
  let text='',cursor=0;const replacements=[];
  for(const match of source.matchAll(pattern)){
   const start=match.index,end=start+match[0].length;
-  const spoken=decimal(match[2])+(match[3]?' to '+decimal(match[3]):'')+' '+scale(match[4])+' '+unit(match[1]);
+  const modifier=/^\s+(?:hack|theft|deal|sale|loss|fund|investment|package|contract|bid|offer|fine|loan|budget|settlement|payment|project|transaction)\b/i.test(source.slice(end));
+  const currencyUnit=modifier?unit(match[1]).replace(/s$/,''):unit(match[1]);
+  const spoken=decimal(match[2])+(match[3]?' to '+decimal(match[3]):'')+' '+scale(match[4])+' '+currencyUnit;
   text+=source.slice(cursor,start);const outStart=text.length;text+=spoken;replacements.push({start,end,outStart,outEnd:text.length});cursor=end;
  }
  text+=source.slice(cursor);

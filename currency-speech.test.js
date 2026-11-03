@@ -4,3 +4,5 @@ test('decimal magnitudes are amounts, not dollars and cents',()=>{
 });
 test('ordinary amounts, percentages, dates and already expanded speech are untouched',()=>{for(const text of ['$6.10 for lunch','6.1% on Nov 3','6 point one billion dollars','about 6.1 billion dollars'])assert.equal(normalizeCurrencyText(text),text);});
 test('browser speech offsets map back to the original summary after expansion',()=>{const source='Losses: $6.1 billion. Officials responded.',r=currencySpeech(source);assert.equal(r.toSource(r.text.indexOf('Officials')),source.indexOf('Officials'));assert.equal(r.toSource(r.text.length),source.length);assert.ok(r.toSource(r.text.indexOf('point'))>=source.indexOf('$'));});
+
+test('amounts used as modifiers keep natural singular currency units',()=>{assert.equal(normalizeCurrencyText('a $6.3 billion hack'),'a 6 point three billion dollar hack');assert.equal(normalizeCurrencyText('£1.2bn in losses'),'1 point two billion pounds in losses');});
