@@ -1,3 +1,4 @@
+import {generationCosts} from './generation-costs.js';
 import {normalizeCurrencyText} from './currency-speech.js';
 import {createDailyIllustrations} from './daily-illustrations/service.js';
 import {createIllustrationPilot} from './illustration-pilot/pilot.js';
@@ -5459,6 +5460,7 @@ app.get('/admin/api/behavior', async (req, res) => {
 
 app.get('/admin/api/usage', async (req, res) => {
   try {
+    if(req.query.scope==='generation')return res.json(await generationCosts(supabaseAdmin,{day:req.query.day,slot:req.query.slot||'Morning',language:req.query.language||'en'}));
     res.json(summarizeUsage(await readAllUsage(supabaseAdmin)));
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
