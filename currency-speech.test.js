@@ -1,0 +1,6 @@
+import test from'node:test';import assert from'node:assert/strict';import{currencySpeech,normalizeCurrencyText}from'./currency-speech.js';
+test('decimal magnitudes are amounts, not dollars and cents',()=>{
+ for(const [text,expected] of [['Losses reached $6.1 billion.','Losses reached 6 point one billion dollars.'],['$2.1bn','2 point one billion dollars'],['£1.25 million','1 point two five million pounds'],['€6.01 billion','6 point zero one billion euros'],['US$10bn','10 billion US dollars'],['$6.1–$6.3 billion','6 point one to 6 point three billion dollars'],['$500 million','500 million dollars']])assert.equal(normalizeCurrencyText(text),expected);
+});
+test('ordinary amounts, percentages, dates and already expanded speech are untouched',()=>{for(const text of ['$6.10 for lunch','6.1% on Nov 3','6 point one billion dollars','about 6.1 billion dollars'])assert.equal(normalizeCurrencyText(text),text);});
+test('browser speech offsets map back to the original summary after expansion',()=>{const source='Losses: $6.1 billion. Officials responded.',r=currencySpeech(source);assert.equal(r.toSource(r.text.indexOf('Officials')),source.indexOf('Officials'));assert.equal(r.toSource(r.text.length),source.length);assert.ok(r.toSource(r.text.indexOf('point'))>=source.indexOf('$'));});

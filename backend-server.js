@@ -1,3 +1,4 @@
+import {normalizeCurrencyText} from './currency-speech.js';
 import {createDailyIllustrations} from './daily-illustrations/service.js';
 import {createIllustrationPilot} from './illustration-pilot/pilot.js';
 import {createTerraFirstPass} from './remotion-compare/terra-first-pass.js';
@@ -3968,7 +3969,7 @@ function trackTTSUsage(chars, { category = null, timeSlot = null, language = 'en
 // Moderate expressiveness avoids pushing names/numbers toward unstable pronunciation.
 // Preserve existing cached recordings; newly synthesized audio uses this delivery.
 const unrealSpeechPayload = (text, voiceId) => ({
-  Text: text, VoiceId: voiceId, Bitrate: '64k',
+  Text: normalizeCurrencyText(text), VoiceId: voiceId, Bitrate: '64k',
   Speed: '0.03', Pitch: '1', Temperature: 0.45,
 });
 
@@ -3979,7 +3980,7 @@ async function callUnrealSpeech(text) {
   const apiKey = process.env.UNREALSPEECH_API_KEY;
   if (!apiKey) throw new Error('UNREALSPEECH_API_KEY not set');
   const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
-  const trimmed = text.trim();
+  const trimmed = normalizeCurrencyText(text.trim());
 
   if (trimmed.length <= 1000) {
     const res = await fetch('https://api.v7.unrealspeech.com/stream', {
@@ -4058,7 +4059,7 @@ const buildRecapScript = (text) => cleanForTTS(endSentence(String(text || '').tr
 // voice, which the iPhone silent switch mutes.
 const ttsCacheFile = (text) => {
   const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
-  return `${crypto.createHash('md5').update(`${voiceId}:${text.trim()}`).digest('hex')}.mp3`;
+  return `${crypto.createHash('md5').update(`${voiceId}:${normalizeCurrencyText(text.trim())}`).digest('hex')}.mp3`;
 };
 
 // Whether a recording is already saved — a listing, not a download of the whole file.
@@ -4073,7 +4074,7 @@ async function pregenerateTTSText(text, label, meta = {}) {
   const fileName = ttsCacheFile(text);
   if (await ttsCached(fileName)) return 'cached';
   const audioBuffer = await callUnrealSpeech(text);
-  trackTTSUsage(text.length, { ...meta, label });
+  trackTTSUsage(normalizeCurrencyText(text).length, { ...meta, label });
   const { error } = await supabaseAdmin.storage.from('tts-cache').upload(fileName, audioBuffer, { contentType: 'audio/mpeg', upsert: false });
   if (error) throw new Error(`upload failed: ${error.message}`);
   return 'recorded';
@@ -4110,7 +4111,7 @@ async function pregenerateTTSForContent(content, label, meta = {}) {
       let audioBuffer;
       try {
         audioBuffer = await callUnrealSpeech(text);
-        trackTTSUsage(text.length, { ...meta, label });
+        trackTTSUsage(normalizeCurrencyText(text).length, { ...meta, label });
       } catch (ttsErr) {
         console.warn(`  ✗ Unreal Speech error for: ${story.headline.slice(0, 50)} — ${ttsErr.message}`);
         continue;
@@ -6560,8 +6561,7 @@ app.post('/api/tts-stream', async (req, res) => {
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
 
   const voiceId = process.env.UNREALSPEECH_VOICE_ID || 'Scarlett';
-  const key = crypto.createHash('md5').update(`${voiceId}:${text.trim()}`).digest('hex');
-  const fileName = `${key}.mp3`;
+  const fileName = ttsCacheFile(text);
 
   res.set('Content-Type', 'audio/mpeg');
   res.set('Cache-Control', 'public, max-age=604800');
@@ -6576,7 +6576,7 @@ app.post('/api/tts-stream', async (req, res) => {
   } catch {}
 
   // Cache miss — stream Unreal Speech /stream directly (≤1000 chars only; falls back for longer)
-  const trimmed = text.trim();
+  const trimmed = normalizeCurrencyText(text.trim());
   const apiKey = process.env.UNREALSPEECH_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'UNREALSPEECH_API_KEY not set' });
 
